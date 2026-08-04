@@ -1,0 +1,491 @@
+00001Composite                               
+00002Large-Sized                             
+00003Medium-Sized                            
+00004Small-Sized                             
+00005Foods, Beverages & Tobacco              
+00006Textiles & Apparel                      
+00007Paper & Forest Products                 
+00008Chemicals                               
+00009Pharmaceuticals                         
+00010Non-metals                              
+00011Metals                                  
+00012Machinery & Equipment                   
+00013Electrical Equipment & Electronics      
+00014Medical and Precision Instruments       
+00015Transportation Equipment & Components   
+00016Distribution                            
+00017Electricity & Gas                       
+00018Construction                            
+00019Transportation & Warehousing            
+00020Telecommunications                      
+00021Financials                              
+00024Securities                              
+00025Insurance                               
+00026General Services                        
+00027Manufacturing                           
+00028Real Estate                             
+00029IT Services                             
+00030Entertainment & Culture                 
+00163KOSPI High Dividend Yield 50            
+00164KOSPI Growth Dividend 50                
+00165KOSPI Preferred Stock Index             
+00195KOSPI TR                                
+00241KOSPI High Dividend Yield 50 TR         
+00242KOSPI Growth Dividend 50 TR             
+00244KOSPI Ex-KOSPI 200                      
+00503VKOSPI                                  
+11001KOSDAQ                                  
+11002KOSDAQ LargeCap                         
+11003KOSDAQ MidCap                           
+11004KOSDAQ SmallCap                         
+11006General Services                        
+11009Manufacturing                           
+11010Construction                            
+11011Distribution                            
+11013Transportation & Warehousing            
+11014Financials                              
+11015Entertainment & Culture                 
+11019Foods, Beverages & Tobacco              
+11020Textiles & Apparel                      
+11021Paper & Forest Products                 
+11022Publishing & Media Replication          
+11023Chemicals                               
+11024Pharmaceuticals                         
+11025Non-metals                              
+11026Metals                                  
+11027Machinery & Equipment                   
+11028Electrical Equipment & Electronics      
+11029Medical and Precision Instruments       
+11030Transportation Equipment & Components   
+11031Other Manufacturing                     
+11032Telecommunication                       
+11033IT Services                             
+11042Prime                                   
+11043Venture                                 
+11044Standard                                
+11045Growth Index                            
+11049KOSDAQ Global                           
+11196KOSDAQ TR                               
+11331KOSDAQ 150 Governance Index             
+22001KOSPI200                                
+22007KOSPI100                                
+22008KOSPI50                                 
+22009K_Constructions                         
+22010K_Heavy Industries                      
+22011K_Steels&Materials                      
+22012K_Energy&Chemicals                      
+22013K_IT                                    
+22014K_Financials                            
+22015K_Consumer Staples                      
+22016K_Consumer Discretionary                
+22017K_Industrial                            
+22018K_Health Care                           
+22019K_Low Volatility High Dividend Index    
+22021KOSPI 200 Intrinsic Value Index         
+22022KOSPI 200 MidSmallCap                   
+22023KOSPI 200 Consumer Goods                
+22024KOSPI 200 Energy & Chemicals Leverage   
+22025KOSPI 200 IT Leverage                   
+22026KOSPI 200 Financials Leverage           
+22027KOSPI 200 ConsumerDiscretionary Leverage
+22028KOSPI 200 Constructions Leverage        
+22029KOSPI 200 Heavy Industries Leverage     
+22030KOSPI 200 Healthcare Leverage           
+22035KOSPI200 TR                             
+22036KOSPI200 NTR                            
+22037KOSPI 200 Dividend Forecast Yield Top 50
+22038KOSPI 200 Dividend Forecast Yield Growth
+22039K_Communication Service                 
+22040KOSPI 200 Ex-TOP                        
+22041KOSPI200 IT TR                          
+22042KOSPI200 Financials TR                  
+22043KOSPI200 Consumer Discretionary TR      
+22044KOSPI200 Energy & Chemicals TR          
+22045KOSPI200 Consumer Staples TR            
+22046KOSPI200 Constructions TR               
+22047KOSPI200 Heavy Industries TR            
+22048KOSPI200 Steels & Materials TR          
+22049KOSPI200 Industrials TR                 
+22050KOSPI200 Health Care TR                 
+22051KOSPI200 Communication Service TR       
+22180KOSPI 200 ESG                           
+22224KOSPI 200 capped 30% index              
+22225KOSPI 200 capped 30% Total Return       
+22226KOSPI 200 capped 30% Net Total Return   
+22227KOSPI 200 capped 25% index              
+22228KOSPI 200 capped 25% Total Return       
+22230KOSPI 200 capped 25% Net Total Return   
+22232KOSPI 200 capped 20% index              
+22233KOSPI 200 capped 20% Total Return       
+22235KOSPI 200 capped 20% Net Total Return   
+22283KOSPI 200 Climate Change                
+22284F-KOSPI 200 TWAP                        
+22285F-KOSPI 200 TWAP Inverse                
+22286F-KOSPI 200 TWAP Leverage               
+22287F-KOSPI 200 TWAP Inverse-2X             
+22501F-KOSPI200                              
+22502F-KOSPI200 Inverse                      
+22503KOSPI200 Leverage                       
+22505KOSPI 200 Covered Call 5% OTM           
+22506KOSPI 200 Protective Put 5% OTM         
+22705F-KOSPI 200 Inverse -2X                 
+22706F-KOSPI 200 Inverse -3X                 
+22716F-KOSPI 200 Leverage                    
+22721Mini F-KOSPI 200                        
+22722Mini F-KOSPI 200 Leverage               
+22723Mini F-KOSPI 200 Inverse                
+22724Mini F-KOSPI 200 Inverse-2X             
+22731SF-KOSPI 200 leverage1.5X               
+22751F-K200 Energy/Chemicals                 
+22752F-K200 IT                               
+22753F-K200 Financials                       
+22754F-K200 Consumer Discretionary           
+22755F-K200 Constructions                    
+22756F-K200 Heavy Industries                 
+22757F-K200 Health Care                      
+22758F-K200 Consumer Staples                 
+22759F-K200 Steels/Materials                 
+22760F-K200 Industrials                      
+22761F-K200 Energy/Chemicals Leverage        
+22762F-K200 IT Leverage                      
+22763F-K200 Financials Leverage              
+22764F-K200 Consumer Discretionary Leverage  
+22765F-K200 Constructions Leverage           
+22766F-K200 Heavy Industries Leverag         
+22767F-K200 Health Care Leverage             
+22768F-K200 Consumer Staples Leverage        
+22769F-K200 Steels/Materials Leverage        
+22770F-K200 Industrials Leverage             
+22771F-K200 Energy/Chemicals Inverse         
+22772F-K200 IT Inverse                       
+22773F-K200 Financials Inverse               
+22774F-K200 Consumer Discretionary Inverse   
+22775F-K200 Constructions Inverse            
+22776F-K200 Heavy Industries Inverse         
+22777F-K200 Health Care Inverse              
+22778F-K200 Consumer Staples Inverse         
+22779F-K200 Steels/Materials Inverse         
+22780F-K200 Industrials Inverse              
+22781F-K200 Energy/Chemicals Inverse-2X      
+22782F-K200 IT Inverse-2X                    
+22783F-K200 Financials Inverse-2X            
+22784F-K200 Consumer Discretionary Inverse-2X
+22785F-K200 Constructions Inverse-2X         
+22786F-K200 Heavy Industries Inverse-2X      
+22787F-K200 Health Care Inverse-2X           
+22788F-K200 Consumer Staples Inverse-2X      
+22789F-K200 Steels/Materials Inverse-2X      
+22790F-K200 Industrials Inverse-2X           
+33003KOSDAQ 150                              
+33004KOSDAQ 150                              
+33005KOSDAQ 150 Leverage                     
+33006F-KODAQ 150                             
+33007F-KODAQ 150 Inverse                     
+33008F-KODAQ 150 Inverse-2X                  
+33009F-KODAQ 150 Inverse-3X                  
+33010KOSDAQ 150 Leverage 0.5                 
+33012KOSDAQ 150 Materials                    
+33013KOSDAQ 150 Industrials                  
+33014KOSDAQ 150 Consumer Staples             
+33015KOSDAQ 150 Comsumer Discretionary       
+33016KOSDAQ 150 Information Technology       
+33017KOSDAQ 150 Health Care                  
+33018KOSDAQ 150 Commnunication Service       
+33020F-KOSDAQ 150 Leverage                   
+33197KOSDAQ 150 TR                           
+33420F-KOSDAQ 150 TWAP                       
+33421F-KOSDAQ 150 TWAP Inverse               
+33422F-KOSDAQ 150 TWAP Leverage              
+33423F-KOSDAQ 150 TWAP Inverse-2X            
+33501Konex                                   
+44001KRX100                                  
+44002KRX Autos                               
+44003KRX Semicon                             
+44004KRX Health Care                         
+44005KRX Banks                               
+44007KRX Energy & Chemicals                  
+44008KRX Steels                              
+44010KRX Media & Telecom                     
+44011KRX Constructions                       
+44013KRX Securites                           
+44014KRX Shipbuilding                        
+44015KRX Insurance                           
+44016KRX Transport                           
+44061KRX Consumer Dircretionay               
+44062KRX Consumer Staples                    
+44063KRX Media&Entertainment                 
+44064KRX IT                                  
+44065Krx Utilities                           
+44132KRX ESG Leaders 150                     
+44133KRX Governance Leaders 150              
+44134KRX Eco Leaders 150                     
+44136KRX ESG Social Index                    
+44142KRX Minimum volatility                  
+44198KRX 300 TR                              
+44300KRX 300                                 
+44304F-KRX 300                               
+44305KRX 300 Leverage Index                  
+44306F-KRX 300 Leverage Index                
+44307F-KRX 300 Inverse Index                 
+44308F-KRX 300 Inverse -2X                   
+44351KRX 300 IT                              
+44352KRX 300 Financials                      
+44353KRX 300 Consumer Discretionary          
+44354KRX 300 Industrials                     
+44355KRX 300 Health Care                     
+44356KRX 300 Communication Service           
+44357KRX 300 Materials                       
+44358KRX 300 Consumer Staple                 
+44411KRX BBIG Index                          
+44412KRX secondary Battery TOP10 Index       
+44413KRX Bio TOP10 Index                     
+44414KRX Internet TOP10 Index                
+44415KRX Game TOP10 Index                    
+44416KRX BBIG Risk Control 12%               
+44417KRX BBIG Risk Control 12% DC            
+44418KRX 300 Climate Change                  
+44419KRX Climate Change Solutions            
+44420KRX Bluechip 25                         
+44421KRX Electric Vehicle Top 15             
+44422KRX Semiconductor Top 15                
+44426KRX Bluechip 25 USD                     
+44427KRX Electric Vehicle Top 15 USD         
+44428KRX Semiconductor Top 15 USD            
+44429KRX CSI KOREA CHINA 50                  
+44430KRX CSI KOREA CHINA Electric Vehicle    
+44431KRX CSI KOREA CHINA Semiconductor       
+44442KRX FactSet Mobility Innovator          
+44443KRX FactSet Digital Healthcare          
+44444KRX FactSet Digital Infrastructure      
+44445KRX FactSet Next Generation Energy      
+44446Korea Value-up Index                    
+44447Korea Value-up TR Index                 
+44448KRX TMI                                 
+44449KRX LargeMidCap TMI                     
+44450KRX MidCap TMI                          
+44451KRX SmallCap TMI                        
+44452KRX MicroCap TMI                        
+44453KRX Secondary Battery TOP 10 TR         
+44454KRX Secondary Battery TOP 10 TR Leverage
+44600KTOP 30                                 
+44601KTOP 30 Leverage                        
+44602K200 KSQ150 Fixed Weight 50:50 Index    
+44603K200 KSQ150 Fixed Weight 70:30 Index    
+44604K200 KSQ150 Fixed Weight 30:70 Index    
+44605K200 KSQ150 Fixed Weight 5:5 Leverage   
+44916KRX BBIG L.I                            
+44917KRX Secondary Battery TOP10 L.I         
+44918KRX REITs TOP 10                        
+44919KRX REITs TOP 10 Leverage               
+66001F-USDKRW                                
+66002F-USDKRW Inverse                        
+66003F-USDKRW Leverage                       
+66004F-USDKRW Total Return Index             
+66008F-KTB                                   
+66009F-KTB Inverse                           
+66010F-LKTB                                  
+66011F-LKTB Inverse                          
+66013F-USDKRW Inverse -2X                    
+66014F-USDKRW Inverse -3X                    
+66015F-LKTB Leverage Index                   
+66016F-LKTB InverseLeverage Index            
+66018F-JPYKRW                                
+66019F-JPYKRW Leverage                       
+66020F-JPYKRW Inverse                        
+66021F-JPYKRW Inverse -2X                    
+66022F-JPYKRW Inverse -3X                    
+66023F-EURKRW                                
+66024F-EURKRW Leverage                       
+66025F-EURKRW Inverse                        
+66026F-EURKRW Inverse -2X                    
+66027F-EURKRW Inverse -3X                    
+66028KRX Gold Spot Index                     
+66029KRX Gold Spot Index USD                 
+66030KRX Gold Spot Leverage                  
+66103Korea Taiwan IT Premier Index           
+66104KRX/S&P Carbon Efficient Capped         
+66105S&P/KRX ESG Dividend Opportunities      
+66239FnGuide IoT                             
+66243REITs Infra Preferred balanced Index    
+66268HSCEI Short Index(Total Return)         
+66269HSCEI TR 2x Leveraged Index             
+66270HSCEI 2x Short Index                    
+66275Bloomberg Copper Single TR              
+66276Bloomberg Copper Single 2X Leveraged TR 
+66277Bloomberg Copper Single 2X Inverse TR   
+66278S&P GSCI Carbon Emission Allowances     
+66279Bloomberg WTI Crude Oil Single TR       
+66280Bloomberg WTI Single 2X Leveraged TR    
+66281Bloomberg WTI Single 2X Inverse TR      
+66282KOSPI 200 NTR 8pt Decrement Index       
+66286DJSI Korea Capped 25% Index(KRW)        
+66287S&P 500 Futures 2X Inverse TR           
+66288S&P 500 Futures 2X Leveraged TR         
+66289Euro Stoxx 50 Daily Leverage Index(GR)  
+66290Euro Stoxx 50 Daily Double Short(GR)    
+66291Euro Stoxx 50 Daily Short (Gross Return)
+66292NASDAQ-100 Leveraged Total Return Index 
+66293NASDAQ-100 1x Short Total Return Index  
+66294NASDAQ-100 2x Short Total Return Index  
+66295NASDAQ-100 Total Return Index           
+66296DJCI Natual Gas 2X Inverse TR           
+66297DJCI Natual Gas 2X Leveraged TR         
+66298S&P 500 Future Index TR                 
+66301DJCI Platinum(BOK Call Rate) TR         
+66302DJCI Platinum Inverse(BOK Call Rate) TR 
+66303DJCI Gold TR                            
+66304DJCI Inverse Gold TR                    
+66305DJCI Silver TR                          
+66306DJCI Inverse Silver TR                  
+66308F-KTB Composite Index                   
+66309F-KTB Composite Leverage                
+66310F-KTB Composite Inverse                 
+66311F-KTB Composite Inverse-2X              
+66321F-KTB 3Y-10Y YieldCurve Steepening      
+66322F-KTB 3Y-10Y YieldCurve Flattening      
+66323F-KTB 3Y-10Y YieldCurve Steepening 2X   
+66324F-KTB 3Y-10Y YieldCurve Flattening 2X   
+66325KIS CD Index                            
+66330KAP Leverage KTB 30y TR Index           
+66331KAP Leverage US Treasury 30 Years(TR)   
+66332KAP 3X Leverage KTB 30Y TR Index        
+66333KAP 3X Leverage US Treasury 30 Years(TR)
+66400DJCI 2X Inverse Gold TR                 
+66401DJCI 2X Leverage Gold TR                
+66402DJCI 2X Inverse Silver TR               
+66403DJCI 2X Leverage Silver TR              
+66404DJCI Platinum 2X Inverse TR             
+66405DJCI Platinum 2X Leveraged TR           
+66500S&P500 VIX Short-Term F-Index           
+66501S&P500 VIX Short-Term F-0.5x Inverse    
+66502 S&P Japanese Yen Futures               
+66503S&P Japanese Yen Futures 2x Lever Daily 
+66504S&P Japanese Yen Futures 2x Inv Daily   
+66601F-KOSPI Covered Call 5% OTM             
+66602F-KOSPI Covered Put 5% OTM              
+66603iSTOXX Vietnam Futures                  
+66604iSTOXX Vietnam Futures Daily Short      
+66605iSTOXX Vietnam Futures Daily Leverage 2 
+66606iSTOXX Vietnam Futures Daily Short 2    
+66611WISE Samsung Group Value Index          
+66612WISE LowVOL Index                       
+66613WISE Select Dividend Index              
+66614WISE K150 Quant Index                   
+66615Smart Rebalancing 250/3 A Index         
+66616WISE LongShort K150 LowVOL Index        
+66617WISE BIG5 Equal-Weighted TR Index       
+66618WISE SmartBeta Quality Index            
+66619WISE SmartBeta Momentum Index           
+66620WISE SmartBeta Value Index              
+66621WISE Monthly Best 11 Index              
+66622WISE Q150 Monthly Best 11 Index         
+66623WISE Tour Leisure Index                 
+66624WISE Media Contents Index               
+66625WISE Cosmetic Index                     
+66626WISE Blue Chip Monthly Best 11 Index    
+66627WISE Select Momentum Sector Index       
+66628WISE Electronics Theme TR Index         
+66629WISE Chemicals Theme TR Index           
+66630WISE Electronics Theme Inverse Index    
+66631WISE Chemicals Theme Inverse Index      
+66632Hankyung WISE KR Premier Index          
+66633WISE SmartBeta LowVOL Index             
+66634WISE SmartBeta Index                    
+66636WISE Shareholders Oriented Index        
+66637WISE Media Ent. Theme TR Index          
+66638WISE Media Ent. Theme Inverse TR Index  
+66639WISE Q150 TOP5 TR Index                 
+66640Smart Rebalancing 250/3 A Leverage Index
+66642WISE Sustainable Dividend Index         
+66644WISE ESG Leading Company Index          
+66646WISE Game Theme Index                   
+66647WISE Secondary Cell Theme AI Index      
+66648WISE Game Theme AI Index                
+66649WISE Sector Leaders TR Index            
+66707KOSPI 200 Covered Call ATM              
+66708KOSPI 200 Covered Call ATM Leverage     
+66709C-KOSPI 200 LVHD-A                      
+66711KOSPI200 Risk Control 6%                
+66712KOSPI200 Risk Control 8%                
+66713KOSPI200 Risk Control 10%               
+66714KOSPI200 Risk Control 12%               
+66717KOSPI Short Strangle 5% OTM             
+66719KOSPI Short Strangle ATM                
+66720KOSPI Short Strangle 3% OTM             
+66725F-KOSPI Covered Call ATM                
+66726F-KOSPI Covered Call 3% OTM             
+66727F-KOSPI Covered Put ATM                 
+66728F-KOSPI Covered Put 3% OTM              
+66732SF-KOSPI 200 Target Volatility 24%      
+66737F-KOSPI 200 Target Volatility 20        
+66811S&P/KRX Balanced Equity and Gold        
+66813KRX Moderate Balanced Index             
+66814KRX Conservative Balanced Index         
+66815KOSPI 200 Dynamic Asset Exchange Index  
+66817K200 USD Futures BuySell                
+66818USD K200 Futures BuySell                
+66819KRX Consumer Goods Balanced Index       
+66820KRX Growth Dividend Balanced Index      
+66821KOSPI200 and U.S. Bond Balancedindex    
+66822KRX 300 USD Futures Balanced            
+66823F-K200 Long F-KSQ 150 Short Index       
+66824F-KSQ 150 Long F-K200 Short Index       
+66825F-K200 Long F-KSQ 150 0.5 Short Index   
+66826F-KSQ 150 Long F-K200 0.5 Short Index   
+66827SF-KOSDAQ 150 USD Balanced              
+66830Nikkei 225 Futures Index                
+66831Nikkei 225 Futures Inverse Index        
+66832Nikkei 225 Futures Leveraged Index      
+66833Nikkei 225 Futures Double Inverse Index 
+66841F-KOSPI 200 F-LKTB New Balanced Index   
+66845F-Battery TOP10 TWAP Index              
+66846F-Battery TOP10 TWAP Inverse Index      
+66892KRX BBIG C.B                            
+66893KRX Secondary Battery TOP10 C.B         
+66951ChinaBond 5Y Treasury Bond TR KRW Index 
+66961WISE-KAP SmartBeta Q C.Balanced Index   
+66971                                        
+66972FTSE 100 Total Return Declared Dividend 
+66973EURO iSTOXX Short Strangle KWCDC Index  
+66974CBOE S&P 500 4% OTM Short Strangle Index
+66975Bloomberg Natural Gas 2X Leveraged TR   
+66976Bloomberg Natural Gas 2X Inverse TR     
+66977Bloomberg Indonesia Energy & Metal      
+66978MSCI Japan IMI Trading Companies        
+66980Solactive Silver Total Return 2x St Lev 
+66981Solactive Gold Total Return 1x Lg Lev   
+66982Solactive Gold Total Return 1x St Lev   
+66983Solactive Silver Total Return 1x Lg Lev 
+66984Solactive Silver Total Return 1x St Lev 
+77001KOSPI200 EWI                            
+77002KOSPI100 EWI                            
+77003KOSPI50 EWI                             
+77004KRX100 EWI                              
+77010SPGSCL                                  
+99001                                        
+99002                                        
+99003                                        
+99101                                        
+99102                                        
+99103                                        
+99104                                        
+99105                                        
+99106                                        
+99107                                        
+99108                                        
+99109                                        
+99110                                        
+99111                                        
+99112                                        
+99201                                        
+99202                                        
+99203                                        
+99301                                        
+99302                                        
+99303                                        
+99999                                        
+EE199ETN                                     
+GG000GOLD                                    
+PP000PFC                                     
+TT000ETF                                     
+WW000ELW                                     

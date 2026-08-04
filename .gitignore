@@ -1,0 +1,21 @@
+# Virtual Environment
+.venv/
+venv/
+ENV/
+
+# Python Bytecode & Cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# KIS API Token & Sensitive files
+token_kis_*.json
+*.env
+*.log
+
+# Temp & IDE Files
+Temp/
+.idea/
+.vscode/
+.antigravity/
+.gemini/
