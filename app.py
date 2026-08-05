@@ -210,28 +210,71 @@ with st.sidebar:
 # -----------------------------------------------------------------------------
 # 5. 메인 대시보드 헤더 & 감시 루프
 # -----------------------------------------------------------------------------
-st.title("📈 KIS Open Trading API 투자 대시보드")
+# -----------------------------------------------------------------------------
+# 5. 메인 대시보드 헤더 & 감시 루프
+# -----------------------------------------------------------------------------
+st.title("🇺🇸 KIS 라오어 무한매수법 전담 자동투자 시스템")
 
 # 감시 활성화 상태 시 트레이딩/감시 사이클 1회 실행
 if bot.is_running:
     bot.run_trading_cycle()
 
-# 핵심 자산 평가 KPI metrics
+# 해외 무한매수 종목별 주식 평가금액($) 및 외화 총자산 계산
+infinite_stocks = getattr(config, "INFINITE_STOCKS", ["TQQQ"])
+usd_stock_eval = 0.0
+holding_stock_count = 0
+
+for sym in infinite_stocks:
+    st_d = bot.infinite_state_mgr.get_symbol_state(sym)
+    q = st_d.get("total_qty", 0)
+    cur_p = bot.current_prices.get(sym, 0.0)
+    if cur_p == 0.0:
+        p_res = bot.api.get_stock_price(sym)
+        if p_res.get("success"):
+            cur_p = float(p_res["price"])
+            bot.current_prices[sym] = cur_p
+    
+    if q > 0:
+        holding_stock_count += 1
+        usd_stock_eval += q * cur_p
+
+usd_cash = getattr(bot, "available_usd_cash", 5000.0)
+usd_total_eval = usd_cash + usd_stock_eval
+ex_rate = getattr(bot, "exchange_rate", 1428.20)
+is_sim = getattr(bot, "is_usd_simulated", True)
+
+usd_dep_sub = "테스트용 시뮬레이션 가상 잔고" if is_sim else "KIS Open API 실시간 조회"
+
 m1, m2, m3, m4 = st.columns(4)
 
-total_eval = bot.total_eval_amount
-cash = bot.available_cash
-stock_eval = max(0.0, total_eval - cash)
-holding_count = len(bot.holdings)
-
 with m1:
-    st.metric(label="총 자산 평가액", value=f"₩{total_eval:,.0f}")
+    st.metric(
+        label="🇺🇸 총 자산 평가액 ($)",
+        value=f"${usd_total_eval:,.2f}",
+        delta=f"약 ₩{usd_total_eval * ex_rate:,.0f}",
+        delta_color="off"
+    )
 with m2:
-    st.metric(label="보유 예수금", value=f"₩{cash:,.0f}")
+    st.metric(
+        label="💵 외화(USD) 예수금",
+        value=f"${usd_cash:,.2f}",
+        delta=usd_dep_sub,
+        delta_color="off"
+    )
 with m3:
-    st.metric(label="주식 평가금액", value=f"₩{stock_eval:,.0f}")
+    st.metric(
+        label="📈 주식 평가금액 ($)",
+        value=f"${usd_stock_eval:,.2f}",
+        delta=f"약 ₩{usd_stock_eval * ex_rate:,.0f}",
+        delta_color="off"
+    )
 with m4:
-    st.metric(label="보유 종목 수", value=f"{holding_count}개 / {config.MAX_STOCKS_HOLDING}개")
+    st.metric(
+        label="💱 미국 USD 환율",
+        value=f"₩{ex_rate:,.2f} / $",
+        delta=f"운용: {len(infinite_stocks)}개종목 (보유 {holding_stock_count}개)",
+        delta_color="off"
+    )
 
 st.divider()
 
@@ -256,8 +299,8 @@ if pending_count > 0:
                 <p style="font-size:1.05rem; margin-bottom:5px;"><b>제안 사유</b>: <span style="color:#38BDF8;">{prop['reason']}</span></p>
                 <p style="font-size:1rem; margin-bottom:15px;">
                     <b>주문 수량</b>: {prop['qty']:,}주 | 
-                    <b>현재가(기준가)</b>: ₩{prop['price']:,.0f} | 
-                    <b>총 예상 금액</b>: <b>₩{prop['total_price']:,.0f}</b>
+                    <b>현재가(기준가)</b>: ${prop['price']:,.2f} | 
+                    <b>총 예상 금액</b>: <b>${prop['total_price']:,.2f}</b>
                 </p>
             </div>
             """, unsafe_allow_html=True)
@@ -284,14 +327,13 @@ if pending_count > 0:
 # 7. 메인 탭 구성
 # -----------------------------------------------------------------------------
 tab_titles = [
+    "🇺🇸 무한매수 현황 & 당일 주문",
     f"🔔 승인 대기 제안 ({pending_count})" if pending_count > 0 else "🔔 승인 대기 제안",
-    "📊 보유 종목 현황",
-    "🎯 매매 감시 및 신호",
     "📜 시스템 실행 로그",
-    "⚙️ 전략 및 리스크 설정"
+    "⚙️ 무한매수 설정"
 ]
 
-tab_prop, tab_holdings, tab_targets, tab_logs, tab_config = st.tabs(tab_titles)
+tab_infinite, tab_prop, tab_logs, tab_config = st.tabs(tab_titles)
 
 # 탭 1: 승인 대기 제안 목록 상세
 with tab_prop:
@@ -305,8 +347,8 @@ with tab_prop:
                 "종목명": p["stock_name"],
                 "구분": p["action_kr"],
                 "수량": f"{p['qty']:,}주",
-                "현재가": f"₩{p['price']:,.0f}",
-                "예상총액": f"₩{p['total_price']:,.0f}",
+                "현재가": f"₩{p['price']:,.0f}" if isinstance(p['price'], (int, float)) and not bot.api.is_overseas_symbol(p["symbol"]) else f"${p['price']:,.2f}",
+                "예상총액": f"₩{p['total_price']:,.0f}" if not bot.api.is_overseas_symbol(p["symbol"]) else f"${p['total_price']:,.2f}",
                 "제안 사유": p["reason"],
                 "제안 시간": p["timestamp"]
             })
@@ -315,94 +357,147 @@ with tab_prop:
         st.info("현재 대기 중인 매매 제안이 없습니다. 감시를 시작하면 매수/매도 조건 충족 시 이곳에 제안이 생성됩니다.")
 
 
-# 탭 2: 보유 종목 현황
-with tab_holdings:
-    st.subheader("💼 현재 계좌 보유 종목")
+# 탭 2: 라오어 무한매수 현황
+with tab_infinite:
+    st.subheader("🇺🇸 라오어 무한매수법 v2.0 진행 현황")
     
-    if bot.holdings:
-        holdings_data = []
-        for symbol, h in bot.holdings.items():
-            qty = h.get("qty", 0)
-            avg_p = h.get("avg_price", 0.0)
-            cur_p = h.get("current_price", 0.0)
-            eval_amt = qty * cur_p
-            pnl_rate = h.get("pnl_rate", 0.0)
-            if pnl_rate == 0.0 and avg_p > 0 and cur_p > 0:
-                pnl_rate = ((cur_p - avg_p) / avg_p) * 100
-            
-            pnl_amt = eval_amt - (qty * avg_p)
-            
-            holdings_data.append({
-                "종목코드": symbol,
-                "종목명": h.get("name", symbol),
-                "보유수량": f"{qty:,}주",
-                "평균단가": f"₩{avg_p:,.0f}",
-                "현재가": f"₩{cur_p:,.0f}",
-                "평가금액": f"₩{eval_amt:,.0f}",
-                "평가손익": f"₩{pnl_amt:+,.0f}",
-                "수익률": f"{pnl_rate:+.2f}%"
+    if getattr(config, "INFINITE_BUYING_ENABLED", False):
+        infinite_stocks = getattr(config, "INFINITE_STOCKS", ["TQQQ"])
+        
+        inf_data = []
+        for symbol in infinite_stocks:
+            st_data = bot.infinite_state_mgr.get_symbol_state(
+                symbol,
+                default_budget_usd=getattr(config, "INFINITE_TOTAL_BUDGET_USD", 5000.0),
+                division_count=getattr(config, "INFINITE_DIVISION_COUNT", 40),
+                target_roi=getattr(config, "INFINITE_TARGET_ROI", 0.10)
+            )
+            curr_round = st_data.get("current_round", 0)
+            div_count = st_data.get("division_count", 40)
+            budget = st_data.get("total_budget_usd", 5000.0)
+            avg_p = st_data.get("avg_price", 0.0)
+            total_qty = st_data.get("total_qty", 0)
+            roi = st_data.get("target_roi", 0.10)
+            raw_status = st_data.get("status", "IDLE")
+
+            status_map = {
+                "BUYING": "🟢 매수 진행 중 (BUYING)",
+                "STOPPED": "🔴 강제 중지됨 (STOPPED)",
+                "IDLE": "🟡 대기 중 (IDLE)",
+                "COMPLETED": "🔵 익절 완료 (COMPLETED)"
+            }
+            status_display = status_map.get(raw_status, raw_status)
+
+            # 당일 시세 및 매수/매도 주문 미리 계산
+            cur_p = bot.current_prices.get(symbol, 0.0)
+            if cur_p == 0.0:
+                p_res = bot.api.get_stock_price(symbol)
+                if p_res.get("success"):
+                    cur_p = float(p_res["price"])
+                    bot.current_prices[symbol] = cur_p
+
+            calc_price = cur_p if cur_p > 0 else (avg_p if avg_p > 0 else 50.0)
+            sample_orders = bot.infinite_strategy.generate_daily_orders(symbol, calc_price, st_data)
+
+            sell_orders = [o for o in sample_orders if o['action'] == 'SELL']
+            buy_orders = [o for o in sample_orders if o['action'] == 'BUY']
+
+            if sell_orders:
+                s_o = sell_orders[0]
+                s_amt = s_o['qty'] * s_o['price']
+                sell_str = f"{s_o['qty']:,}주 @ ${s_o['price']:.2f} (${s_amt:,.2f})"
+            else:
+                sell_str = "-"
+
+            if buy_orders:
+                b_qty_sum = sum(b['qty'] for b in buy_orders)
+                b_amt_sum = sum(b['qty'] * b['price'] for b in buy_orders)
+                buy_str = f"{b_qty_sum:,}주 (${b_amt_sum:,.2f})"
+            else:
+                buy_str = "매수 중지" if raw_status in ["STOPPED", "PAUSED"] else "-"
+
+            inf_data.append({
+                "티커": symbol,
+                "진행 회차": f"{curr_round} / {div_count} 회차",
+                "총 예산 ($)": f"${budget:,.2f}",
+                "평단가 ($)": f"${avg_p:.2f}" if avg_p > 0 else "-",
+                "보유 수량": f"{total_qty:,} 주",
+                "당일 익절 매도 주문": sell_str,
+                "당일 LOC 매수 주문": buy_str,
+                "현재 상태": status_display
             })
+
+        st.dataframe(pd.DataFrame(inf_data), use_container_width=True, hide_index=True)
+
+        st.markdown("---")
+        st.subheader("📋 종목별 당일 매수/매도 주문 상세 수량 및 금액")
+
+        for symbol in infinite_stocks:
+            st_data = bot.infinite_state_mgr.get_symbol_state(symbol)
+            cur_p = bot.current_prices.get(symbol, 0.0)
+            avg_p = st_data.get("avg_price", 0.0)
+            calc_price = cur_p if cur_p > 0 else (avg_p if avg_p > 0 else 50.0)
+            orders = bot.infinite_strategy.generate_daily_orders(symbol, calc_price, st_data)
+
+            with st.expander(f"📌 [{symbol}] 당일 매수/매도 상세 주문 내역 확인", expanded=True):
+                col_det1, col_det2 = st.columns(2)
+
+                with col_det1:
+                    st.markdown("#### 🔴 당일 전량 익절 매도 주문 (지정가)")
+                    s_orders = [o for o in orders if o["action"] == "SELL"]
+                    if s_orders:
+                        for s_o in s_orders:
+                            st.write(f"- **주문 내용**: {s_o['desc']}")
+                            st.write(f"- **주문 수량**: `{s_o['qty']:,} 주`")
+                            st.write(f"- **목표 매도가**: `${s_o['price']:.2f}` (+10.0%)")
+                            st.write(f"- **예상 총 매도금액**: **`${s_o['qty'] * s_o['price']:,.2f}`**")
+                    else:
+                        st.info("현재 보유 주식이 없어 매도 주문이 없습니다.")
+
+                with col_det2:
+                    st.markdown("#### 🟢 당일 40분할 매수 주문 (LOC 종가입찰)")
+                    b_orders = [o for o in orders if o["action"] == "BUY"]
+                    if b_orders:
+                        tot_b_qty = sum(b['qty'] for b in b_orders)
+                        tot_b_amt = sum(b['qty'] * b['price'] for b in b_orders)
+                        for idx, b_o in enumerate(b_orders, 1):
+                            st.write(f"**{idx}. {b_o['desc']}**")
+                            st.write(f"  • 수량: `{b_o['qty']:,}주` | LOC단가: `${b_o['price']:.2f}` | 주문금액: `${b_o['qty'] * b_o['price']:,.2f}`")
+                        st.markdown(f"**💰 당일 매수 총 예상금액**: **`${tot_b_amt:,.2f}`** (`{tot_b_qty:,}주`)")
+                    else:
+                        if st_data.get("status") in ["STOPPED", "PAUSED"]:
+                            st.warning("현재 무한매수가 강제 중지(STOPPED) 상태입니다. 수동 시작 버튼을 눌러 재개할 수 있습니다.")
+                        elif st_data.get("current_round", 0) >= st_data.get("division_count", 40):
+                            st.warning("40회차가 모두 소진되었습니다.")
+                        else:
+                            st.info("당일 매수 주문 생성 대기 중입니다.")
+
+        st.markdown("---")
+        st.write("💡 **무한매수 수동 제어 & 회차 관리**")
         
-        df_holdings = pd.DataFrame(holdings_data)
-        st.dataframe(df_holdings, use_container_width=True, hide_index=True)
+        c_sel, c_b1, c_b2, c_b3 = st.columns([3, 2.5, 2.5, 2])
+        with c_sel:
+            selected_symbol = st.selectbox("제어할 무한매수 종목 선택", infinite_stocks)
+        with c_b1:
+            if st.button(f"▶ {selected_symbol} 수동 시작", type="primary", use_container_width=True):
+                bot.start_infinite_buying(selected_symbol)
+                st.success(f"🚀 [{selected_symbol}] 무한매수 매매 루틴을 수동으로 시작하였으며, 당일 주문 제안을 생성했습니다.")
+                st.rerun()
+        with c_b2:
+            if st.button(f"⏹ {selected_symbol} 강제 중지", use_container_width=True):
+                bot.stop_infinite_buying(selected_symbol)
+                st.warning(f"⏹ [{selected_symbol}] 무한매수가 강제 중지(STOPPED)되었습니다.")
+                st.rerun()
+        with c_b3:
+            if st.button(f"🔄 {selected_symbol} 회차 초기화", use_container_width=True):
+                bot.infinite_state_mgr.reset_round(selected_symbol)
+                st.info(f"🔄 [{selected_symbol}] 무한매수 회차가 0회차로 초기화되었습니다.")
+                st.rerun()
     else:
-        st.info("현재 계좌에 보유 중인 주식이 없습니다.")
+        st.warning("현재 무한매수법이 비활성화되어 있습니다. config.py에서 `INFINITE_BUYING_ENABLED = True`로 설정하세요.")
 
 
-# 탭 3: 매매 감시 및 신호
-with tab_targets:
-    st.subheader("🔭 매매 감시 종목 & 기술적 분석 신호")
-    
-    # 현재가 데이터가 비어있을 경우 일괄 조회
-    if not any(bot.current_prices.values()):
-        bot.fetch_target_prices()
-
-    target_data = []
-    for code in config.TARGET_STOCKS:
-        cur_p = bot.current_prices.get(code, 0.0)
-        if cur_p == 0.0:
-            p_res = bot.api.get_stock_price(code)
-            if p_res.get("success"):
-                cur_p = float(p_res["price"])
-                bot.current_prices[code] = cur_p
-
-        is_held = code in bot.holdings
-        
-        signal_str = "HOLD"
-        try:
-            daily = bot.api.get_daily_chart(code, count=25)
-            if daily and len(daily) > 5:
-                df_d = pd.DataFrame(daily)
-                holding_qty = bot.holdings.get(code, {}).get("qty", 0)
-                signal_str = bot.strategy.generate_signal(code, cur_p if cur_p > 0 else float(df_d.iloc[-1]['close']), df_d, holding_qty)
-        except Exception:
-            pass
-
-        is_overseas = KISApiClient.is_overseas_symbol(code)
-        market_str = "🇺🇸 미국해외" if is_overseas else "🇰🇷 국내주식"
-        curr_symbol = "$" if is_overseas else "₩"
-        
-        if cur_p > 0:
-            price_str = f"{curr_symbol}{cur_p:,.2f}" if is_overseas else f"{curr_symbol}{cur_p:,.0f}"
-        else:
-            price_str = "시세 수신 불가"
-
-        status_str = "🔴 보유 중" if is_held else "🟢 감시 중"
-        
-        target_data.append({
-            "시장": market_str,
-            "종목코드/티커": code,
-            "현재가": price_str,
-            "계좌 상태": status_str,
-            "전략 생성 신호": signal_str,
-            "적용 전략": config.STRATEGY_NAME
-        })
-        
-    df_targets = pd.DataFrame(target_data)
-    st.dataframe(df_targets, use_container_width=True, hide_index=True)
-
-
-# 탭 4: 실시간 로그
+# 탭 3: 실시간 로그
 with tab_logs:
     st.subheader("📜 실시간 이벤트 및 매매 실행 로그")
     
@@ -416,27 +511,25 @@ with tab_logs:
     st.text_area("시스템 로그 (최신순)", value=log_text, height=450)
 
 
-# 탭 5: 설정 변경 안내 및 조회
+# 탭 4: 무한매수 전담 설정 조회
 with tab_config:
-    st.subheader("⚙️ 현재 적용 중인 매매 파라미터 ([config.py](file:///c:/KIS_Auto_Trader/config.py))")
+    st.subheader("⚙️ 현재 적용 중인 무한매수 파라미터 ([config.py](file:///c:/KIS_Auto_Trader/config.py))")
     
     col_cfg1, col_cfg2 = st.columns(2)
     with col_cfg1:
-        st.markdown("### 📊 주문 및 전략 설정")
-        st.write(f"- **주문 실행 방식**: `{'🛡️ 반자동 (승인 후 주문)' if bot.require_approval else '⚡ 완전 자동 (즉시 주문)'}`")
-        st.write(f"- **적용 전략**: `{config.STRATEGY_NAME}`")
-        st.write(f"- **단기 이동평균(MA)**: `{config.SHORT_MA_PERIOD}`일")
-        st.write(f"- **장기 이동평균(MA)**: `{config.LONG_MA_PERIOD}`일")
-        st.write(f"- **변동성 돌파 K 계수**: `{config.K_VALUE}`")
-        st.write(f"- **감시 대상 종목**: `{', '.join(config.TARGET_STOCKS)}`")
+        st.markdown("### 🇺🇸 라오어 무한매수법 v2.0 파라미터")
+        st.write(f"- **전담 매매 전략**: `라오어 무한매수법 v2.0 (INFINITE_BUYING)`")
+        st.write(f"- **운용 대상 종목**: `{', '.join(getattr(config, 'INFINITE_STOCKS', ['TQQQ']))}`")
+        st.write(f"- **종목당 총 예산 ($)**: `${getattr(config, 'INFINITE_TOTAL_BUDGET_USD', 5000):,.0f}`")
+        st.write(f"- **총 분할 매수 횟수**: `{getattr(config, 'INFINITE_DIVISION_COUNT', 40)}` 회차")
+        st.write(f"- **전량 익절 목표 수익률**: `+{getattr(config, 'INFINITE_TARGET_ROI', 0.10)*100:.1f}%`")
 
     with col_cfg2:
-        st.markdown("### 🛡️ 리스크 관리 설정")
-        st.write(f"- **손절매(Stop Loss)**: `-{config.STOP_LOSS_RATIO * 100:.1f}%`")
-        st.write(f"- **익절매(Take Profit)**: `+{config.TAKE_PROFIT_RATIO * 100:.1f}%`")
-        st.write(f"- **트레일링 스탑**: 고점 대비 `-{config.TRAILING_STOP_RATIO * 100:.1f}%`")
-        st.write(f"- **종목당 최대 투자 비율**: 계좌의 `{config.INVEST_RATIO_PER_STOCK * 100:.0f}%`")
-        st.write(f"- **최대 보유 종목 수**: `{config.MAX_STOCKS_HOLDING}`개")
+        st.markdown("### 🛡️ 시스템 주문 및 리스크 관리")
+        st.write(f"- **주문 실행 방식**: `{'🛡️ 반자동 (승인 후 주문)' if bot.require_approval else '⚡ 완전 자동 (즉시 주문)'}`")
+        st.write(f"- **주문 구문**: `LOC (Limit On Close - 종가입찰) & 지정가 익절 매도`")
+        st.write(f"- **최대 보유 종목 수**: `{getattr(config, 'MAX_STOCKS_HOLDING', 5)}` 개")
+        st.write(f"- **API 호출 안전 딜레이**: `{getattr(config, 'API_CALL_DELAY', 0.2)}` 초")
 
 
 # -----------------------------------------------------------------------------

@@ -1,0 +1,13 @@
+{
+  "TQQQ": {
+    "symbol": "TQQQ",
+    "total_budget_usd": 5000,
+    "division_count": 40,
+    "current_round": 0,
+    "avg_price": 0.0,
+    "total_qty": 0,
+    "target_roi": 0.1,
+    "status": "IDLE",
+    "history": []
+  }
+}

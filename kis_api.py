@@ -38,6 +38,7 @@ class KISApiClient:
         self._token_file_path = "token_kis_mock.json" if self.mock else "token_kis_real.json"
         
         self._mock_balance_deposit = 10000000  # 키가 없을 때 테스트용 가상 예수금 (1천만원)
+        self._mock_usd_deposit = 5000.0       # 가상 외화(USD) 예수금 ($5,000)
         self._mock_holdings: Dict[str, Dict[str, Any]] = {}
 
         # 저장된 기존 토큰 파일 로드 시도
@@ -365,8 +366,15 @@ class KISApiClient:
                     "holdings": holdings_list
                 }
             else:
-                logger.error(f"계좌 잔고 조회 실패: {data.get('msg1')}")
-                return {"success": False, "msg": data.get("msg1", "잔고 조회 실패")}
+                msg1 = data.get("msg1", "")
+                if "만료된" in msg1 or data.get("msg_cd") == "EGW00123":
+                    logger.warning("Access Token 만료 감지: 자동 토큰 재발급 후 계좌 잔고 재조회...")
+                    self.access_token = None
+                    self.token_issued_at = 0
+                    if self.get_access_token():
+                        return self.get_account_balance()
+                logger.error(f"계좌 잔고 조회 실패: {msg1}")
+                return {"success": False, "msg": msg1}
         except Exception as e:
             logger.error(f"계좌 잔고 조회 예외 발생: {e}")
             return {"success": False, "msg": str(e)}
@@ -583,23 +591,78 @@ class KISApiClient:
         logger.error(f"[{symbol_upper}] 해외 일봉 차트 조회 실패")
         return []
 
+    def get_overseas_account_balance(self) -> Dict[str, Any]:
+        """
+        해외주식 계좌 외화(USD) 예수금 및 주문가능금액 조회 (VTTS3007R: 모의 / TTTS3007R: 실전)
+        """
+        self._ensure_token()
+        if not self.access_token or not self.cano:
+            return {
+                "success": True,
+                "usd_deposit": getattr(self, "_mock_usd_deposit", 5000.0),
+                "is_simulated": True
+            }
+
+        tr_id = "VTTS3007R" if self.mock else "TTTS3007R"
+        url = f"{self.url_base}/uapi/overseas-stock/v1/trading/inquire-psamount"
+        headers = self._get_headers(tr_id)
+        params = {
+            "CANO": self.cano,
+            "ACNT_PRDT_CD": self.acnt_prdt_cd,
+            "OVRS_EXCG_CD": "NAS",
+            "ITEM_CD": "TQQQ",
+            "OVRS_ORD_UNPR": "0"
+        }
+
+        try:
+            self._rate_limit()
+            res = requests.get(url, headers=headers, params=params, timeout=10)
+            data = res.json()
+
+            if res.status_code == 200 and data.get("rt_cd") == "0":
+                output = data.get("output", {})
+                usd_dep = float(output.get("ord_psbl_frcr_amt", output.get("ovrs_ord_psbl_amt", 0.0)))
+                ex_rate = float(output.get("exrt", 1428.20))
+                return {"success": True, "usd_deposit": usd_dep, "exchange_rate": ex_rate, "is_simulated": False, "data": output}
+            else:
+                msg1 = data.get("msg1", "")
+                if "만료된" in msg1 or data.get("msg_cd") == "EGW00123":
+                    logger.warning("Token 만료 감시: 새로운 Access Token 재발급 시도...")
+                    self.access_token = None
+                    self.token_issued_at = 0
+                    if self.get_access_token():
+                        return self.get_overseas_account_balance()
+                return {"success": True, "usd_deposit": getattr(self, "_mock_usd_deposit", 5000.0), "exchange_rate": 1428.20, "is_simulated": True}
+        except Exception as e:
+            logger.error(f"해외 계좌 잔고 조회 실패 예외: {e}")
+            return {"success": True, "usd_deposit": getattr(self, "_mock_usd_deposit", 5000.0), "is_simulated": True}
+
     def order_overseas_cash(
         self,
         symbol: str,
         qty: int,
         price: float = 0,
         buy: bool = True,
-        exchange: str = "NAS"
+        exchange: str = "NAS",
+        ord_type: str = "00"
     ) -> Dict[str, Any]:
         """
         해외주식 현금 매수/매도 주문 (TTBL1002U / TTBL1006U)
+        ord_type: "00"(지정가), "34"(LOC - Limit On Close), "33"(LOO - Limit On Open), "01"(시장가)
         """
         self._ensure_token()
         symbol_upper = symbol.upper()
         if not self.access_token:
             action_str = "매수" if buy else "매도"
-            logger.info(f"[시뮬레이션] 해외주식 {symbol_upper} {action_str} {qty}주 완료")
-            return {"success": True, "msg": f"[시뮬레이션] 해외 {symbol_upper} {action_str} 성공"}
+            ord_name = "LOC " if ord_type == "34" else ""
+            total_cost = qty * price if price > 0 else 0.0
+            if buy and total_cost > 0:
+                self._mock_usd_deposit = max(0.0, self._mock_usd_deposit - total_cost)
+            elif not buy and total_cost > 0:
+                self._mock_usd_deposit += total_cost
+
+            logger.info(f"[시뮬레이션] 해외주식 {symbol_upper} {ord_name}{action_str} {qty}주 완료 (가격: ${price:.2f}, 외화잔고: ${self._mock_usd_deposit:.2f})")
+            return {"success": True, "msg": f"[시뮬레이션] 해외 {symbol_upper} {ord_name}{action_str} 성공"}
 
         url = f"{self.url_base}/uapi/overseas-stock/v1/trading/order"
         tr_id = ("TTBL1002U" if buy else "TTBL1006U") if not self.mock else ("VVTBL1002U" if buy else "VVTBL1006U")
@@ -612,7 +675,7 @@ class KISApiClient:
             "PDNO": symbol_upper,
             "ORD_QTY": str(qty),
             "OVRS_ORD_UNPR": f"{price:.2f}" if price > 0 else "0",
-            "ORD_DVSN": "00" if price > 0 else "01",
+            "ORD_DVSN": ord_type if price > 0 else "01",
             "ORD_SVR_DVSN": "0"
         }
 

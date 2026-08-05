@@ -136,12 +136,119 @@ class VolatilityBreakoutStrategy(BaseStrategy):
         return Signal.HOLD
 
 
+class InfiniteBuyingStrategy(BaseStrategy):
+    """
+    라오어 무한매수법 v2.0 매매 전략 클래스
+    - 매일 미국 장 개장 전/프리마켓에 당일 매수/매도 주문 제안 목록을 생성합니다.
+    """
+
+    def __init__(self, division_count: int = 40, target_roi: float = 0.10):
+        super().__init__("InfiniteBuying")
+        self.division_count = division_count
+        self.target_roi = target_roi
+
+    def generate_signal(
+        self,
+        symbol: str,
+        current_price: float,
+        daily_candles: pd.DataFrame,
+        current_holding_qty: int = 0
+    ) -> str:
+        if current_holding_qty == 0:
+            return Signal.BUY
+        return Signal.HOLD
+
+    def generate_daily_orders(
+        self,
+        symbol: str,
+        current_price: float,
+        state: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """
+        무한매수법 당일 매수/매도 상세 주문 제안 리스트 생성
+        :param symbol: 종목 코드 (예: TQQQ)
+        :param current_price: 현재가 ($)
+        :param state: InfiniteStateManager에서 가져온 종목 상태 dict
+        :return: 생성할 주문 리스트 [{action: 'SELL'/'BUY', qty: int, price: float, ord_type: '00'/'34', desc: str}]
+        """
+        orders = []
+        if current_price <= 0:
+            self.logger.warning(f"[{symbol}] 현재가가 유효하지 않아 주문 생성을 보류합니다: ${current_price}")
+            return orders
+
+        curr_round = state.get("current_round", 0)
+        division = state.get("division_count", self.division_count)
+        total_budget = state.get("total_budget_usd", 10000.0)
+        avg_price = state.get("avg_price", 0.0)
+        total_qty = state.get("total_qty", 0)
+        target_roi = state.get("target_roi", self.target_roi)
+
+        # 1. 익절 매도 주문 제안 (보유 수량이 있는 경우)
+        if total_qty > 0 and avg_price > 0:
+            sell_target_price = round(avg_price * (1.0 + target_roi), 2)
+            orders.append({
+                "action": "SELL",
+                "symbol": symbol,
+                "qty": total_qty,
+                "price": sell_target_price,
+                "ord_type": "00",  # 지정가 매도
+                "desc": f"전량 익절 매도 (목표가: ${sell_target_price:.2f}, +{target_roi*100:.1f}%)"
+            })
+
+        status = state.get("status", "IDLE")
+        if status in ["STOPPED", "PAUSED"]:
+            self.logger.info(f"[{symbol}] 무한매수 강제 중지 상태({status})입니다. 매수 주문 생성을 생략합니다.")
+            return orders
+
+        # 2. 매수 주문 제안 (회차 미소진 시)
+        if curr_round < division:
+            one_round_budget = total_budget / division
+            half_budget = one_round_budget / 2.0
+
+            base_price = avg_price if avg_price > 0 else current_price
+
+            # 매수 수량 산정 (최소 1주 이상)
+            loc1_price = round(base_price, 2)
+            qty1 = max(1, int(half_budget / loc1_price))
+
+            loc2_price = round(base_price * 1.05, 2)
+            qty2 = max(1, int(half_budget / loc2_price))
+
+            orders.append({
+                "action": "BUY",
+                "symbol": symbol,
+                "qty": qty1,
+                "price": loc1_price,
+                "ord_type": "34",  # LOC 매수
+                "round_inc": 0.5,
+                "desc": f"0.5회차 평단가 LOC 매수 (${loc1_price:.2f}, {qty1}주)"
+            })
+
+            orders.append({
+                "action": "BUY",
+                "symbol": symbol,
+                "qty": qty2,
+                "price": loc2_price,
+                "ord_type": "34",  # LOC 매수
+                "round_inc": 0.5,
+                "desc": f"0.5회차 상향 LOC 매수 (${loc2_price:.2f}, {qty2}주)"
+            })
+        else:
+            self.logger.warning(f"[{symbol}] 무한매수 소진 ({curr_round}/{division}회차) - 추가 매수를 중단합니다.")
+
+        return orders
+
+
 class StrategyFactory:
     """전략 생성 팩토리 클래스"""
 
     @staticmethod
     def create_strategy(strategy_name: str, **kwargs) -> BaseStrategy:
-        if strategy_name == "MA_CROSS":
+        division = kwargs.get("division_count", 40)
+        roi = kwargs.get("target_roi", 0.10)
+        if strategy_name == "INFINITE_BUYING":
+            return InfiniteBuyingStrategy(division_count=division, target_roi=roi)
+        elif strategy_name == "MA_CROSS":
             short_p = kwargs.get("short_period", 5)
             long_p = kwargs.get("long_period", 20)
             return MACrossStrategy(short_period=short_p, long_period=long_p)
@@ -149,4 +256,5 @@ class StrategyFactory:
             k_val = kwargs.get("k", 0.5)
             return VolatilityBreakoutStrategy(k=k_val)
         else:
-            raise ValueError(f"지원하지 않는 전략 이름입니다: {strategy_name}")
+            return InfiniteBuyingStrategy(division_count=division, target_roi=roi)
+

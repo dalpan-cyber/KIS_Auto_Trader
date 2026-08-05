@@ -192,6 +192,16 @@ class TradingDashboard(QMainWindow):
         targets_layout.addWidget(self.tbl_targets)
         splitter.addWidget(targets_group)
 
+        # 우측2: 무한매수 현황
+        infinite_group = QGroupBox("🇺🇸 라오어 무한매수 현황")
+        infinite_layout = QVBoxLayout(infinite_group)
+        infinite_stocks = getattr(config, "INFINITE_STOCKS", ["TQQQ", "SOXL"])
+        self.tbl_infinite = QTableWidget(len(infinite_stocks), 8)
+        self.tbl_infinite.setHorizontalHeaderLabels(["종목코드", "진행회차", "총예산($)", "평단가($)", "보유수량", "매도주문(수량/목표가)", "매수주문(수량/금액)", "상태"])
+        self.tbl_infinite.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        infinite_layout.addWidget(self.tbl_infinite)
+        splitter.addWidget(infinite_group)
+
         main_layout.addWidget(splitter, stretch=2)
 
         # ----------------------------------------------------
@@ -335,6 +345,44 @@ class TradingDashboard(QMainWindow):
 
             status = "보유 중" if code in self.bot.holdings else "감시 중"
             self.tbl_targets.setItem(row, 2, QTableWidgetItem(status))
+
+        # 3. 무한매수 현황 테이블 갱신
+        if hasattr(self, "tbl_infinite"):
+            infinite_stocks = getattr(config, "INFINITE_STOCKS", ["TQQQ", "SOXL"])
+            self.tbl_infinite.setRowCount(len(infinite_stocks))
+            for row, sym in enumerate(infinite_stocks):
+                st = self.bot.infinite_state_mgr.get_symbol_state(sym)
+                curr_round = st.get("current_round", 0)
+                div_count = st.get("division_count", 40)
+                budget = st.get("total_budget_usd", 10000.0)
+                avg_p = st.get("avg_price", 0.0)
+                qty = st.get("total_qty", 0)
+                roi = st.get("target_roi", 0.10)
+                status = st.get("status", "IDLE")
+
+                cur_p = self.bot.current_prices.get(sym, 0.0)
+                calc_p = cur_p if cur_p > 0 else (avg_p if avg_p > 0 else 50.0)
+                sample_orders = self.bot.infinite_strategy.generate_daily_orders(sym, calc_p, st)
+
+                sell_orders = [o for o in sample_orders if o['action'] == 'SELL']
+                buy_orders = [o for o in sample_orders if o['action'] == 'BUY']
+
+                sell_str = f"{sell_orders[0]['qty']:,}주 @ ${sell_orders[0]['price']:.2f}" if sell_orders else "-"
+                if buy_orders:
+                    b_qty_sum = sum(b['qty'] for b in buy_orders)
+                    b_amt_sum = sum(b['qty'] * b['price'] for b in buy_orders)
+                    buy_str = f"{b_qty_sum:,}주 (${b_amt_sum:,.2f})"
+                else:
+                    buy_str = "매수중지" if status in ["STOPPED", "PAUSED"] else "-"
+
+                self.tbl_infinite.setItem(row, 0, QTableWidgetItem(sym))
+                self.tbl_infinite.setItem(row, 1, QTableWidgetItem(f"{curr_round}/{div_count} 회차"))
+                self.tbl_infinite.setItem(row, 2, QTableWidgetItem(f"${budget:,.0f}"))
+                self.tbl_infinite.setItem(row, 3, QTableWidgetItem(f"${avg_p:.2f}" if avg_p > 0 else "-"))
+                self.tbl_infinite.setItem(row, 4, QTableWidgetItem(f"{qty}주"))
+                self.tbl_infinite.setItem(row, 5, QTableWidgetItem(sell_str))
+                self.tbl_infinite.setItem(row, 6, QTableWidgetItem(buy_str))
+                self.tbl_infinite.setItem(row, 7, QTableWidgetItem(status))
 
     def _append_log(self, text: str):
         """로그 텍스트 추가"""

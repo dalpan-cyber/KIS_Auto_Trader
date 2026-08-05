@@ -9,8 +9,9 @@ from typing import Dict, List, Any, Optional, Tuple
 
 import config
 from kis_api import KISApiClient
-from strategy import StrategyFactory, Signal
+from strategy import StrategyFactory, Signal, InfiniteBuyingStrategy
 from risk_manager import RiskManager
+from infinite_state_manager import InfiniteStateManager
 
 
 class TraderBot:
@@ -22,20 +23,28 @@ class TraderBot:
         self.api = api or KISApiClient()
         self.logger = logging.getLogger("TraderBot")
 
+        # 무한매수 상태 관리자 로드
+        self.infinite_state_mgr = InfiniteStateManager()
+        self.infinite_enabled = getattr(config, "INFINITE_BUYING_ENABLED", False)
+        self.infinite_stocks = getattr(config, "INFINITE_STOCKS", ["TQQQ", "SOXL"])
+        self.infinite_strategy = InfiniteBuyingStrategy(
+            division_count=getattr(config, "INFINITE_DIVISION_COUNT", 40),
+            target_roi=getattr(config, "INFINITE_TARGET_ROI", 0.10)
+        )
+
         # 설정 및 객체 로드
-        self.target_symbols = config.TARGET_STOCKS
+        self.target_symbols = getattr(config, "TARGET_STOCKS", self.infinite_stocks)
         self.strategy = StrategyFactory.create_strategy(
-            config.STRATEGY_NAME,
-            short_period=config.SHORT_MA_PERIOD,
-            long_period=config.LONG_MA_PERIOD,
-            k=config.K_VALUE
+            getattr(config, "STRATEGY_NAME", "INFINITE_BUYING"),
+            division_count=getattr(config, "INFINITE_DIVISION_COUNT", 40),
+            target_roi=getattr(config, "INFINITE_TARGET_ROI", 0.10)
         )
         self.risk_mgr = RiskManager(
-            stop_loss_ratio=config.STOP_LOSS_RATIO,
-            take_profit_ratio=config.TAKE_PROFIT_RATIO,
-            trailing_stop_ratio=config.TRAILING_STOP_RATIO,
-            invest_ratio_per_stock=config.INVEST_RATIO_PER_STOCK,
-            max_stocks_holding=config.MAX_STOCKS_HOLDING
+            stop_loss_ratio=getattr(config, "STOP_LOSS_RATIO", 0.03),
+            take_profit_ratio=getattr(config, "TAKE_PROFIT_RATIO", 0.07),
+            trailing_stop_ratio=getattr(config, "TRAILING_STOP_RATIO", 0.02),
+            invest_ratio_per_stock=getattr(config, "INVEST_RATIO_PER_STOCK", 0.2),
+            max_stocks_holding=getattr(config, "MAX_STOCKS_HOLDING", 5)
         )
 
         # 사용자 승인 모드 여부 (True: 제안 후 사용자 승인 주문, False: 즉시 자동 주문)
@@ -44,6 +53,8 @@ class TraderBot:
         # 계좌 및 상태 데이터
         self.total_eval_amount = 0.0
         self.available_cash = 0.0
+        self.available_usd_cash = 5000.0  # 외화(USD) 예수금
+        self.exchange_rate = 1428.20       # 미국 원/달러 환율
         self.holdings: Dict[str, Dict[str, Any]] = {}  # {symbol: {qty, avg_price, current_price, pnl_rate}}
         self.current_prices: Dict[str, float] = {}
 
@@ -86,7 +97,7 @@ class TraderBot:
                 self.logger.error(f"[{code}] 현재가 조회 실패: {e}")
 
     def fetch_account_balance(self):
-        """계좌 잔고 및 보유 종목 수신"""
+        """계좌 잔고, 국내 예수금 및 해외 외화(USD) 예수금 수신"""
         res = self.api.get_account_balance()
         if res.get("success"):
             self.available_cash = float(res.get("deposit", 0))
@@ -104,9 +115,27 @@ class TraderBot:
                     "pnl_rate": item.get("pnl_rate", 0.0)
                 }
             self.holdings = new_holdings
-            self.logger.info(f"[계좌잔고] 예수금: {self.available_cash:,.0f}원 | 총 자산: {self.total_eval_amount:,.0f}원 | 보유종목: {len(self.holdings)}개")
+            
+            # 해외 외화(USD) 예수금 및 환율 수신
+            overseas_res = self.api.get_overseas_account_balance()
+            if overseas_res.get("success"):
+                self.available_usd_cash = float(overseas_res.get("usd_deposit", 5000.0))
+                self.exchange_rate = float(overseas_res.get("exchange_rate", 1428.20))
+                self.is_usd_simulated = overseas_res.get("is_simulated", True)
+
+            sim_str = " (시뮬레이션)" if getattr(self, "is_usd_simulated", True) else " (실제 조회)"
+            self.logger.info(f"[계좌잔고] 원화예수금: ₩{self.available_cash:,.0f} | 외화예수금: ${self.available_usd_cash:,.2f}{sim_str} | 총자산: ₩{self.total_eval_amount:,.0f}")
         else:
             self.logger.error(f"계좌 잔고 조회 실패: {res.get('msg')}")
+
+    def start_infinite_buying(self, symbol: str):
+        """특정 종목의 무한매수 수동 시작"""
+        self.infinite_state_mgr.start_buying(symbol)
+        self.run_infinite_buying_cycle()
+
+    def stop_infinite_buying(self, symbol: str):
+        """특정 종목의 무한매수 강제 중지"""
+        self.infinite_state_mgr.stop_buying(symbol)
 
     def create_proposal(
         self,
@@ -152,24 +181,43 @@ class TraderBot:
         symbol = prop["symbol"]
         action = prop["action"]
         qty = prop["qty"]
+        price = prop.get("price", 0.0)
+        ord_type = prop.get("ord_type", "00")
         is_buy = (action == "BUY")
 
         self.logger.info(f"✅ [{symbol}] 사용자가 매매 제안을 승인하였습니다! {prop['action_kr']} 주문을 전송합니다 ({qty}주)")
-        order_res = self.api.order_cash(symbol, qty, price=0, buy=is_buy)
-        
-        if order_res.get("success"):
-            if not is_buy:
-                self.risk_mgr.reset_highest_price(symbol)
-            self.risk_mgr.reset_error()
-            del self.pending_proposals[proposal_id]
-            self.logger.info(f"🎉 [{symbol}] {prop['action_kr']} 주문 체결 완료!")
-            # 주문 실행 후 잔고 즉시 갱신
-            self.fetch_account_balance()
-            return True
+
+        if self.api.is_overseas_symbol(symbol):
+            order_res = self.api.order_overseas_cash(symbol, qty, price=price, buy=is_buy, ord_type=ord_type)
+            if order_res.get("success"):
+                round_inc = prop.get("round_inc", 1.0)
+                if is_buy:
+                    self.infinite_state_mgr.record_buy_execution(symbol, qty=qty, price=price, round_inc=round_inc)
+                else:
+                    self.infinite_state_mgr.record_sell_execution(symbol, qty=qty, price=price)
+                self.risk_mgr.reset_error()
+                del self.pending_proposals[proposal_id]
+                self.logger.info(f"🎉 [{symbol}] 해외주식 무한매수 {prop['action_kr']} 주문 성공!")
+                self.fetch_account_balance()
+                return True
+            else:
+                self.logger.error(f"❌ [{symbol}] 해외주식 주문 실행 실패: {order_res.get('msg')}")
+                self.risk_mgr.record_error()
+                return False
         else:
-            self.logger.error(f"❌ [{symbol}] {prop['action_kr']} 주문 실행 실패: {order_res.get('msg')}")
-            self.risk_mgr.record_error()
-            return False
+            order_res = self.api.order_cash(symbol, qty, price=0, buy=is_buy)
+            if order_res.get("success"):
+                if not is_buy:
+                    self.risk_mgr.reset_highest_price(symbol)
+                self.risk_mgr.reset_error()
+                del self.pending_proposals[proposal_id]
+                self.logger.info(f"🎉 [{symbol}] {prop['action_kr']} 주문 체결 완료!")
+                self.fetch_account_balance()
+                return True
+            else:
+                self.logger.error(f"❌ [{symbol}] {prop['action_kr']} 주문 실행 실패: {order_res.get('msg')}")
+                self.risk_mgr.record_error()
+                return False
 
     def reject_proposal(self, proposal_id: str):
         """사용자가 매매 제안을 거절했을 때 제거"""
@@ -177,93 +225,81 @@ class TraderBot:
             prop = self.pending_proposals.pop(proposal_id)
             self.logger.info(f"❌ [{prop['symbol']}] {prop['action_kr']} 제안이 사용자에 의해 거절되었습니다.")
 
+    def run_infinite_buying_cycle(self):
+        """
+        라오어 무한매수법 전용 트레이딩 사이클
+        - 미국 주식 대상 종목별 상태 조회 및 당일 LOC/지정가 주문 제안 생성/전송
+        """
+        if not self.infinite_enabled:
+            return
+
+        self.logger.info("🇺🇸 [무한매수법] 당일 주문 생성 및 감시 루틴 실행")
+        for symbol in self.infinite_stocks:
+            try:
+                price_res = self.api.get_stock_price(symbol)
+                if not price_res.get("success"):
+                    self.logger.warning(f"[{symbol}] 현재가 시세 조회 실패")
+                    continue
+
+                cur_price = float(price_res["price"])
+                state = self.infinite_state_mgr.get_symbol_state(
+                    symbol,
+                    default_budget_usd=getattr(config, "INFINITE_TOTAL_BUDGET_USD", 10000.0),
+                    division_count=getattr(config, "INFINITE_DIVISION_COUNT", 40),
+                    target_roi=getattr(config, "INFINITE_TARGET_ROI", 0.10)
+                )
+
+                orders = self.infinite_strategy.generate_daily_orders(symbol, cur_price, state)
+                for order in orders:
+                    action = order["action"]
+                    qty = order["qty"]
+                    price = order["price"]
+                    ord_type = order["ord_type"]
+                    desc = order["desc"]
+                    round_inc = order.get("round_inc", 1.0)
+
+                    proposal_id = f"INFINITE_{symbol}_{action}_{ord_type}_{price:.2f}"
+                    if self.require_approval:
+                        if proposal_id not in self.pending_proposals:
+                            self.pending_proposals[proposal_id] = {
+                                "id": proposal_id,
+                                "symbol": symbol,
+                                "stock_name": f"{symbol} (무한매수)",
+                                "action": action,
+                                "action_kr": "LOC 매수" if ord_type == "34" else ("매수" if action == "BUY" else "익절 매도"),
+                                "qty": qty,
+                                "price": price,
+                                "total_price": price * qty,
+                                "ord_type": ord_type,
+                                "round_inc": round_inc,
+                                "reason": desc,
+                                "timestamp": time.strftime("%H:%M:%S")
+                            }
+                            self.logger.info(f"💡 [무한매수 제안] {symbol} {desc} -> 승인 대기 중")
+                    else:
+                        is_buy = (action == "BUY")
+                        self.logger.info(f"🚀 [무한매수 자동실행] {symbol} {desc}")
+                        order_res = self.api.order_overseas_cash(symbol, qty, price=price, buy=is_buy, ord_type=ord_type)
+                        if order_res.get("success"):
+                            if is_buy:
+                                self.infinite_state_mgr.record_buy_execution(symbol, qty, price, round_inc=round_inc)
+                            else:
+                                self.infinite_state_mgr.record_sell_execution(symbol, qty, price)
+            except Exception as e:
+                self.logger.error(f"[{symbol}] 무한매수 루틴 실행 예외: {e}")
+
     def run_trading_cycle(self):
         """
-        단일 트레이딩 사이클 실행
-        - 보유 종목 잔고 및 현재가 모니터링
-        - 리스크 관리 / 매매 전략 감시
-        - require_approval 설정에 따라 (승인 대기 제안 생성 vs 즉시 주문)
+        라오어 무한매수법 전담 트레이딩 사이클 실행
+        - 계좌 잔고/외화 예수금 갱신 및 미국 주식 무한매수 루틴 실행
         """
         if self.risk_mgr.is_circuit_broken():
             self.logger.error("서킷브레이커 발동 상태입니다. 매매 진행 중단.")
             return
 
-        # 1. 잔고 및 보유 정보 갱신
+        # 계좌 잔고 및 외화 예수금 갱신
         self.fetch_account_balance()
 
-        # 2. 대상 종목별 시세 조회 및 신호 감시
-        for symbol in self.target_symbols:
-            try:
-                # 현재가 조회
-                price_res = self.api.get_stock_price(symbol)
-                if not price_res.get("success"):
-                    continue
-
-                cur_price = float(price_res["price"])
-                self.current_prices[symbol] = cur_price
-                self.logger.debug(f"[{symbol}] 현재가: {cur_price:,.0f}원")
-
-                # A. 보유 종목 리스크 검사 (손절/익절/트레일링스탑)
-                if symbol in self.holdings:
-                    holding_info = self.holdings[symbol]
-                    qty = holding_info["qty"]
-                    avg_price = holding_info["avg_price"]
-
-                    should_sell, reason = self.risk_mgr.evaluate_holding_risk(symbol, cur_price, avg_price)
-                    if should_sell and qty > 0:
-                        if self.require_approval:
-                            self.create_proposal(symbol, "SELL", qty, cur_price, reason)
-                        else:
-                            self.logger.info(f"🚨 [{symbol}] 리스크 관리 자동 매도 실행! 사유: {reason}")
-                            order_res = self.api.order_cash(symbol, qty, price=0, buy=False)
-                            if order_res.get("success"):
-                                self.risk_mgr.reset_highest_price(symbol)
-                                self.risk_mgr.reset_error()
-                            else:
-                                self.risk_mgr.record_error()
-                        continue  # 리스크 매도/제안 처리한 종목은 이번 루프 신호검사 건너뜀
-
-                # B. 일봉 데이터 조회 및 전략 신호 검사
-                daily_list = self.api.get_daily_chart(symbol, period="D", count=30)
-                if not daily_list:
-                    continue
-
-                df_daily = pd.DataFrame(daily_list)
-                holding_qty = self.holdings.get(symbol, {}).get("qty", 0)
-
-                signal = self.strategy.generate_signal(symbol, cur_price, df_daily, holding_qty)
-
-                # C. 매수 신호 처리
-                if signal == Signal.BUY:
-                    qty_to_buy = self.risk_mgr.calculate_buy_quantity(
-                        symbol, cur_price, self.total_eval_amount, self.available_cash, len(self.holdings)
-                    )
-                    if qty_to_buy > 0:
-                        reason_str = f"{self.strategy.name} 전략 매수 신호(골든크로스/돌파)"
-                        if self.require_approval:
-                            self.create_proposal(symbol, "BUY", qty_to_buy, cur_price, reason_str)
-                        else:
-                            self.logger.info(f"🛒 [{symbol}] 매수 신호 포착! {qty_to_buy}주 시장가 매수 주문 전송")
-                            order_res = self.api.order_cash(symbol, qty_to_buy, price=0, buy=True)
-                            if order_res.get("success"):
-                                self.risk_mgr.reset_error()
-                            else:
-                                self.risk_mgr.record_error()
-
-                # D. 전략 매도 신호 처리
-                elif signal == Signal.SELL and holding_qty > 0:
-                    reason_str = f"{self.strategy.name} 전략 매도 신호(데드크로스)"
-                    if self.require_approval:
-                        self.create_proposal(symbol, "SELL", holding_qty, cur_price, reason_str)
-                    else:
-                        self.logger.info(f"💰 [{symbol}] 전략 매도 신호 포착! {holding_qty}주 시장가 매도 주문 전송")
-                        order_res = self.api.order_cash(symbol, holding_qty, price=0, buy=False)
-                        if order_res.get("success"):
-                            self.risk_mgr.reset_highest_price(symbol)
-                            self.risk_mgr.reset_error()
-                        else:
-                            self.risk_mgr.record_error()
-
-            except Exception as e:
-                self.logger.error(f"[{symbol}] 매매 루틴 실행 중 예외 발생: {e}", exc_info=True)
-                self.risk_mgr.record_error()
+        # 라오어 무한매수법 전담 감시 및 주문 제안 생성
+        if self.infinite_enabled:
+            self.run_infinite_buying_cycle()
