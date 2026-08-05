@@ -179,18 +179,18 @@ with st.sidebar:
     # 자동 감시 시작 / 정지 버튼
     col_btn1, col_btn2 = st.columns(2)
     with col_btn1:
-        if st.button("▶ 감시 시작", use_container_width=True, disabled=bot.is_running, type="primary"):
+        if st.button("▶ 감시 시작", width="stretch", disabled=bot.is_running, type="primary"):
             bot.is_running = True
             logging.info(f"===== 대시보드: 감시 루프 시작 (모드: {'반자동 승인' if bot.require_approval else '완전자동'}) =====")
             st.rerun()
             
     with col_btn2:
-        if st.button("⏹ 감시 정지", use_container_width=True, disabled=not bot.is_running):
+        if st.button("⏹ 감시 정지", width="stretch", disabled=not bot.is_running):
             bot.is_running = False
             logging.info("===== 대시보드: 감시 루프 정지 =====")
             st.rerun()
 
-    if st.button("🔄 잔고/시세 즉시 갱신", use_container_width=True):
+    if st.button("🔄 잔고/시세 즉시 갱신", width="stretch"):
         bot.fetch_account_balance()
         bot.fetch_target_prices()
         st.success("계좌 잔고 및 종목 시세가 갱신되었습니다.")
@@ -307,7 +307,7 @@ if pending_count > 0:
             
             btn_col1, btn_col2, btn_spacer = st.columns([3, 3, 6])
             with btn_col1:
-                if st.button(f"✅ 승인 및 {prop['action_kr']} 주문 제출", key=f"approve_{prop_id}", type="primary", use_container_width=True):
+                if st.button(f"✅ 승인 및 {prop['action_kr']} 주문 제출", key=f"approve_{prop_id}", type="primary", width="stretch"):
                     success = bot.approve_proposal(prop_id)
                     if success:
                         st.success(f"🎉 {prop['stock_name']} {prop['action_kr']} 주문이 성공적으로 제출되었습니다!")
@@ -316,7 +316,7 @@ if pending_count > 0:
                     st.rerun()
                     
             with btn_col2:
-                if st.button(f"❌ {prop['action_kr']} 제안 거절", key=f"reject_{prop_id}", use_container_width=True):
+                if st.button(f"❌ {prop['action_kr']} 제안 거절", key=f"reject_{prop_id}", width="stretch"):
                     bot.reject_proposal(prop_id)
                     st.info(f"{prop['stock_name']} {prop['action_kr']} 제안을 거절하였습니다.")
                     st.rerun()
@@ -352,7 +352,7 @@ with tab_prop:
                 "제안 사유": p["reason"],
                 "제안 시간": p["timestamp"]
             })
-        st.dataframe(pd.DataFrame(prop_table_data), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(prop_table_data), width="stretch", hide_index=True)
     else:
         st.info("현재 대기 중인 매매 제안이 없습니다. 감시를 시작하면 매수/매도 조건 충족 시 이곳에 제안이 생성됩니다.")
 
@@ -427,7 +427,7 @@ with tab_infinite:
                 "현재 상태": status_display
             })
 
-        st.dataframe(pd.DataFrame(inf_data), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(inf_data), width="stretch", hide_index=True)
 
         st.markdown("---")
         st.subheader("📋 종목별 당일 매수/매도 주문 상세 수량 및 금액")
@@ -479,17 +479,17 @@ with tab_infinite:
         with c_sel:
             selected_symbol = st.selectbox("제어할 무한매수 종목 선택", infinite_stocks)
         with c_b1:
-            if st.button(f"▶ {selected_symbol} 수동 시작", type="primary", use_container_width=True):
+            if st.button(f"▶ {selected_symbol} 수동 시작", type="primary", width="stretch"):
                 bot.start_infinite_buying(selected_symbol)
                 st.success(f"🚀 [{selected_symbol}] 무한매수 매매 루틴을 수동으로 시작하였으며, 당일 주문 제안을 생성했습니다.")
                 st.rerun()
         with c_b2:
-            if st.button(f"⏹ {selected_symbol} 강제 중지", use_container_width=True):
+            if st.button(f"⏹ {selected_symbol} 강제 중지", width="stretch"):
                 bot.stop_infinite_buying(selected_symbol)
                 st.warning(f"⏹ [{selected_symbol}] 무한매수가 강제 중지(STOPPED)되었습니다.")
                 st.rerun()
         with c_b3:
-            if st.button(f"🔄 {selected_symbol} 회차 초기화", use_container_width=True):
+            if st.button(f"🔄 {selected_symbol} 회차 초기화", width="stretch"):
                 bot.infinite_state_mgr.reset_round(selected_symbol)
                 st.info(f"🔄 [{selected_symbol}] 무한매수 회차가 0회차로 초기화되었습니다.")
                 st.rerun()
@@ -503,7 +503,7 @@ with tab_logs:
     
     col_log1, col_log2 = st.columns([8, 2])
     with col_log2:
-        if st.button("🗑️ 로그 지우기", use_container_width=True):
+        if st.button("🗑️ 로그 지우기", width="stretch"):
             st.session_state.logs = []
             st.rerun()
 

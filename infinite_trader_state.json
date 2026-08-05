@@ -7,7 +7,7 @@
     "avg_price": 0.0,
     "total_qty": 0,
     "target_roi": 0.1,
-    "status": "IDLE",
+    "status": "BUYING",
     "history": []
   }
 }

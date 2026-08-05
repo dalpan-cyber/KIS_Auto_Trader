@@ -142,9 +142,9 @@ class KISApiClient:
         if not self.is_token_valid():
             self.get_access_token()
 
-    def _get_headers(self, tr_id: str) -> Dict[str, str]:
+    def _get_headers(self, tr_id: str, hashkey: Optional[str] = None) -> Dict[str, str]:
         """기본 API 요청 헤더 생성"""
-        return {
+        headers = {
             "content-type": "application/json; charset=utf-8",
             "authorization": f"Bearer {self.access_token}",
             "appkey": self.app_key,
@@ -152,6 +152,31 @@ class KISApiClient:
             "tr_id": tr_id,
             "custtype": "P"
         }
+        if hashkey:
+            headers["hashkey"] = hashkey
+        return headers
+
+    def get_hashkey(self, body: Dict[str, Any]) -> Optional[str]:
+        """
+        POST 주문 시 요청 바디(Body) 무결성 검증용 Hashkey 발급 (/uapi/hashkey)
+        """
+        url = f"{self.url_base}/uapi/hashkey"
+        headers = {
+            "content-type": "application/json; charset=utf-8",
+            "appkey": self.app_key,
+            "appsecret": self.app_secret
+        }
+        try:
+            res = requests.post(url, headers=headers, data=json.dumps(body), timeout=10)
+            if res.status_code == 200:
+                data = res.json()
+                return data.get("HASH")
+            else:
+                logger.warning(f"Hashkey 발급 실패: status={res.status_code}, response={res.text}")
+                return None
+        except Exception as e:
+            logger.error(f"Hashkey 발급 예외 발생: {e}")
+            return None
 
     @staticmethod
     def is_overseas_symbol(symbol: str) -> bool:
@@ -435,7 +460,6 @@ class KISApiClient:
 
         tr_id = ("VTTC0802U" if self.mock else "TTTC0802U") if buy else ("VTTC0801U" if self.mock else "TTTC0801U")
         url = f"{self.url_base}/uapi/domestic-stock/v1/trading/order-cash"
-        headers = self._get_headers(tr_id)
         body = {
             "CANO": self.cano,
             "ACNT_PRDT_CD": self.acnt_prdt_cd,
@@ -444,10 +468,12 @@ class KISApiClient:
             "ORD_QTY": str(qty),
             "ORD_UNPR": str(int(price))
         }
+        hashkey = self.get_hashkey(body)
+        headers = self._get_headers(tr_id, hashkey=hashkey)
 
         try:
             self._rate_limit()
-            res = requests.post(url, headers=headers, json=body, timeout=10)
+            res = requests.post(url, headers=headers, data=json.dumps(body), timeout=10)
             data = res.json()
 
             if res.status_code == 200 and data.get("rt_cd") == "0":
@@ -664,24 +690,36 @@ class KISApiClient:
             logger.info(f"[시뮬레이션] 해외주식 {symbol_upper} {ord_name}{action_str} {qty}주 완료 (가격: ${price:.2f}, 외화잔고: ${self._mock_usd_deposit:.2f})")
             return {"success": True, "msg": f"[시뮬레이션] 해외 {symbol_upper} {ord_name}{action_str} 성공"}
 
+        # 시세 조회 코드를 해외주식 주문 전용 거래소 코드로 자동 변환 (NAS->NASD, NYS->NYSE, AMS->AMEX)
+        exchange_map = {
+            "NAS": "NASD",
+            "NYS": "NYSE",
+            "AMS": "AMEX",
+            "NASD": "NASD",
+            "NYSE": "NYSE",
+            "AMEX": "AMEX"
+        }
+        ovrs_excg_cd = exchange_map.get(exchange.upper(), "NASD")
+
         url = f"{self.url_base}/uapi/overseas-stock/v1/trading/order"
-        tr_id = ("TTBL1002U" if buy else "TTBL1006U") if not self.mock else ("VVTBL1002U" if buy else "VVTBL1006U")
-        headers = self._get_headers(tr_id)
+        tr_id = ("TTTT1002U" if buy else "TTTT1006U") if not self.mock else ("VTTT1002U" if buy else "VTTT1006U")
         
         body = {
             "CANO": self.cano,
             "ACNT_PRDT_CD": self.acnt_prdt_cd,
-            "OVRS_EXCG_CD": exchange,
+            "OVRS_EXCG_CD": ovrs_excg_cd,
             "PDNO": symbol_upper,
             "ORD_QTY": str(qty),
             "OVRS_ORD_UNPR": f"{price:.2f}" if price > 0 else "0",
             "ORD_DVSN": ord_type if price > 0 else "01",
-            "ORD_SVR_DVSN": "0"
+            "ORD_SVR_DVSN_CD": "0"
         }
+        hashkey = self.get_hashkey(body)
+        headers = self._get_headers(tr_id, hashkey=hashkey)
 
         try:
             self._rate_limit()
-            res = requests.post(url, headers=headers, json=body, timeout=10)
+            res = requests.post(url, headers=headers, data=json.dumps(body), timeout=10)
             data = res.json()
 
             if res.status_code == 200 and data.get("rt_cd") == "0":
@@ -689,8 +727,8 @@ class KISApiClient:
                 return {"success": True, "msg": "주문 성공", "data": data.get("output")}
             else:
                 msg = data.get("msg1", "주문 실패")
-                logger.error(f"[{symbol_upper}] 해외주식 주문 실패: {msg}")
-                return {"success": False, "msg": msg}
+                logger.error(f"[{symbol_upper}] 해외주식 주문 실패 (tr_id={tr_id}, rt_cd={data.get('rt_cd')}, msg_cd={data.get('msg_cd')}): {msg}")
+                return {"success": False, "msg": f"{msg} (코드: {data.get('msg_cd', '')})"}
         except Exception as e:
             logger.error(f"[{symbol_upper}] 해외주식 주문 예외 발생: {e}")
             return {"success": False, "msg": str(e)}
