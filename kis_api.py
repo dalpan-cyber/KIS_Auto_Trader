@@ -727,8 +727,11 @@ class KISApiClient:
                 return {"success": True, "msg": "주문 성공", "data": data.get("output")}
             else:
                 msg = data.get("msg1", "주문 실패")
-                logger.error(f"[{symbol_upper}] 해외주식 주문 실패 (tr_id={tr_id}, rt_cd={data.get('rt_cd')}, msg_cd={data.get('msg_cd')}): {msg}")
-                return {"success": False, "msg": f"{msg} (코드: {data.get('msg_cd', '')})"}
+                msg_cd = data.get("msg_cd", "")
+                logger.error(f"[{symbol_upper}] 해외주식 주문 실패 (tr_id={tr_id}, rt_cd={data.get('rt_cd')}, msg_cd={msg_cd}): {msg}")
+                if msg_cd == "APBK1681" or "기본예탁금" in msg:
+                    logger.warning(f"⚠️ [{symbol_upper}] 레버리지 ETF 매수 조건 미충족 (기본예탁금 등록 및 레버리지 사전교육 이수 필요)")
+                return {"success": False, "msg": f"{msg} (코드: {msg_cd})", "msg_cd": msg_cd}
         except Exception as e:
             logger.error(f"[{symbol_upper}] 해외주식 주문 예외 발생: {e}")
             return {"success": False, "msg": str(e)}

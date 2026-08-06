@@ -119,13 +119,13 @@ class StreamlitLogHandler(logging.Handler):
 
 
 def setup_logger():
-    """글로벌 로거에 Streamlit 핸들러 연결"""
+    """글로벌 로거에 Streamlit 핸들러 연결 (중복 등록 방지)"""
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
     
-    for handler in logger.handlers:
+    for handler in list(logger.handlers):
         if isinstance(handler, StreamlitLogHandler):
-            return
+            logger.removeHandler(handler)
             
     st_handler = StreamlitLogHandler()
     logger.addHandler(st_handler)

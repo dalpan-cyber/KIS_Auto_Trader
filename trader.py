@@ -171,13 +171,29 @@ class TraderBot:
         self.pending_proposals[proposal_id] = proposal
         self.logger.info(f"💡 [{symbol} {stock_name}] {action_kr} 제안 생성! (수량: {qty}주, 이유: {reason}) -> 승인 대기 중...")
 
+    def _check_and_log_apbk1681_guidance(self, symbol: str, err_msg: str):
+        """APBK1681 (기본예탁금 / 레버리지 ETF 이수 미충족) 에러 발생 시 상세 조치 방법 안내"""
+        if "APBK1681" in err_msg or "기본예탁금" in err_msg:
+            self.logger.warning(
+                f"💡 [원인 및 조치 안내] [{symbol}] 종목은 한국투자증권 '기본예탁금 충족' 및 '레버리지 ETF 사전교육'이 등록된 계좌만 매수 가능합니다.\n"
+                f"   1) 금융투자교육원(https://www.kifin.or.kr)에서 '레버리지 ETF/ETN 사전교육' 이수\n"
+                f"   2) 한국투자증권 앱(MTS) > 메뉴 > 안내/신청 > '레버리지ETF 교육이수 등록'\n"
+                f"   3) 한국투자증권 앱(MTS) > 메뉴 > 안내/신청 > '해외주식 레버리지 ETF 매매신청 / 기본예탁금 등록'"
+            )
+
     def approve_proposal(self, proposal_id: str) -> bool:
         """사용자가 매매 제안을 승인했을 때 실제 주문 실행"""
         if proposal_id not in self.pending_proposals:
             self.logger.warning(f"존재하지 않는 제안 ID입니다: {proposal_id}")
             return False
 
-        prop = self.pending_proposals[proposal_id]
+        if self.risk_mgr.is_circuit_broken():
+            self.logger.error(f"🚨 서킷브레이커 발동 중 (연속 에러 {self.risk_mgr.consecutive_errors}/{self.risk_mgr.max_consecutive_errors}): 매매 승인을 진행하지 않습니다.")
+            self.pending_proposals.pop(proposal_id, None)
+            return False
+
+        # 제안을 대기 목록에서 즉시 제거하여 중복 실행 및 재시도 폭주 방지
+        prop = self.pending_proposals.pop(proposal_id)
         symbol = prop["symbol"]
         action = prop["action"]
         qty = prop["qty"]
@@ -196,12 +212,13 @@ class TraderBot:
                 else:
                     self.infinite_state_mgr.record_sell_execution(symbol, qty=qty, price=price)
                 self.risk_mgr.reset_error()
-                del self.pending_proposals[proposal_id]
                 self.logger.info(f"🎉 [{symbol}] 해외주식 무한매수 {prop['action_kr']} 주문 성공!")
                 self.fetch_account_balance()
                 return True
             else:
-                self.logger.error(f"❌ [{symbol}] 해외주식 주문 실행 실패: {order_res.get('msg')}")
+                err_msg = order_res.get('msg', '')
+                self.logger.error(f"❌ [{symbol}] 해외주식 주문 실행 실패: {err_msg}")
+                self._check_and_log_apbk1681_guidance(symbol, err_msg)
                 self.risk_mgr.record_error()
                 return False
         else:
@@ -210,12 +227,13 @@ class TraderBot:
                 if not is_buy:
                     self.risk_mgr.reset_highest_price(symbol)
                 self.risk_mgr.reset_error()
-                del self.pending_proposals[proposal_id]
                 self.logger.info(f"🎉 [{symbol}] {prop['action_kr']} 주문 체결 완료!")
                 self.fetch_account_balance()
                 return True
             else:
-                self.logger.error(f"❌ [{symbol}] {prop['action_kr']} 주문 실행 실패: {order_res.get('msg')}")
+                err_msg = order_res.get('msg', '')
+                self.logger.error(f"❌ [{symbol}] {prop['action_kr']} 주문 실행 실패: {err_msg}")
+                self._check_and_log_apbk1681_guidance(symbol, err_msg)
                 self.risk_mgr.record_error()
                 return False
 
@@ -231,6 +249,10 @@ class TraderBot:
         - 미국 주식 대상 종목별 상태 조회 및 당일 LOC/지정가 주문 제안 생성/전송
         """
         if not self.infinite_enabled:
+            return
+
+        if self.risk_mgr.is_circuit_broken():
+            self.logger.error("🚨 서킷브레이커 발동 상태입니다. 무한매수 루틴 진행 중단.")
             return
 
         self.logger.info("🇺🇸 [무한매수법] 당일 주문 생성 및 감시 루틴 실행")
@@ -277,6 +299,9 @@ class TraderBot:
                             }
                             self.logger.info(f"💡 [무한매수 제안] {symbol} {desc} -> 승인 대기 중")
                     else:
+                        if self.risk_mgr.is_circuit_broken():
+                            self.logger.error(f"🚨 서킷브레이커 발동 중: {symbol} 무한매수 자동실행을 중단합니다.")
+                            break
                         is_buy = (action == "BUY")
                         self.logger.info(f"🚀 [무한매수 자동실행] {symbol} {desc}")
                         order_res = self.api.order_overseas_cash(symbol, qty, price=price, buy=is_buy, ord_type=ord_type)
@@ -285,6 +310,12 @@ class TraderBot:
                                 self.infinite_state_mgr.record_buy_execution(symbol, qty, price, round_inc=round_inc)
                             else:
                                 self.infinite_state_mgr.record_sell_execution(symbol, qty, price)
+                            self.risk_mgr.reset_error()
+                        else:
+                            err_msg = order_res.get('msg', '')
+                            self.logger.error(f"❌ [{symbol}] 해외주식 무한매수 자동 주문 실패: {err_msg}")
+                            self._check_and_log_apbk1681_guidance(symbol, err_msg)
+                            self.risk_mgr.record_error()
             except Exception as e:
                 self.logger.error(f"[{symbol}] 무한매수 루틴 실행 예외: {e}")
 

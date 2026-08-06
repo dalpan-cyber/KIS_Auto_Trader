@@ -48,11 +48,15 @@ class TradingDashboard(QMainWindow):
         self._apply_dark_theme()
         self._init_ui()
 
-        # 3. 로깅 핸들러 연결
+        # 3. 로깅 핸들러 연결 (중복 등록 방지)
+        root_logger = logging.getLogger()
+        for h in list(root_logger.handlers):
+            if isinstance(h, QTextEditLogger):
+                root_logger.removeHandler(h)
         self.log_handler = QTextEditLogger()
         self.log_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%H:%M:%S"))
         self.log_handler.log_signal.connect(self._append_log)
-        logging.getLogger().addHandler(self.log_handler)
+        root_logger.addHandler(self.log_handler)
 
         # 4. 주기적 자동매매 타이머 (5초 간격)
         self.timer = QTimer(self)
