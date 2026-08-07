@@ -273,6 +273,17 @@ class TraderBot:
                     target_roi=getattr(config, "INFINITE_TARGET_ROI", 0.10)
                 )
 
+                curr_round = state.get("current_round", 0)
+                div_count = state.get("division_count", 40)
+                tot_qty = state.get("total_qty", 0)
+                avg_p = state.get("avg_price", 0.0)
+                avg_p_str = f"${avg_p:.2f}" if avg_p > 0 else "미보유(-)"
+
+                self.logger.info(
+                    f"📊 [{symbol} 무한매수 상태] 진행 회차: {curr_round}/{div_count}회차 | "
+                    f"누적 수량: {tot_qty}주 | 평단가: {avg_p_str} | 현재가: ${cur_price:.2f}"
+                )
+
                 if state.get("last_order_date") == today_str and not self.require_approval:
                     self.logger.info(f"⏳ [{symbol}] 오늘({today_str}) 이미 당일 무한매수 주문이 전송되었습니다. 중복 제출을 건너땁니다.")
                     continue
@@ -287,6 +298,7 @@ class TraderBot:
                     ord_type = order["ord_type"]
                     desc = order["desc"]
                     round_inc = order.get("round_inc", 1.0)
+                    total_ord_amt = qty * price
 
                     proposal_id = f"INFINITE_{symbol}_{action}_{ord_type}_{price:.2f}"
                     if self.require_approval:
@@ -299,30 +311,39 @@ class TraderBot:
                                 "action_kr": "LOC 매수" if ord_type == "34" else ("매수" if action == "BUY" else "익절 매도"),
                                 "qty": qty,
                                 "price": price,
-                                "total_price": price * qty,
+                                "total_price": total_ord_amt,
                                 "ord_type": ord_type,
                                 "round_inc": round_inc,
                                 "reason": desc,
                                 "timestamp": time.strftime("%H:%M:%S")
                             }
-                            self.logger.info(f"💡 [무한매수 제안] {symbol} {desc} -> 승인 대기 중")
+                            self.logger.info(
+                                f"💡 [무한매수 제안] {symbol} {desc} (수량: {qty}주, 단가: ${price:.2f}, 총액: ${total_ord_amt:,.2f}) -> 승인 대기 중"
+                            )
                     else:
                         if self.risk_mgr.is_circuit_broken():
                             self.logger.error(f"🚨 서킷브레이커 발동 중: {symbol} 무한매수 자동실행을 중단합니다.")
                             break
                         is_buy = (action == "BUY")
-                        self.logger.info(f"🚀 [무한매수 자동실행] {symbol} {desc}")
+                        action_kr = "LOC 매수" if ord_type == "34" else ("매수" if is_buy else "익절 매도")
+                        self.logger.info(
+                            f"🚀 [무한매수 자동실행] {symbol} {action_kr} {qty}주 @ ${price:.2f} (주문예상총액: ${total_ord_amt:,.2f}) | {desc}"
+                        )
                         order_res = self.api.order_overseas_cash(symbol, qty, price=price, buy=is_buy, ord_type=ord_type)
                         if order_res.get("success"):
                             orders_sent = True
                             if is_buy:
                                 self.infinite_state_mgr.record_buy_execution(symbol, qty, price, round_inc=round_inc)
                             else:
-                                self.logger.info(f"🎉 [{symbol}] 해외주식 무한매수 익절 매도 주문 접수 성공 (목표가: ${price:.2f})")
+                                self.logger.info(
+                                    f"🎉 [{symbol}] 해외주식 익절 매도 주문 접수 성공! "
+                                    f"(매도수량: {qty}주, 목표가: ${price:.2f}, 예상총액: ${total_ord_amt:,.2f} | "
+                                    f"누적 보유: {tot_qty}주, 평단가: ${avg_p:.2f})"
+                                )
                             self.risk_mgr.reset_error()
                         else:
                             err_msg = order_res.get('msg', '')
-                            self.logger.error(f"❌ [{symbol}] 해외주식 무한매수 자동 주문 실패: {err_msg}")
+                            self.logger.error(f"❌ [{symbol}] 해외주식 무한매수 {action_kr} 주문 실패: {err_msg}")
                             self._check_and_log_apbk1681_guidance(symbol, err_msg)
                             self.risk_mgr.record_error()
 

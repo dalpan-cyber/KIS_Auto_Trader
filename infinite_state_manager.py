@@ -108,7 +108,12 @@ class InfiniteStateManager:
             "total_qty": state["total_qty"]
         })
 
-        logger.info(f"[{symbol}] 무한매수 체결 기록: +{qty}주 @ ${price:.2f} | 회차: {state['current_round']}/{state['division_count']} | 평단가: ${state['avg_price']:.2f}")
+        tot_ord_amt = qty * price
+        logger.info(
+            f"✅ [{symbol}] 무한매수 체결 기록: +{qty}주 @ ${price:.2f} (주문금액: ${tot_ord_amt:,.2f}) | "
+            f"진행 회차: {state['current_round']}/{state['division_count']}회차 | "
+            f"누적 수량: {state['total_qty']}주 | 평단가: ${state['avg_price']:.2f}"
+        )
         self.save_state()
 
     def record_sell_execution(self, symbol: str, qty: int, price: float):
