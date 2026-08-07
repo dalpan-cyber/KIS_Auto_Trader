@@ -74,6 +74,12 @@ class InfiniteStateManager:
         state["total_budget_usd"] = total_budget_usd
         self.save_state()
 
+    def update_last_order_date(self, symbol: str, date_str: str):
+        """당일 주문 전송 날짜 기록 (중복 주문 발주 방지용)"""
+        state = self.get_symbol_state(symbol)
+        state["last_order_date"] = date_str
+        self.save_state()
+
     def record_buy_execution(self, symbol: str, qty: int, price: float, round_inc: float = 1.0):
         """
         매수 체결 기록 및 평단가/회차/누적수량 갱신

@@ -256,6 +256,8 @@ class TraderBot:
             return
 
         self.logger.info("🇺🇸 [무한매수법] 당일 주문 생성 및 감시 루틴 실행")
+        today_str = time.strftime("%Y-%m-%d")
+
         for symbol in self.infinite_stocks:
             try:
                 price_res = self.api.get_stock_price(symbol)
@@ -271,7 +273,13 @@ class TraderBot:
                     target_roi=getattr(config, "INFINITE_TARGET_ROI", 0.10)
                 )
 
+                if state.get("last_order_date") == today_str and not self.require_approval:
+                    self.logger.info(f"⏳ [{symbol}] 오늘({today_str}) 이미 당일 무한매수 주문이 전송되었습니다. 중복 제출을 건너땁니다.")
+                    continue
+
                 orders = self.infinite_strategy.generate_daily_orders(symbol, cur_price, state)
+                orders_sent = False
+
                 for order in orders:
                     action = order["action"]
                     qty = order["qty"]
@@ -306,16 +314,20 @@ class TraderBot:
                         self.logger.info(f"🚀 [무한매수 자동실행] {symbol} {desc}")
                         order_res = self.api.order_overseas_cash(symbol, qty, price=price, buy=is_buy, ord_type=ord_type)
                         if order_res.get("success"):
+                            orders_sent = True
                             if is_buy:
                                 self.infinite_state_mgr.record_buy_execution(symbol, qty, price, round_inc=round_inc)
                             else:
-                                self.infinite_state_mgr.record_sell_execution(symbol, qty, price)
+                                self.logger.info(f"🎉 [{symbol}] 해외주식 무한매수 익절 매도 주문 접수 성공 (목표가: ${price:.2f})")
                             self.risk_mgr.reset_error()
                         else:
                             err_msg = order_res.get('msg', '')
                             self.logger.error(f"❌ [{symbol}] 해외주식 무한매수 자동 주문 실패: {err_msg}")
                             self._check_and_log_apbk1681_guidance(symbol, err_msg)
                             self.risk_mgr.record_error()
+
+                if orders_sent:
+                    self.infinite_state_mgr.update_last_order_date(symbol, today_str)
             except Exception as e:
                 self.logger.error(f"[{symbol}] 무한매수 루틴 실행 예외: {e}")
 
