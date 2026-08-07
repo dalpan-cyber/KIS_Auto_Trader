@@ -3,7 +3,13 @@ GitHub Actions 및 스케줄러 전용 라오어 무한매수 실행 스크립�
 """
 import os
 import sys
+import time
 import logging
+
+# Linux / GitHub Actions 서버 타임존을 한국 표준시(KST)로 설정
+if hasattr(time, "tzset"):
+    os.environ["TZ"] = "Asia/Seoul"
+    time.tzset()
 
 # Windows 콘솔 인코딩 방어
 if hasattr(sys.stdout, "reconfigure"):
