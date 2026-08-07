@@ -2,9 +2,10 @@ name: 🇺🇸 KIS 라오어 무한매수법 무인 자동매매
 
 on:
   schedule:
-    # 한국시간(KST) 평일 밤 22:00 (서머타임: UTC 13:00) & 23:00 (겨울철: UTC 14:00)
-    - cron: '0 13 * * 1-5'
-    - cron: '0 14 * * 1-5'
+    # 한국시간(KST) 평일 밤 22:35 (서머타임: UTC 13:35) & 23:35 (겨울철: UTC 14:35)
+    # 미국 정규장 및 LOC 주문 개시 시간(22:30/23:30 KST) 직후 실행
+    - cron: '35 13 * * 1-5'
+    - cron: '35 14 * * 1-5'
   workflow_dispatch: # GitHub 웹 UI에서 수동 실행 버튼 제공
 
 jobs:
@@ -30,6 +31,8 @@ jobs:
 
       - name: 4. 라오어 무한매수 당일 주문 자동 실행
         env:
+          GITHUB_ACTIONS: "true"
+          PYTHONUNBUFFERED: "1"
           KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
           KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
           KIS_CANO: ${{ secrets.KIS_CANO }}

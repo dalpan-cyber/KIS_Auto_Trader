@@ -3,11 +3,28 @@
     "symbol": "TQQQ",
     "total_budget_usd": 5000,
     "division_count": 40,
-    "current_round": 0,
-    "avg_price": 0.0,
-    "total_qty": 0,
+    "current_round": 1.0,
+    "avg_price": 75.31,
+    "total_qty": 2,
     "target_roi": 0.1,
     "status": "BUYING",
-    "history": []
+    "history": [
+      {
+        "type": "BUY",
+        "qty": 1,
+        "price": 73.47,
+        "round": 0.5,
+        "avg_price": 73.47,
+        "total_qty": 1
+      },
+      {
+        "type": "BUY",
+        "qty": 1,
+        "price": 77.15,
+        "round": 1.0,
+        "avg_price": 75.31,
+        "total_qty": 2
+      }
+    ]
   }
 }

@@ -679,6 +679,11 @@ class KISApiClient:
         self._ensure_token()
         symbol_upper = symbol.upper()
         if not self.access_token:
+            # 실전매매 환경(self.mock=False)인데 토큰 발급이 안된 경우 가상 성공 처리 방지
+            if not self.mock and (self.app_key and self.app_secret):
+                logger.error(f"[{symbol_upper}] KIS Access Token이 유효하지 않아 실전 해외 주문을 발주할 수 없습니다.")
+                return {"success": False, "msg": "Access Token이 유효하지 않아 실전 주문을 발주할 수 없습니다."}
+
             action_str = "매수" if buy else "매도"
             ord_name = "LOC " if ord_type == "34" else ""
             total_cost = qty * price if price > 0 else 0.0
