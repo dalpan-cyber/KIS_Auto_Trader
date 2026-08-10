@@ -1,22 +1,23 @@
-"""
-라오어 무한매수법 상태 관리자 모듈 (infinite_state_manager.py)
-종목별 무한매수 회차(1~40회차), 평단가, 누적 수량, 예산 및 매매 이력을 영속적으로 저장하고 관리합니다.
-"""
 import os
 import json
+import time
 import logging
+from datetime import datetime
 from typing import Dict, Any, List, Optional
+
+from google_sheet_manager import GoogleSheetManager
 
 logger = logging.getLogger("InfiniteStateManager")
 
 DEFAULT_STATE_FILE = "infinite_trader_state.json"
 
 class InfiniteStateManager:
-    """무한매수법 상태 영속성 관리 클래스"""
+    """무한매수법 상태 영속성 관리 클래스 (로컬 JSON + Google Sheets 동기화)"""
 
     def __init__(self, file_path: str = DEFAULT_STATE_FILE):
         self.file_path = file_path
         self.states: Dict[str, Dict[str, Any]] = {}
+        self.gss_mgr = GoogleSheetManager()
         self.load_state()
 
     def load_state(self) -> Dict[str, Dict[str, Any]]:
@@ -34,13 +35,17 @@ class InfiniteStateManager:
         return self.states
 
     def save_state(self):
-        """현재 무한매수 상태를 로컬 JSON 파일로 저장"""
+        """현재 무한매수 상태를 로컬 JSON 파일 및 Google Sheets로 저장"""
         try:
             with open(self.file_path, "w", encoding="utf-8") as f:
                 json.dump(self.states, f, ensure_ascii=False, indent=2)
             logger.debug("무한매수 상태 파일 저장 완료")
         except Exception as e:
             logger.error(f"무한매수 상태 파일 저장 실패: {e}")
+
+        # Google Sheets 상의 전체 종목 상태 동기화
+        if hasattr(self, "gss_mgr") and self.gss_mgr:
+            self.gss_mgr.sync_all_states(self.states)
 
     def get_symbol_state(
         self,
@@ -82,7 +87,7 @@ class InfiniteStateManager:
 
     def record_buy_execution(self, symbol: str, qty: int, price: float, round_inc: float = 1.0):
         """
-        매수 체결 기록 및 평단가/회차/누적수량 갱신
+        매수 체결 기록 및 평단가/회차/누적수량 갱신 (JSON + Google Sheet)
         """
         state = self.get_symbol_state(symbol)
         if qty <= 0 or price <= 0:
@@ -99,14 +104,19 @@ class InfiniteStateManager:
         state["current_round"] = min(state["division_count"], state["current_round"] + round_inc)
         state["status"] = "BUYING"
 
-        state["history"].append({
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        history_item = {
+            "date": now_str,
             "type": "BUY",
+            "status_label": "🟢 매수 체결 완료",
             "qty": qty,
             "price": price,
             "round": state["current_round"],
             "avg_price": state["avg_price"],
-            "total_qty": state["total_qty"]
-        })
+            "total_qty": state["total_qty"],
+            "note": "매수 체결 성공"
+        }
+        state["history"].append(history_item)
 
         tot_ord_amt = qty * price
         logger.info(
@@ -116,6 +126,83 @@ class InfiniteStateManager:
         )
         self.save_state()
 
+        if hasattr(self, "gss_mgr") and self.gss_mgr:
+            self.gss_mgr.append_history_entry(
+                symbol=symbol,
+                entry_type="BUY",
+                qty=qty,
+                price=price,
+                round_val=state["current_round"],
+                avg_price=state["avg_price"],
+                total_qty=state["total_qty"],
+                note="매수 체결 성공"
+            )
+
+    def record_buy_failure(self, symbol: str, qty: int, price: float, reason: str):
+        """
+        매수 실패/거부 이력 기록 (APBK1681, 예수금 부족 등)
+        """
+        state = self.get_symbol_state(symbol)
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        history_item = {
+            "date": now_str,
+            "type": "BUY_FAILED",
+            "status_label": "❌ 매수 실패",
+            "qty": qty,
+            "price": price,
+            "round": state.get("current_round", 0),
+            "avg_price": state.get("avg_price", 0.0),
+            "total_qty": state.get("total_qty", 0),
+            "note": reason
+        }
+        state["history"].append(history_item)
+        logger.warning(f"❌ [{symbol}] 무한매수 실패 기록: {qty}주 @ ${price:.2f} | 원인: {reason}")
+        self.save_state()
+
+        if hasattr(self, "gss_mgr") and self.gss_mgr:
+            self.gss_mgr.append_history_entry(
+                symbol=symbol,
+                entry_type="BUY_FAILED",
+                qty=qty,
+                price=price,
+                round_val=state.get("current_round", 0),
+                avg_price=state.get("avg_price", 0.0),
+                total_qty=state.get("total_qty", 0),
+                note=f"매수 실패: {reason}"
+            )
+
+    def record_order_sent(self, symbol: str, qty: int, price: float, ord_type: str, desc: str):
+        """
+        매수 LOC 주문 접수 완료 기록
+        """
+        state = self.get_symbol_state(symbol)
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        history_item = {
+            "date": now_str,
+            "type": "ORDER_SENT",
+            "status_label": "⏳ LOC 주문 접수",
+            "qty": qty,
+            "price": price,
+            "round": state.get("current_round", 0),
+            "avg_price": state.get("avg_price", 0.0),
+            "total_qty": state.get("total_qty", 0),
+            "note": desc
+        }
+        state["history"].append(history_item)
+        self.save_state()
+
+        if hasattr(self, "gss_mgr") and self.gss_mgr:
+            self.gss_mgr.append_history_entry(
+                symbol=symbol,
+                entry_type="ORDER_SENT",
+                qty=qty,
+                price=price,
+                round_val=state.get("current_round", 0),
+                avg_price=state.get("avg_price", 0.0),
+                total_qty=state.get("total_qty", 0),
+                note=desc
+            )
+
     def record_sell_execution(self, symbol: str, qty: int, price: float):
         """
         익절 매도 체결 및 회차 초기화 (1회차/0회차 리셋)
@@ -123,14 +210,19 @@ class InfiniteStateManager:
         state = self.get_symbol_state(symbol)
         old_avg = state["avg_price"]
         roi = ((price - old_avg) / old_avg * 100) if old_avg > 0 else 0.0
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        state["history"].append({
+        history_item = {
+            "date": now_str,
             "type": "SELL",
+            "status_label": "🎉 익절 매도 완료",
             "qty": qty,
             "price": price,
             "avg_price": old_avg,
-            "roi_pct": round(roi, 2)
-        })
+            "roi_pct": round(roi, 2),
+            "note": f"익절 매도 완료 (수익률: +{roi:.2f}%)"
+        }
+        state["history"].append(history_item)
 
         # 전량 익절 시 리셋
         if qty >= state["total_qty"]:
@@ -147,6 +239,19 @@ class InfiniteStateManager:
                 state["status"] = "COMPLETED"
 
         self.save_state()
+
+        if hasattr(self, "gss_mgr") and self.gss_mgr:
+            self.gss_mgr.append_history_entry(
+                symbol=symbol,
+                entry_type="SELL",
+                qty=qty,
+                price=price,
+                round_val=0,
+                avg_price=old_avg,
+                total_qty=state["total_qty"],
+                roi_pct=roi,
+                note=f"익절 매도 성공 (수익률: +{roi:.2f}%)"
+            )
 
     def start_buying(self, symbol: str):
         """수동 무한매수 시작 (상태를 BUYING으로 설정)"""
@@ -171,3 +276,4 @@ class InfiniteStateManager:
         state["status"] = "IDLE"
         logger.info(f"🔄 [{symbol}] 무한매수 회차 초기화 완료! (상태: IDLE)")
         self.save_state()
+

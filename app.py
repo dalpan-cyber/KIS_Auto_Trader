@@ -6,6 +6,7 @@ import logging
 import pandas as pd
 import numpy as np
 import streamlit as st
+import plotly.graph_objects as go
 
 import config
 from kis_api import KISApiClient
@@ -357,144 +358,244 @@ with tab_prop:
         st.info("현재 대기 중인 매매 제안이 없습니다. 감시를 시작하면 매수/매도 조건 충족 시 이곳에 제안이 생성됩니다.")
 
 
+def render_stock_detail(symbol: str, bot: TraderBot):
+    """특정 종목의 무한매수 현황, 제어, 당일주문, 일별 주가-이력 차트 및 매매이력 표시"""
+    st_data = bot.infinite_state_mgr.get_symbol_state(
+        symbol,
+        default_budget_usd=getattr(config, "INFINITE_TOTAL_BUDGET_USD", 5000.0),
+        division_count=getattr(config, "INFINITE_DIVISION_COUNT", 40),
+        target_roi=getattr(config, "INFINITE_TARGET_ROI", 0.10)
+    )
+    curr_round = st_data.get("current_round", 0)
+    div_count = st_data.get("division_count", 40)
+    budget = st_data.get("total_budget_usd", 5000.0)
+    avg_p = st_data.get("avg_price", 0.0)
+    total_qty = st_data.get("total_qty", 0)
+    raw_status = st_data.get("status", "IDLE")
+
+    cur_p = bot.current_prices.get(symbol, 0.0)
+    if cur_p == 0.0:
+        p_res = bot.api.get_stock_price(symbol)
+        if p_res.get("success"):
+            cur_p = float(p_res["price"])
+            bot.current_prices[symbol] = cur_p
+
+    status_map = {
+        "BUYING": "🟢 매수 진행 중 (BUYING)",
+        "STOPPED": "🔴 강제 중지됨 (STOPPED)",
+        "IDLE": "🟡 대기 중 (IDLE)",
+        "COMPLETED": "🔵 익절 완료 (COMPLETED)"
+    }
+    status_display = status_map.get(raw_status, raw_status)
+
+    # 1. 상단 메트릭 요약
+    c_m1, c_m2, c_m3, c_m4, c_m5 = st.columns(5)
+    with c_m1:
+        st.metric("진행 회차", f"{curr_round} / {div_count} 회차")
+    with c_m2:
+        st.metric("보유 수량", f"{total_qty:,} 주")
+    with c_m3:
+        st.metric("매수 평단가", f"${avg_p:.2f}" if avg_p > 0 else "-")
+    with c_m4:
+        st.metric("현재가", f"${cur_p:.2f}" if cur_p > 0 else "-")
+    with c_m5:
+        eval_amt = total_qty * cur_p if cur_p > 0 else 0.0
+        pnl = (eval_amt - (total_qty * avg_p)) if avg_p > 0 else 0.0
+        pnl_rt = (pnl / (total_qty * avg_p) * 100) if (total_qty * avg_p) > 0 else 0.0
+        st.metric("평가 손익", f"${pnl:+,.2f}", delta=f"{pnl_rt:+.2f}%")
+
+    st.caption(f"**상태**: {status_display} | **총 예산**: ${budget:,.2f}")
+    st.progress(min(1.0, max(0.0, float(curr_round) / float(div_count))))
+
+    # 2. 수동 제어 버튼
+    col_b1, col_b2, col_b3, col_sp = st.columns([2.5, 2.5, 2.5, 4.5])
+    with col_b1:
+        if st.button(f"▶ {symbol} 수동 시작", key=f"start_{symbol}", type="primary", width="stretch"):
+            bot.start_infinite_buying(symbol)
+            st.success(f"🚀 [{symbol}] 무한매수 매매 루틴이 수동 시작되었습니다.")
+            st.rerun()
+    with col_b2:
+        if st.button(f"⏹ {symbol} 강제 중지", key=f"stop_{symbol}", width="stretch"):
+            bot.stop_infinite_buying(symbol)
+            st.warning(f"⏹ [{symbol}] 무한매수가 강제 중지되었습니다.")
+            st.rerun()
+    with col_b3:
+        if st.button(f"🔄 {symbol} 회차 초기화", key=f"reset_{symbol}", width="stretch"):
+            bot.infinite_state_mgr.reset_round(symbol)
+            st.info(f"🔄 [{symbol}] 회차가 0회차로 초기화되었습니다.")
+            st.rerun()
+
+    st.markdown("---")
+
+    # 3. 당일 매수/매도 주문 상세 수량
+    calc_price = cur_p if cur_p > 0 else (avg_p if avg_p > 0 else 50.0)
+    orders = bot.infinite_strategy.generate_daily_orders(symbol, calc_price, st_data)
+
+    col_det1, col_det2 = st.columns(2)
+    with col_det1:
+        st.markdown("#### 🔴 당일 전량 익절 매도 주문 (지정가)")
+        s_orders = [o for o in orders if o["action"] == "SELL"]
+        if s_orders:
+            for s_o in s_orders:
+                st.write(f"- **주문 내용**: {s_o['desc']}")
+                st.write(f"- **주문 수량**: `{s_o['qty']:,} 주`")
+                st.write(f"- **목표 매도가**: `${s_o['price']:.2f}` (+10.0%)")
+                st.write(f"- **예상 총 매도금액**: **`${s_o['qty'] * s_o['price']:,.2f}`**")
+        else:
+            st.info("현재 보유 주식이 없어 매도 주문이 없습니다.")
+
+    with col_det2:
+        st.markdown("#### 🟢 당일 40분할 매수 주문 (LOC 종가입찰)")
+        b_orders = [o for o in orders if o["action"] == "BUY"]
+        if b_orders:
+            tot_b_qty = sum(b['qty'] for b in b_orders)
+            tot_b_amt = sum(b['qty'] * b['price'] for b in b_orders)
+            for idx, b_o in enumerate(b_orders, 1):
+                st.write(f"**{idx}. {b_o['desc']}**")
+                st.write(f"  • 수량: `{b_o['qty']:,}주` | LOC단가: `${b_o['price']:.2f}` | 주문금액: `${b_o['qty'] * b_o['price']:,.2f}`")
+            st.markdown(f"**💰 당일 매수 총 예상금액**: **`${tot_b_amt:,.2f}`** (`{tot_b_qty:,}주`)")
+        else:
+            if raw_status in ["STOPPED", "PAUSED"]:
+                st.warning("현재 무한매수가 강제 중지(STOPPED) 상태입니다.")
+            elif curr_round >= div_count:
+                st.warning("40회차가 모두 소진되었습니다.")
+            else:
+                st.info("당일 매수 주문 생성 대기 중입니다.")
+
+    st.markdown("---")
+
+    # 4. Plotly 주가 & 매수이력 그래프
+    st.subheader(f"📈 [{symbol}] 일별 주가 & 매수/매도/실패 이력 대조 차트")
+    chart_data = bot.api.get_daily_chart(symbol, count=60)
+    fig = go.Figure()
+
+    if chart_data:
+        df_chart = pd.DataFrame(chart_data)
+        df_chart['date_fmt'] = pd.to_datetime(df_chart['date'], format='%Y%m%d', errors='coerce').dt.strftime('%Y-%m-%d')
+        df_chart = df_chart.sort_values('date_fmt').dropna(subset=['date_fmt'])
+
+        fig.add_trace(go.Scatter(
+            x=df_chart['date_fmt'],
+            y=df_chart['close'],
+            mode='lines+markers',
+            name=f'{symbol} 종가',
+            line=dict(color='#38BDF8', width=2),
+            marker=dict(size=4)
+        ))
+
+    history = st_data.get("history", [])
+    if history:
+        buy_dates, buy_prices, buy_texts = [], [], []
+        sell_dates, sell_prices, sell_texts = [], [], []
+        fail_dates, fail_prices, fail_texts = [], [], []
+
+        for h in history:
+            h_date = str(h.get("date", ""))[:10]
+            h_type = h.get("type", "")
+            h_qty = h.get("qty", 0)
+            h_price = h.get("price", 0.0)
+
+            if h_type in ["BUY", "ORDER_SENT"]:
+                buy_dates.append(h_date)
+                buy_prices.append(h_price)
+                buy_texts.append(f"🟢 매수 체결: {h_qty}주 @ ${h_price:.2f} ({h.get('round', 0)}회차)")
+            elif h_type == "SELL":
+                sell_dates.append(h_date)
+                sell_prices.append(h_price)
+                sell_texts.append(f"🎉 익절 매도: {h_qty}주 @ ${h_price:.2f} (수익률: +{h.get('roi_pct', 0)}%)")
+            elif h_type == "BUY_FAILED":
+                fail_dates.append(h_date)
+                fail_prices.append(h_price)
+                fail_texts.append(f"❌ 매수 실패 ({h_qty}주 @ ${h_price:.2f}): {h.get('note', '')}")
+
+        if buy_dates:
+            fig.add_trace(go.Scatter(
+                x=buy_dates, y=buy_prices, mode='markers', name='🟢 매수 체결',
+                marker=dict(symbol='triangle-up', size=12, color='#22C55E'),
+                text=buy_texts, hoverinfo='text'
+            ))
+        if sell_dates:
+            fig.add_trace(go.Scatter(
+                x=sell_dates, y=sell_prices, mode='markers', name='🎉 익절 매도',
+                marker=dict(symbol='star', size=14, color='#EC4899'),
+                text=sell_texts, hoverinfo='text'
+            ))
+        if fail_dates:
+            fig.add_trace(go.Scatter(
+                x=fail_dates, y=fail_prices, mode='markers', name='❌ 매수 실패',
+                marker=dict(symbol='x', size=12, color='#F97316'),
+                text=fail_texts, hoverinfo='text'
+            ))
+
+    if avg_p > 0:
+        fig.add_hline(
+            y=avg_p, line_dash="dash", line_color="#F59E0B",
+            annotation_text=f"현재 평단가 (${avg_p:.2f})", annotation_position="top left"
+        )
+
+    fig.update_layout(
+        template="plotly_dark",
+        margin=dict(l=20, r=20, t=30, b=20),
+        height=380,
+        xaxis_title="날짜",
+        yaxis_title="주가 ($)",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+    # 5. 종목 매매 및 체결/실패 히스토리 테이블
+    st.subheader(f"📜 [{symbol}] 매수/매도 & 체결/실패 이력 (Google Sheets 연동)")
+    if history:
+        h_rows = []
+        for h in reversed(history):
+            h_rows.append({
+                "일시": h.get("date", "-"),
+                "구분": h.get("status_label", h.get("type", "-")),
+                "수량": f"{h.get('qty', 0):,}주",
+                "단가 ($)": f"${h.get('price', 0.0):.2f}",
+                "총금액 ($)": f"${h.get('qty', 0) * h.get('price', 0.0):,.2f}",
+                "진행회차": f"{h.get('round', '-')} 회차" if 'round' in h else "-",
+                "평단가 ($)": f"${h.get('avg_price', 0.0):.2f}" if h.get('avg_price', 0) > 0 else "-",
+                "비고 / 실패사유": h.get("note", "-")
+            })
+        st.dataframe(pd.DataFrame(h_rows), width="stretch", hide_index=True)
+    else:
+        st.info("아직 누적된 매매 이력이 없습니다.")
+
+
 # 탭 2: 라오어 무한매수 현황
 with tab_infinite:
     st.subheader("🇺🇸 라오어 무한매수법 v2.0 진행 현황")
     
     if getattr(config, "INFINITE_BUYING_ENABLED", False):
         infinite_stocks = getattr(config, "INFINITE_STOCKS", ["TQQQ"])
-        
-        inf_data = []
-        for symbol in infinite_stocks:
-            st_data = bot.infinite_state_mgr.get_symbol_state(
-                symbol,
-                default_budget_usd=getattr(config, "INFINITE_TOTAL_BUDGET_USD", 5000.0),
-                division_count=getattr(config, "INFINITE_DIVISION_COUNT", 40),
-                target_roi=getattr(config, "INFINITE_TARGET_ROI", 0.10)
-            )
-            curr_round = st_data.get("current_round", 0)
-            div_count = st_data.get("division_count", 40)
-            budget = st_data.get("total_budget_usd", 5000.0)
-            avg_p = st_data.get("avg_price", 0.0)
-            total_qty = st_data.get("total_qty", 0)
-            roi = st_data.get("target_roi", 0.10)
-            raw_status = st_data.get("status", "IDLE")
 
-            status_map = {
-                "BUYING": "🟢 매수 진행 중 (BUYING)",
-                "STOPPED": "🔴 강제 중지됨 (STOPPED)",
-                "IDLE": "🟡 대기 중 (IDLE)",
-                "COMPLETED": "🔵 익절 완료 (COMPLETED)"
-            }
-            status_display = status_map.get(raw_status, raw_status)
+        if len(infinite_stocks) > 1:
+            stock_sub_tabs = st.tabs([f"📌 {sym}" for sym in infinite_stocks] + ["📊 전체 종목 종합 요약"])
+            for idx, sym in enumerate(infinite_stocks):
+                with stock_sub_tabs[idx]:
+                    render_stock_detail(sym, bot)
 
-            # 당일 시세 및 매수/매도 주문 미리 계산
-            cur_p = bot.current_prices.get(symbol, 0.0)
-            if cur_p == 0.0:
-                p_res = bot.api.get_stock_price(symbol)
-                if p_res.get("success"):
-                    cur_p = float(p_res["price"])
-                    bot.current_prices[symbol] = cur_p
-
-            calc_price = cur_p if cur_p > 0 else (avg_p if avg_p > 0 else 50.0)
-            sample_orders = bot.infinite_strategy.generate_daily_orders(symbol, calc_price, st_data)
-
-            sell_orders = [o for o in sample_orders if o['action'] == 'SELL']
-            buy_orders = [o for o in sample_orders if o['action'] == 'BUY']
-
-            if sell_orders:
-                s_o = sell_orders[0]
-                s_amt = s_o['qty'] * s_o['price']
-                sell_str = f"{s_o['qty']:,}주 @ ${s_o['price']:.2f} (${s_amt:,.2f})"
-            else:
-                sell_str = "-"
-
-            if buy_orders:
-                b_qty_sum = sum(b['qty'] for b in buy_orders)
-                b_amt_sum = sum(b['qty'] * b['price'] for b in buy_orders)
-                buy_str = f"{b_qty_sum:,}주 (${b_amt_sum:,.2f})"
-            else:
-                buy_str = "매수 중지" if raw_status in ["STOPPED", "PAUSED"] else "-"
-
-            inf_data.append({
-                "티커": symbol,
-                "진행 회차": f"{curr_round} / {div_count} 회차",
-                "총 예산 ($)": f"${budget:,.2f}",
-                "평단가 ($)": f"${avg_p:.2f}" if avg_p > 0 else "-",
-                "보유 수량": f"{total_qty:,} 주",
-                "당일 익절 매도 주문": sell_str,
-                "당일 LOC 매수 주문": buy_str,
-                "현재 상태": status_display
-            })
-
-        st.dataframe(pd.DataFrame(inf_data), width="stretch", hide_index=True)
-
-        st.markdown("---")
-        st.subheader("📋 종목별 당일 매수/매도 주문 상세 수량 및 금액")
-
-        for symbol in infinite_stocks:
-            st_data = bot.infinite_state_mgr.get_symbol_state(symbol)
-            cur_p = bot.current_prices.get(symbol, 0.0)
-            avg_p = st_data.get("avg_price", 0.0)
-            calc_price = cur_p if cur_p > 0 else (avg_p if avg_p > 0 else 50.0)
-            orders = bot.infinite_strategy.generate_daily_orders(symbol, calc_price, st_data)
-
-            with st.expander(f"📌 [{symbol}] 당일 매수/매도 상세 주문 내역 확인", expanded=True):
-                col_det1, col_det2 = st.columns(2)
-
-                with col_det1:
-                    st.markdown("#### 🔴 당일 전량 익절 매도 주문 (지정가)")
-                    s_orders = [o for o in orders if o["action"] == "SELL"]
-                    if s_orders:
-                        for s_o in s_orders:
-                            st.write(f"- **주문 내용**: {s_o['desc']}")
-                            st.write(f"- **주문 수량**: `{s_o['qty']:,} 주`")
-                            st.write(f"- **목표 매도가**: `${s_o['price']:.2f}` (+10.0%)")
-                            st.write(f"- **예상 총 매도금액**: **`${s_o['qty'] * s_o['price']:,.2f}`**")
-                    else:
-                        st.info("현재 보유 주식이 없어 매도 주문이 없습니다.")
-
-                with col_det2:
-                    st.markdown("#### 🟢 당일 40분할 매수 주문 (LOC 종가입찰)")
-                    b_orders = [o for o in orders if o["action"] == "BUY"]
-                    if b_orders:
-                        tot_b_qty = sum(b['qty'] for b in b_orders)
-                        tot_b_amt = sum(b['qty'] * b['price'] for b in b_orders)
-                        for idx, b_o in enumerate(b_orders, 1):
-                            st.write(f"**{idx}. {b_o['desc']}**")
-                            st.write(f"  • 수량: `{b_o['qty']:,}주` | LOC단가: `${b_o['price']:.2f}` | 주문금액: `${b_o['qty'] * b_o['price']:,.2f}`")
-                        st.markdown(f"**💰 당일 매수 총 예상금액**: **`${tot_b_amt:,.2f}`** (`{tot_b_qty:,}주`)")
-                    else:
-                        if st_data.get("status") in ["STOPPED", "PAUSED"]:
-                            st.warning("현재 무한매수가 강제 중지(STOPPED) 상태입니다. 수동 시작 버튼을 눌러 재개할 수 있습니다.")
-                        elif st_data.get("current_round", 0) >= st_data.get("division_count", 40):
-                            st.warning("40회차가 모두 소진되었습니다.")
-                        else:
-                            st.info("당일 매수 주문 생성 대기 중입니다.")
-
-        st.markdown("---")
-        st.write("💡 **무한매수 수동 제어 & 회차 관리**")
-        
-        c_sel, c_b1, c_b2, c_b3 = st.columns([3, 2.5, 2.5, 2])
-        with c_sel:
-            selected_symbol = st.selectbox("제어할 무한매수 종목 선택", infinite_stocks)
-        with c_b1:
-            if st.button(f"▶ {selected_symbol} 수동 시작", type="primary", width="stretch"):
-                bot.start_infinite_buying(selected_symbol)
-                st.success(f"🚀 [{selected_symbol}] 무한매수 매매 루틴을 수동으로 시작하였으며, 당일 주문 제안을 생성했습니다.")
-                st.rerun()
-        with c_b2:
-            if st.button(f"⏹ {selected_symbol} 강제 중지", width="stretch"):
-                bot.stop_infinite_buying(selected_symbol)
-                st.warning(f"⏹ [{selected_symbol}] 무한매수가 강제 중지(STOPPED)되었습니다.")
-                st.rerun()
-        with c_b3:
-            if st.button(f"🔄 {selected_symbol} 회차 초기화", width="stretch"):
-                bot.infinite_state_mgr.reset_round(selected_symbol)
-                st.info(f"🔄 [{selected_symbol}] 무한매수 회차가 0회차로 초기화되었습니다.")
-                st.rerun()
+            with stock_sub_tabs[-1]:
+                st.subheader("📊 전체 종목 무한매수 종합 요약")
+                summary_data = []
+                for sym in infinite_stocks:
+                    st_d = bot.infinite_state_mgr.get_symbol_state(sym)
+                    summary_data.append({
+                        "티커": sym,
+                        "진행 회차": f"{st_d.get('current_round', 0)} / {st_d.get('division_count', 40)} 회차",
+                        "총 예산 ($)": f"${st_d.get('total_budget_usd', 0.0):,.2f}",
+                        "평단가 ($)": f"${st_d.get('avg_price', 0.0):.2f}" if st_d.get('avg_price', 0) > 0 else "-",
+                        "보유 수량": f"{st_d.get('total_qty', 0):,} 주",
+                        "상태": st_d.get("status", "IDLE")
+                    })
+                st.dataframe(pd.DataFrame(summary_data), width="stretch", hide_index=True)
+        else:
+            render_stock_detail(infinite_stocks[0], bot)
     else:
         st.warning("현재 무한매수법이 비활성화되어 있습니다. config.py에서 `INFINITE_BUYING_ENABLED = True`로 설정하세요.")
+
 
 
 # 탭 3: 실시간 로그

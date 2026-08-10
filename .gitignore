@@ -10,8 +10,12 @@ __pycache__/
 
 # KIS API Token & Sensitive files
 token_kis_*.json
+.env
+.env.*
 *.env
 *.log
+gcp_key.json
+service_account.json
 
 # Temp & IDE Files
 Temp/

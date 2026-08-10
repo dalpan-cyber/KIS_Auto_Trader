@@ -740,3 +740,66 @@ class KISApiClient:
         except Exception as e:
             logger.error(f"[{symbol_upper}] 해외주식 주문 예외 발생: {e}")
             return {"success": False, "msg": str(e)}
+
+    def get_overseas_execution_history(
+        self,
+        symbol: str = "",
+        start_date: str = "",
+        end_date: str = ""
+    ) -> List[Dict[str, Any]]:
+        """
+        해외주식 체결/미체결 이력 조회 (VTTS3035R: 모의 / TTTS3035R: 실전)
+        """
+        self._ensure_token()
+        if not self.access_token or not self.cano:
+            return []
+
+        if not start_date:
+            start_date = time.strftime("%Y%m%d")
+        if not end_date:
+            end_date = time.strftime("%Y%m%d")
+
+        tr_id = "VTTS3035R" if self.mock else "TTTS3035R"
+        url = f"{self.url_base}/uapi/overseas-stock/v1/trading/inquire-ccnl"
+        headers = self._get_headers(tr_id)
+        params = {
+            "CANO": self.cano,
+            "ACNT_PRDT_CD": self.acnt_prdt_cd,
+            "PDNO": symbol.upper() if symbol else "%",
+            "ORD_STRT_DT": start_date,
+            "ORD_END_DT": end_date,
+            "SVR_DVSN_CD": "0",
+            "CCNL_DVSN": "00",
+            "ORD_GDS_DVSN": "00",
+            "CTX_AREA_FK200": "",
+            "CTX_AREA_NK200": ""
+        }
+
+        try:
+            self._rate_limit()
+            res = requests.get(url, headers=headers, params=params, timeout=10)
+            data = res.json()
+
+            if res.status_code == 200 and data.get("rt_cd") == "0":
+                output = data.get("output", [])
+                results = []
+                for item in output:
+                    results.append({
+                        "order_no": item.get("odno", ""),
+                        "symbol": item.get("pdno", ""),
+                        "order_type": item.get("sll_buy_dvsn_cd_name", ""),
+                        "qty": int(item.get("ft_ord_qty", 0) or 0),
+                        "price": float(item.get("ft_ord_unpr3", 0.0) or 0.0),
+                        "executed_qty": int(item.get("ft_ccnl_qty", 0) or 0),
+                        "executed_price": float(item.get("ft_ccnl_unpr3", 0.0) or 0.0),
+                        "status": item.get("prcs_stat_name", ""),
+                        "order_time": item.get("ord_dt", "") + " " + item.get("ord_tmd", "")
+                    })
+                return results
+            else:
+                logger.debug(f"해외주식 체결내역 조회 실패: {data.get('msg1')}")
+                return []
+        except Exception as e:
+            logger.error(f"해외주식 체결내역 조회 예외 발생: {e}")
+            return []
+

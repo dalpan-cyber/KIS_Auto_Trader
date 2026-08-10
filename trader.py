@@ -201,6 +201,17 @@ class TraderBot:
         ord_type = prop.get("ord_type", "00")
         is_buy = (action == "BUY")
 
+        # 전량 매도 시 수량 불일치 자동 안전 보정
+        if not is_buy and symbol in self.holdings:
+            actual_held_qty = int(self.holdings[symbol].get("qty", 0))
+            if actual_held_qty > 0 and actual_held_qty != qty:
+                self.logger.warning(
+                    f"⚠️ [{symbol}] 전량 익절 매도 수량 불일치 감지! "
+                    f"제안 수량: {qty}주 vs 증권사 계좌 실제: {actual_held_qty}주. "
+                    f"주문 거부(APBK0013) 방지를 위해 계좌 수량({actual_held_qty}주)으로 자동 조정합니다."
+                )
+                qty = actual_held_qty
+
         self.logger.info(f"✅ [{symbol}] 사용자가 매매 제안을 승인하였습니다! {prop['action_kr']} 주문을 전송합니다 ({qty}주)")
 
         if self.api.is_overseas_symbol(symbol):
@@ -218,6 +229,8 @@ class TraderBot:
             else:
                 err_msg = order_res.get('msg', '')
                 self.logger.error(f"❌ [{symbol}] 해외주식 주문 실행 실패: {err_msg}")
+                if is_buy:
+                    self.infinite_state_mgr.record_buy_failure(symbol, qty=qty, price=price, reason=err_msg)
                 self._check_and_log_apbk1681_guidance(symbol, err_msg)
                 self.risk_mgr.record_error()
                 return False
@@ -233,6 +246,8 @@ class TraderBot:
             else:
                 err_msg = order_res.get('msg', '')
                 self.logger.error(f"❌ [{symbol}] {prop['action_kr']} 주문 실행 실패: {err_msg}")
+                if is_buy:
+                    self.infinite_state_mgr.record_buy_failure(symbol, qty=qty, price=price, reason=err_msg)
                 self._check_and_log_apbk1681_guidance(symbol, err_msg)
                 self.risk_mgr.record_error()
                 return False
@@ -298,9 +313,22 @@ class TraderBot:
                     ord_type = order["ord_type"]
                     desc = order["desc"]
                     round_inc = order.get("round_inc", 1.0)
-                    total_ord_amt = qty * price
 
+                    # 전량 익절 매도 시 실시간 계좌 수량과 자동 맞춰서 수량 불일치 오류 방지
+                    if action == "SELL" and symbol in self.holdings:
+                        actual_held_qty = int(self.holdings[symbol].get("qty", 0))
+                        if actual_held_qty > 0 and actual_held_qty != qty:
+                            self.logger.warning(
+                                f"⚠️ [{symbol}] 전량 매도 수량 맞춤 보정! 로컬 상태: {qty}주 -> 실시간 계좌 보유: {actual_held_qty}주"
+                            )
+                            qty = actual_held_qty
+                            order["qty"] = qty
+                            state["total_qty"] = actual_held_qty
+                            self.infinite_state_mgr.save_state()
+
+                    total_ord_amt = qty * price
                     proposal_id = f"INFINITE_{symbol}_{action}_{ord_type}_{price:.2f}"
+
                     if self.require_approval:
                         if proposal_id not in self.pending_proposals:
                             self.pending_proposals[proposal_id] = {
@@ -335,15 +363,17 @@ class TraderBot:
                             if is_buy:
                                 self.infinite_state_mgr.record_buy_execution(symbol, qty, price, round_inc=round_inc)
                             else:
+                                self.infinite_state_mgr.record_sell_execution(symbol, qty, price)
                                 self.logger.info(
                                     f"🎉 [{symbol}] 해외주식 익절 매도 주문 접수 성공! "
-                                    f"(매도수량: {qty}주, 목표가: ${price:.2f}, 예상총액: ${total_ord_amt:,.2f} | "
-                                    f"누적 보유: {tot_qty}주, 평단가: ${avg_p:.2f})"
+                                    f"(매도수량: {qty}주, 목표가: ${price:.2f}, 예상총액: ${total_ord_amt:,.2f})"
                                 )
                             self.risk_mgr.reset_error()
                         else:
                             err_msg = order_res.get('msg', '')
                             self.logger.error(f"❌ [{symbol}] 해외주식 무한매수 {action_kr} 주문 실패: {err_msg}")
+                            if is_buy:
+                                self.infinite_state_mgr.record_buy_failure(symbol, qty=qty, price=price, reason=err_msg)
                             self._check_and_log_apbk1681_guidance(symbol, err_msg)
                             self.risk_mgr.record_error()
 
@@ -351,6 +381,7 @@ class TraderBot:
                     self.infinite_state_mgr.update_last_order_date(symbol, today_str)
             except Exception as e:
                 self.logger.error(f"[{symbol}] 무한매수 루틴 실행 예외: {e}")
+
 
     def run_trading_cycle(self):
         """
