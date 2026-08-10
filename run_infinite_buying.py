@@ -61,6 +61,11 @@ def main():
             logger.info(f"▶ [{symbol}] 무한매수 상태가 IDLE입니다. 자동 매수 진행(BUYING) 상태로 전환합니다.")
             bot.infinite_state_mgr.start_buying(symbol)
 
+    # Google Sheet 연결 상태 점검
+    gss_connected = bot.infinite_state_mgr.gss_mgr.is_connected if hasattr(bot.infinite_state_mgr, "gss_mgr") and bot.infinite_state_mgr.gss_mgr else False
+    gss_status_str = "🟢 연동 성공" if gss_connected else "🔴 미연동 (gcp_key.json 키 및 시트 공유 설정 필요)"
+    logger.info(f"📊 [Google Sheets 동기화 상태] {gss_status_str}")
+
     # 3. 라오어 무한매수법 당일 매매 루틴 실행
     logger.info("🚀 무한매수 당일 LOC 매수 & 익절 매도 주문 생성/제출 실행...")
     bot.run_infinite_buying_cycle()
@@ -70,6 +75,9 @@ def main():
         logger.info(f"⚡ 생성된 {len(bot.pending_proposals)}건의 대기 주문을 KIS API로 즉시 전송합니다...")
         for prop_id in list(bot.pending_proposals.keys()):
             bot.approve_proposal(prop_id)
+
+    # 5. 최종 무한매수 상태 저장 및 구글 시트 동기화 강제 실행
+    bot.infinite_state_mgr.save_state()
 
     logger.info("🎉 ===== 무한매수 당일 루틴 실행 완료 =====")
 

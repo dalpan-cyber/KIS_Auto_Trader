@@ -663,6 +663,81 @@ class KISApiClient:
             logger.error(f"해외 계좌 잔고 조회 실패 예외: {e}")
             return {"success": True, "usd_deposit": getattr(self, "_mock_usd_deposit", 5000.0), "is_simulated": True}
 
+    def get_overseas_stock_balance(self) -> Dict[str, Any]:
+        """
+        해외주식 잔고 보유 종목 및 수량 조회 (VTTS3012R: 모의 / TTTS3012R: 실전)
+        """
+        self._ensure_token()
+        if not self.access_token or not self.cano:
+            # 시뮬레이션 모드 시 가상 보유 종목 변환 리턴
+            mock_holdings = []
+            for code, item in getattr(self, "_mock_holdings", {}).items():
+                if self.is_overseas_symbol(code):
+                    mock_holdings.append({
+                        "code": code,
+                        "name": item.get("name", f"해외({code})"),
+                        "qty": int(item.get("qty", 0)),
+                        "avg_price": float(item.get("avg_price", 0.0)),
+                        "current_price": float(item.get("current_price", 0.0)),
+                        "pnl_rate": float(item.get("pnl_rate", 0.0))
+                    })
+            return {"success": True, "holdings": mock_holdings, "is_simulated": True}
+
+        tr_id = "VTTS3012R" if self.mock else "TTTS3012R"
+        url = f"{self.url_base}/uapi/overseas-stock/v1/trading/inquire-balance"
+        headers = self._get_headers(tr_id)
+        params = {
+            "CANO": self.cano,
+            "ACNT_PRDT_CD": self.acnt_prdt_cd,
+            "OVRS_EXCG_CD": "NASD",
+            "TR_CRCY_CD": "USD",
+            "CTX_AREA_FK200": "",
+            "CTX_AREA_NK200": ""
+        }
+
+        try:
+            self._rate_limit()
+            res = requests.get(url, headers=headers, params=params, timeout=10)
+            data = res.json()
+
+            if res.status_code == 200 and data.get("rt_cd") == "0":
+                output1 = data.get("output1", [])
+                holdings_list = []
+                for item in output1:
+                    qty = int(float(item.get("ovrs_ccls_qty", item.get("ccls_qty", item.get("hldg_qty", 0))) or 0))
+                    if qty <= 0:
+                        continue
+                    code = item.get("ovrs_pdno", item.get("pdno", item.get("symb", ""))).strip().upper()
+                    if not code:
+                        continue
+                    name = item.get("ovrs_item_name", item.get("item_name", item.get("prdt_name", code)))
+                    avg_p = float(item.get("pchs_avg_pric", item.get("avg_pric", 0.0)) or 0.0)
+                    cur_p = float(item.get("now_pric2", item.get("last_prik", 0.0)) or 0.0)
+                    pnl_rate = float(item.get("evlu_pfls_rt", item.get("pfls_rt", 0.0)) or 0.0)
+
+                    holdings_list.append({
+                        "code": code,
+                        "name": name,
+                        "qty": qty,
+                        "avg_price": avg_p,
+                        "current_price": cur_p,
+                        "pnl_rate": pnl_rate
+                    })
+                return {"success": True, "holdings": holdings_list, "is_simulated": False}
+            else:
+                msg1 = data.get("msg1", "")
+                if "만료된" in msg1 or data.get("msg_cd") == "EGW00123":
+                    logger.warning("Token 만료 감지: 해외 잔고 재조회 시도...")
+                    self.access_token = None
+                    self.token_issued_at = 0
+                    if self.get_access_token():
+                        return self.get_overseas_stock_balance()
+                logger.error(f"해외주식 잔고 조회 실패: {msg1}")
+                return {"success": False, "msg": msg1, "holdings": []}
+        except Exception as e:
+            logger.error(f"해외주식 잔고 조회 예외 발생: {e}")
+            return {"success": False, "msg": str(e), "holdings": []}
+
     def order_overseas_cash(
         self,
         symbol: str,

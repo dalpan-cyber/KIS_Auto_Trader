@@ -123,8 +123,23 @@ class TraderBot:
                 self.exchange_rate = float(overseas_res.get("exchange_rate", 1428.20))
                 self.is_usd_simulated = overseas_res.get("is_simulated", True)
 
+            # 해외주식 보유 잔고 수신 및 통합
+            overseas_stock_res = self.api.get_overseas_stock_balance()
+            if overseas_stock_res.get("success"):
+                for item in overseas_stock_res.get("holdings", []):
+                    code = item["code"]
+                    new_holdings[code] = {
+                        "name": item.get("name", f"해외_{code}"),
+                        "qty": item["qty"],
+                        "avg_price": item["avg_price"],
+                        "current_price": item["current_price"],
+                        "pnl_rate": item.get("pnl_rate", 0.0)
+                    }
+            self.holdings = new_holdings
+
             sim_str = " (시뮬레이션)" if getattr(self, "is_usd_simulated", True) else " (실제 조회)"
-            self.logger.info(f"[계좌잔고] 원화예수금: ₩{self.available_cash:,.0f} | 외화예수금: ${self.available_usd_cash:,.2f}{sim_str} | 총자산: ₩{self.total_eval_amount:,.0f}")
+            ovrs_hldg_cnt = sum(1 for c in self.holdings if self.api.is_overseas_symbol(c))
+            self.logger.info(f"[계좌잔고] 원화예수금: ₩{self.available_cash:,.0f} | 외화예수금: ${self.available_usd_cash:,.2f}{sim_str} | 해외보유종목: {ovrs_hldg_cnt}개 | 총자산: ₩{self.total_eval_amount:,.0f}")
         else:
             self.logger.error(f"계좌 잔고 조회 실패: {res.get('msg')}")
 
@@ -219,7 +234,13 @@ class TraderBot:
             if order_res.get("success"):
                 round_inc = prop.get("round_inc", 1.0)
                 if is_buy:
-                    self.infinite_state_mgr.record_buy_execution(symbol, qty=qty, price=price, round_inc=round_inc)
+                    if ord_type == "34":
+                        self.infinite_state_mgr.record_order_sent(
+                            symbol, qty=qty, price=price, ord_type=ord_type,
+                            desc=prop.get("reason", "LOC 매수 주문 전송 완료")
+                        )
+                    else:
+                        self.infinite_state_mgr.record_buy_execution(symbol, qty=qty, price=price, round_inc=round_inc)
                 else:
                     self.infinite_state_mgr.record_sell_execution(symbol, qty=qty, price=price)
                 self.risk_mgr.reset_error()
@@ -290,6 +311,21 @@ class TraderBot:
 
                 curr_round = state.get("current_round", 0)
                 div_count = state.get("division_count", 40)
+
+                # 계좌 실제 잔고 수량과 JSON 상태 수량 상호 동기화 (미보유 시 0주로 자동 보정)
+                actual_held_qty = int(self.holdings.get(symbol, {}).get("qty", 0))
+                actual_avg_p = float(self.holdings.get(symbol, {}).get("avg_price", 0.0))
+                if actual_held_qty != state.get("total_qty", 0):
+                    self.logger.info(
+                        f"🔄 [{symbol}] 실시간 계좌 수량 동기화: JSON state ({state.get('total_qty', 0)}주) -> 실계좌 ({actual_held_qty}주)"
+                    )
+                    state["total_qty"] = actual_held_qty
+                    if actual_avg_p > 0:
+                        state["avg_price"] = round(actual_avg_p, 4)
+                    elif actual_held_qty == 0:
+                        state["avg_price"] = 0.0
+                    self.infinite_state_mgr.save_state()
+
                 tot_qty = state.get("total_qty", 0)
                 avg_p = state.get("avg_price", 0.0)
                 avg_p_str = f"${avg_p:.2f}" if avg_p > 0 else "미보유(-)"
@@ -315,11 +351,11 @@ class TraderBot:
                     round_inc = order.get("round_inc", 1.0)
 
                     # 전량 익절 매도 시 실시간 계좌 수량과 자동 맞춰서 수량 불일치 오류 방지
-                    if action == "SELL" and symbol in self.holdings:
-                        actual_held_qty = int(self.holdings[symbol].get("qty", 0))
-                        if actual_held_qty > 0 and actual_held_qty != qty:
+                    if action == "SELL":
+                        actual_held_qty = int(self.holdings.get(symbol, {}).get("qty", state.get("total_qty", 0)))
+                        if actual_held_qty > 0 and qty != actual_held_qty:
                             self.logger.warning(
-                                f"⚠️ [{symbol}] 전량 매도 수량 맞춤 보정! 로컬 상태: {qty}주 -> 실시간 계좌 보유: {actual_held_qty}주"
+                                f"⚠️ [{symbol}] 전량 매도 수량 맞춤 보정! 주문 제안: {qty}주 -> 실시간 계좌 보유: {actual_held_qty}주"
                             )
                             qty = actual_held_qty
                             order["qty"] = qty
@@ -361,7 +397,10 @@ class TraderBot:
                         if order_res.get("success"):
                             orders_sent = True
                             if is_buy:
-                                self.infinite_state_mgr.record_buy_execution(symbol, qty, price, round_inc=round_inc)
+                                if ord_type == "34":
+                                    self.infinite_state_mgr.record_order_sent(symbol, qty=qty, price=price, ord_type=ord_type, desc=desc)
+                                else:
+                                    self.infinite_state_mgr.record_buy_execution(symbol, qty, price, round_inc=round_inc)
                             else:
                                 self.infinite_state_mgr.record_sell_execution(symbol, qty, price)
                                 self.logger.info(

@@ -14,14 +14,15 @@ DEFAULT_STATE_FILE = "infinite_trader_state.json"
 class InfiniteStateManager:
     """무한매수법 상태 영속성 관리 클래스 (로컬 JSON + Google Sheets 동기화)"""
 
-    def __init__(self, file_path: str = DEFAULT_STATE_FILE):
+    def __init__(self, file_path: str = DEFAULT_STATE_FILE, enable_gss: Optional[bool] = None):
         self.file_path = file_path
-        self.states: Dict[str, Dict[str, Any]] = {}
-        self.gss_mgr = GoogleSheetManager()
+        if enable_gss is None:
+            enable_gss = (file_path == DEFAULT_STATE_FILE)
+        self.gss_mgr = GoogleSheetManager(enabled=enable_gss)
         self.load_state()
 
     def load_state(self) -> Dict[str, Dict[str, Any]]:
-        """로컬 JSON 파일에서 무한매수 상태 로드"""
+        """로컬 JSON 파일 및 Google Sheets에서 무한매수 상태 로드 (양방향 동기화)"""
         if os.path.exists(self.file_path):
             try:
                 with open(self.file_path, "r", encoding="utf-8") as f:
@@ -32,6 +33,25 @@ class InfiniteStateManager:
                 self.states = {}
         else:
             self.states = {}
+
+        # 구글 시트에 사용자가 수동 수정한 종목 상태가 있다면 동기화 반영 (양방향 동기화)
+        if hasattr(self, "gss_mgr") and self.gss_mgr and self.gss_mgr.is_connected:
+            sheet_states = self.gss_mgr.read_states_from_sheet()
+            for symbol, s_data in sheet_states.items():
+                if symbol not in self.states:
+                    s_data.setdefault("division_count", 40)
+                    s_data.setdefault("history", [])
+                    self.states[symbol] = s_data
+                else:
+                    # 구글 시트 수동 변경사항(진행회차, 총예산, 목표수익률, 매매상태 등) 반영
+                    self.states[symbol]["current_round"] = s_data.get("current_round", self.states[symbol].get("current_round", 0))
+                    self.states[symbol]["total_budget_usd"] = s_data.get("total_budget_usd", self.states[symbol].get("total_budget_usd", 5000.0))
+                    self.states[symbol]["target_roi"] = s_data.get("target_roi", self.states[symbol].get("target_roi", 0.10))
+                    if s_data.get("status"):
+                        self.states[symbol]["status"] = s_data["status"]
+                    self.states[symbol].setdefault("division_count", 40)
+                    self.states[symbol].setdefault("history", [])
+
         return self.states
 
     def save_state(self):

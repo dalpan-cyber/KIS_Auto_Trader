@@ -106,8 +106,8 @@ class GoogleSheetManager:
                 self.is_connected = False
                 return False
 
+            sa_email = getattr(creds, "service_account_email", "알 수 없음")
             self.client = gspread.authorize(creds)
-
 
             # 스프레드시트 열기 (KEY 우선, 없으면 NAME)
             if self.sheet_key:
@@ -116,7 +116,7 @@ class GoogleSheetManager:
                 try:
                     self.spreadsheet = self.client.open(self.sheet_name)
                 except gspread.exceptions.SpreadsheetNotFound:
-                    logger.info(f"구글 시트 '{self.sheet_name}' 생성 중...")
+                    logger.info(f"구글 시트 '{self.sheet_name}' 생성 시도 (서비스 계정: {sa_email})...")
                     self.spreadsheet = self.client.create(self.sheet_name)
 
             # 'State' 워크시트 준비
@@ -136,10 +136,15 @@ class GoogleSheetManager:
                 self.history_worksheet.append_row(headers)
 
             self.is_connected = True
-            logger.info("🟢 Google Sheets 연동 및 워크시트 초기화 완료!")
+            logger.info(f"🟢 Google Sheets 연동 성공! (서비스 계정: {sa_email} | 시트: {self.spreadsheet.title})")
             return True
         except Exception as e:
-            logger.warning(f"Google Sheets 연결 실패: {e}")
+            sa_email = getattr(creds, "service_account_email", "알 수 없음") if 'creds' in locals() and creds else "미인증"
+            logger.warning(
+                f"🚨 Google Sheets 연결/접근 실패: {e}\n"
+                f"💡 [필수 체크] 구글 시트 상단 '공유' 버튼에서 아래 서비스 계정 이메일을 '편집자(Editor)'로 추가했는지 확인하세요:\n"
+                f"   👉 GCP Service Account Email: {sa_email}"
+            )
             self.is_connected = False
             return False
 
@@ -150,7 +155,11 @@ class GoogleSheetManager:
 
         try:
             now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            all_records = self.state_worksheet.get_all_records()
+            try:
+                all_records = self.state_worksheet.get_all_records()
+            except Exception:
+                all_records = []
+
             ticker_row_map = {}
             for idx, rec in enumerate(all_records, start=2):
                 if rec.get("티커"):
@@ -172,13 +181,52 @@ class GoogleSheetManager:
 
                 if sym_upper in ticker_row_map:
                     row_idx = ticker_row_map[sym_upper]
-                    self.state_worksheet.update(f"A{row_idx}:I{row_idx}", [row_data])
+                    self.state_worksheet.update([row_data], range_name=f"A{row_idx}:I{row_idx}")
                 else:
                     self.state_worksheet.append_row(row_data)
 
             logger.debug("Google Sheet 'State' 워크시트 동기화 성공")
         except Exception as e:
-            logger.warning(f"Google Sheet State 동기화 예외: {e}")
+            if "429" in str(e) or "Quota exceeded" in str(e):
+                logger.debug("Google Sheet State API 호출 할당량 초과 (다음 턴 재시도)")
+            else:
+                logger.warning(f"Google Sheet State 동기화 예외: {e}")
+
+    def read_states_from_sheet(self) -> Dict[str, Dict[str, Any]]:
+        """Google Sheet 'State' 워크시트에서 사용자가 수동 편집한 종목 상태 읽어오기"""
+        if not self.is_connected or not self.state_worksheet:
+            return {}
+
+        sheet_states = {}
+        try:
+            records = self.state_worksheet.get_all_records()
+            for rec in records:
+                ticker = str(rec.get("티커", "")).strip().upper()
+                if not ticker:
+                    continue
+                roi_val = rec.get("목표수익률(%)", 10.0)
+                try:
+                    roi_float = float(roi_val) / 100.0 if float(roi_val) > 1.0 else float(roi_val)
+                except Exception:
+                    roi_float = 0.10
+
+                sheet_states[ticker] = {
+                    "symbol": ticker,
+                    "division_count": 40,
+                    "current_round": float(rec.get("진행회차", 0.0) or 0.0),
+                    "total_budget_usd": float(rec.get("총예산($)", 5000.0) or 5000.0),
+                    "avg_price": float(rec.get("평단가($)", 0.0) or 0.0),
+                    "total_qty": int(rec.get("누적수량", 0) or 0),
+                    "target_roi": round(roi_float, 4),
+                    "status": str(rec.get("상태", "IDLE")).strip().upper(),
+                    "last_order_date": str(rec.get("마지막주문일자", "-")).strip(),
+                    "history": []
+                }
+            if sheet_states:
+                logger.info(f"📊 Google Sheet 'State'에서 {len(sheet_states)}개 종목 상태 불러오기 성공 ({', '.join(sheet_states.keys())})")
+        except Exception as e:
+            logger.warning(f"Google Sheet 상태 읽기 실패: {e}")
+        return sheet_states
 
     def append_history_entry(
         self,
