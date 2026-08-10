@@ -4,81 +4,54 @@
     "total_budget_usd": 5000.0,
     "division_count": 40,
     "current_round": 0.0,
-    "avg_price": 0.0,
-    "total_qty": 0,
+    "avg_price": 74.02,
+    "total_qty": 3,
     "target_roi": 0.1,
     "status": "BUYING",
     "history": [
       {
+        "date": "2026-08-07 23:35:00",
         "type": "BUY",
+        "status_label": "🟢 매수 체결 완료",
+        "qty": 1,
+        "price": 74.47,
+        "round": 0.5,
+        "avg_price": 74.47,
+        "total_qty": 1,
+        "note": "0.5회차 상향 LOC 매수 체결 ($77.15 주문 ➔ $74.47 체결)"
+      },
+      {
+        "date": "2026-08-07 23:35:00",
+        "type": "BUY_FAILED",
+        "status_label": "❌ 매수 미체결",
         "qty": 1,
         "price": 73.47,
         "round": 0.5,
-        "avg_price": 73.47,
-        "total_qty": 1
+        "avg_price": 74.47,
+        "total_qty": 1,
+        "note": "0.5회차 평단가 LOC 매수 미체결 ($73.47 주문)"
       },
       {
+        "date": "2026-08-11 23:35:00",
         "type": "BUY",
+        "status_label": "🟢 매수 체결 완료",
         "qty": 1,
-        "price": 77.15,
+        "price": 73.8,
         "round": 1.0,
-        "avg_price": 75.31,
-        "total_qty": 2
-      },
-      {
-        "date": "2026-08-10 19:59:29",
-        "type": "BUY_FAILED",
-        "status_label": "❌ 매수 실패",
-        "qty": 1,
-        "price": 50.0,
-        "round": 1.0,
-        "avg_price": 75.31,
+        "avg_price": 74.14,
         "total_qty": 2,
-        "note": "해당종목은 기본예탁금 충족한 계좌만 매수주문가능합니다 (코드: APBK1681)"
+        "note": "0.5회차 평단가 LOC 매수 체결 ($73.95 주문 ➔ $73.80 체결)"
       },
       {
-        "date": "2026-08-10 23:42:03",
-        "type": "ORDER_SENT",
-        "status_label": "⏳ LOC 주문 접수",
+        "date": "2026-08-11 23:35:00",
+        "type": "BUY",
+        "status_label": "🟢 매수 체결 완료",
         "qty": 1,
-        "price": 75.31,
-        "round": 1.0,
-        "avg_price": 75.31,
-        "total_qty": 2,
-        "note": "0.5회차 평단가 LOC 매수 ($75.31, 1주)"
-      },
-      {
-        "date": "2026-08-10 23:42:05",
-        "type": "ORDER_SENT",
-        "status_label": "⏳ LOC 주문 접수",
-        "qty": 1,
-        "price": 79.08,
-        "round": 1.0,
-        "avg_price": 75.31,
-        "total_qty": 2,
-        "note": "0.5회차 상향 LOC 매수 ($79.08, 1주)"
-      },
-      {
-        "date": "2026-08-11 00:31:27",
-        "type": "ORDER_SENT",
-        "status_label": "⏳ LOC 주문 접수",
-        "qty": 1,
-        "price": 73.95,
-        "round": 0.0,
-        "avg_price": 0.0,
-        "total_qty": 0,
-        "note": "0.5회차 평단가 LOC 매수 ($73.95, 1주)"
-      },
-      {
-        "date": "2026-08-11 00:31:30",
-        "type": "ORDER_SENT",
-        "status_label": "⏳ LOC 주문 접수",
-        "qty": 1,
-        "price": 77.65,
-        "round": 0.0,
-        "avg_price": 0.0,
-        "total_qty": 0,
-        "note": "0.5회차 상향 LOC 매수 ($77.65, 1주)"
+        "price": 73.8,
+        "round": 1.5,
+        "avg_price": 74.02,
+        "total_qty": 3,
+        "note": "0.5회차 상향 LOC 매수 체결 ($77.65 주문 ➔ $73.80 체결)"
       }
     ],
     "last_order_date": "2026-08-11"
