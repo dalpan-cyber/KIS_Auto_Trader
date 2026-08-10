@@ -16,6 +16,10 @@ token_kis_*.json
 *.log
 gcp_key.json
 service_account.json
+kis-auto-trader-*.json
+*service_account*.json
+*gcp*.json
+
 
 # Temp & IDE Files
 Temp/
