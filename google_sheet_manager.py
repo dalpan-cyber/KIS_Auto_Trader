@@ -71,13 +71,24 @@ class GoogleSheetManager:
             except Exception as e:
                 logger.warning(f"환경변수 GCP_SERVICE_ACCOUNT_JSON 파싱 실패: {e}")
 
-        # 3. 로컬 서비스 계정 파일 검색 (gcp_key.json, service_account.json)
-        possible_files = ["gcp_key.json", "service_account.json", "credentials.json"]
+        # 3. 로컬 서비스 계정 파일 자동 탐색 (gcp_key.json, service_account.json 또는 GCP JSON 키 파일)
+        possible_files = ["gcp_key.json", "service_account.json", "credentials.json", "gcp_service_account.json"]
+        try:
+            for fname in os.listdir("."):
+                if fname.endswith(".json") and fname not in possible_files:
+                    if not fname.startswith("token_kis_") and not fname.startswith("infinite_"):
+                        possible_files.append(fname)
+        except Exception:
+            pass
+
         for fpath in possible_files:
             if os.path.exists(fpath):
                 try:
-                    logger.info(f"로컬 파일 {fpath}에서 서비스 계정 로드 성공")
-                    return Credentials.from_service_account_file(fpath, scopes=self.SCOPES)
+                    with open(fpath, "r", encoding="utf-8") as _kf:
+                        _content = _kf.read()
+                        if "private_key" in _content and "service_account" in _content:
+                            logger.info(f"로컬 GCP 서비스 계정 인증키 파일 탐색 성공: {fpath}")
+                            return Credentials.from_service_account_file(fpath, scopes=self.SCOPES)
                 except Exception as e:
                     logger.warning(f"로컬 파일 {fpath} 로드 실패: {e}")
 
@@ -88,11 +99,15 @@ class GoogleSheetManager:
         try:
             creds = self._get_credentials()
             if not creds:
-                logger.info("GCP 서비스 계정 인증 정보가 설정되지 않았습니다. 로컬 JSON 저장소만 사용합니다.")
+                logger.warning(
+                    "💡 [Google Sheets 안내] GCP 서비스 계정 인증키(gcp_key.json)가 폴더에 없거나 환경변수/Secrets가 설정되지 않아 구글 시트 연동을 건너땁니다. "
+                    "(구글 콘솔에서 다운로드받은 JSON 키 파일을 'gcp_key.json'으로 프로젝트 폴더에 넣어주시면 자동 연동됩니다.)"
+                )
                 self.is_connected = False
                 return False
 
             self.client = gspread.authorize(creds)
+
 
             # 스프레드시트 열기 (KEY 우선, 없으면 NAME)
             if self.sheet_key:
