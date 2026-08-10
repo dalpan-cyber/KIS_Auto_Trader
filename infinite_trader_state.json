@@ -3,9 +3,9 @@
     "symbol": "TQQQ",
     "total_budget_usd": 5000,
     "division_count": 40,
-    "current_round": 1.0,
-    "avg_price": 75.31,
-    "total_qty": 2,
+    "current_round": 2.0,
+    "avg_price": 76.2525,
+    "total_qty": 4,
     "target_roi": 0.1,
     "status": "BUYING",
     "history": [
@@ -57,7 +57,30 @@
         "avg_price": 75.31,
         "total_qty": 2,
         "note": "해당종목은 기본예탁금 충족한 계좌만 매수주문가능합니다 (코드: APBK1681)"
+      },
+      {
+        "date": "2026-08-10 23:37:35",
+        "type": "BUY",
+        "status_label": "🟢 매수 체결 완료",
+        "qty": 1,
+        "price": 75.31,
+        "round": 1.5,
+        "avg_price": 75.31,
+        "total_qty": 3,
+        "note": "매수 체결 성공"
+      },
+      {
+        "date": "2026-08-10 23:37:37",
+        "type": "BUY",
+        "status_label": "🟢 매수 체결 완료",
+        "qty": 1,
+        "price": 79.08,
+        "round": 2.0,
+        "avg_price": 76.2525,
+        "total_qty": 4,
+        "note": "매수 체결 성공"
       }
-    ]
+    ],
+    "last_order_date": "2026-08-10"
   }
 }
