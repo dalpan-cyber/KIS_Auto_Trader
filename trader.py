@@ -143,6 +143,19 @@ class TraderBot:
         else:
             self.logger.error(f"계좌 잔고 조회 실패: {res.get('msg')}")
 
+    def sync_holdings_to_state(self):
+        """실시간 계좌 보유 종목 수량/평단가를 무한매수 상태 및 구글 시트에 즉시 동기화"""
+        for symbol in self.infinite_stocks:
+            state = self.infinite_state_mgr.get_symbol_state(symbol)
+            actual_held_qty = int(self.holdings.get(symbol, {}).get("qty", 0))
+            actual_avg_p = float(self.holdings.get(symbol, {}).get("avg_price", 0.0))
+            state["total_qty"] = actual_held_qty
+            if actual_avg_p > 0:
+                state["avg_price"] = round(actual_avg_p, 4)
+            elif actual_held_qty == 0:
+                state["avg_price"] = 0.0
+        self.infinite_state_mgr.save_state()
+
     def start_infinite_buying(self, symbol: str):
         """특정 종목의 무한매수 수동 시작"""
         self.infinite_state_mgr.start_buying(symbol)

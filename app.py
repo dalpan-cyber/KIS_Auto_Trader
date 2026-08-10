@@ -201,7 +201,8 @@ with st.sidebar:
     if st.button("🔄 잔고/시세 즉시 갱신", width="stretch"):
         bot.fetch_account_balance()
         bot.fetch_target_prices()
-        st.success("계좌 잔고 및 종목 시세가 갱신되었습니다.")
+        bot.sync_holdings_to_state()
+        st.success("계좌 잔고, 시세 및 구글 시트 동기화가 완료되었습니다.")
         st.rerun()
 
     st.divider()

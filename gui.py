@@ -282,6 +282,7 @@ class TradingDashboard(QMainWindow):
         """잔고 및 시세 즉시 갱신"""
         logging.info("계좌 잔고 및 종목 정보 갱신 중...")
         self.bot.fetch_account_balance()
+        self.bot.sync_holdings_to_state()
         self._update_ui_tables()
 
     def _on_timer_tick(self):
