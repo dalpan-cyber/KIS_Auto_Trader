@@ -39,8 +39,10 @@ jobs:
           KIS_CANO: ${{ secrets.KIS_CANO }}
           KIS_ACNT_PRDT_CD: ${{ secrets.KIS_ACNT_PRDT_CD }}
           KIS_ACCOUNT_PWD: ${{ secrets.KIS_ACCOUNT_PWD }}
+          GCP_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}
         run: |
           python run_infinite_buying.py
+
 
       - name: 5. 무한매수 진행 회차 상태(infinite_trader_state.json) Git 저장소 자동 커밋 & 푸시
         uses: stefanzweifel/git-auto-commit-action@v5
