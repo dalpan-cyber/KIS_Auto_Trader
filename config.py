@@ -32,6 +32,9 @@ TARGET_STOCKS = [
     "PFE",     # 화이자 (미국)
     "PLTR",    # 팔란티어 (미국)
 ]
+INFINITE_STOCKS = [
+    "TQQQ",  
+]
 
 # --- 매매 전략 설정 ---
 STRATEGY_NAME = "MA_CROSS"  # MA_CROSS (이동평균 교차) 또는 VOLATILITY_BREAKOUT (변동성 돌파)
