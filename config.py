@@ -53,3 +53,5 @@ TRAILING_STOP_RATIO = 0.02    # 트레일링 스탑 비율 (고점 대비 2% 하
 # --- API 안전성 및 속도 제한 설정 ---
 API_CALL_DELAY = 0.2          # API 연속 호출 간 최소 딜레이 (초)
 LOG_LEVEL = "INFO"            # DEBUG, INFO, WARNING, ERROR
+
+INFINITE_BUYING_ENABLED = True
