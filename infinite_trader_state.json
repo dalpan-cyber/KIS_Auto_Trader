@@ -35,6 +35,28 @@
         "avg_price": 75.31,
         "total_qty": 2,
         "note": "해당종목은 기본예탁금 충족한 계좌만 매수주문가능합니다 (코드: APBK1681)"
+      },
+      {
+        "date": "2026-08-10 20:38:51",
+        "type": "BUY_FAILED",
+        "status_label": "❌ 매수 실패",
+        "qty": 1,
+        "price": 50.0,
+        "round": 1.0,
+        "avg_price": 75.31,
+        "total_qty": 2,
+        "note": "해당종목은 기본예탁금 충족한 계좌만 매수주문가능합니다 (코드: APBK1681)"
+      },
+      {
+        "date": "2026-08-10 20:52:27",
+        "type": "BUY_FAILED",
+        "status_label": "❌ 매수 실패",
+        "qty": 1,
+        "price": 50.0,
+        "round": 1.0,
+        "avg_price": 75.31,
+        "total_qty": 2,
+        "note": "해당종목은 기본예탁금 충족한 계좌만 매수주문가능합니다 (코드: APBK1681)"
       }
     ]
   }
