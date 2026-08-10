@@ -6,12 +6,19 @@ import logging
 import pandas as pd
 import numpy as np
 import streamlit as st
-import plotly.graph_objects as go
+
+PLOTLY_AVAILABLE = False
+try:
+    import plotly.graph_objects as go
+    PLOTLY_AVAILABLE = True
+except ImportError:
+    pass
 
 import config
 from kis_api import KISApiClient
 from trader import TraderBot
 from strategy import Signal, StrategyFactory
+
 
 # -----------------------------------------------------------------------------
 # 1. 페이지 기본 설정 및 디자인 테마 CSS
@@ -467,82 +474,91 @@ def render_stock_detail(symbol: str, bot: TraderBot):
     # 4. Plotly 주가 & 매수이력 그래프
     st.subheader(f"📈 [{symbol}] 일별 주가 & 매수/매도/실패 이력 대조 차트")
     chart_data = bot.api.get_daily_chart(symbol, count=60)
-    fig = go.Figure()
 
-    if chart_data:
-        df_chart = pd.DataFrame(chart_data)
-        df_chart['date_fmt'] = pd.to_datetime(df_chart['date'], format='%Y%m%d', errors='coerce').dt.strftime('%Y-%m-%d')
-        df_chart = df_chart.sort_values('date_fmt').dropna(subset=['date_fmt'])
+    if PLOTLY_AVAILABLE:
+        fig = go.Figure()
 
-        fig.add_trace(go.Scatter(
-            x=df_chart['date_fmt'],
-            y=df_chart['close'],
-            mode='lines+markers',
-            name=f'{symbol} 종가',
-            line=dict(color='#38BDF8', width=2),
-            marker=dict(size=4)
-        ))
+        if chart_data:
+            df_chart = pd.DataFrame(chart_data)
+            df_chart['date_fmt'] = pd.to_datetime(df_chart['date'], format='%Y%m%d', errors='coerce').dt.strftime('%Y-%m-%d')
+            df_chart = df_chart.sort_values('date_fmt').dropna(subset=['date_fmt'])
 
-    history = st_data.get("history", [])
-    if history:
-        buy_dates, buy_prices, buy_texts = [], [], []
-        sell_dates, sell_prices, sell_texts = [], [], []
-        fail_dates, fail_prices, fail_texts = [], [], []
-
-        for h in history:
-            h_date = str(h.get("date", ""))[:10]
-            h_type = h.get("type", "")
-            h_qty = h.get("qty", 0)
-            h_price = h.get("price", 0.0)
-
-            if h_type in ["BUY", "ORDER_SENT"]:
-                buy_dates.append(h_date)
-                buy_prices.append(h_price)
-                buy_texts.append(f"🟢 매수 체결: {h_qty}주 @ ${h_price:.2f} ({h.get('round', 0)}회차)")
-            elif h_type == "SELL":
-                sell_dates.append(h_date)
-                sell_prices.append(h_price)
-                sell_texts.append(f"🎉 익절 매도: {h_qty}주 @ ${h_price:.2f} (수익률: +{h.get('roi_pct', 0)}%)")
-            elif h_type == "BUY_FAILED":
-                fail_dates.append(h_date)
-                fail_prices.append(h_price)
-                fail_texts.append(f"❌ 매수 실패 ({h_qty}주 @ ${h_price:.2f}): {h.get('note', '')}")
-
-        if buy_dates:
             fig.add_trace(go.Scatter(
-                x=buy_dates, y=buy_prices, mode='markers', name='🟢 매수 체결',
-                marker=dict(symbol='triangle-up', size=12, color='#22C55E'),
-                text=buy_texts, hoverinfo='text'
-            ))
-        if sell_dates:
-            fig.add_trace(go.Scatter(
-                x=sell_dates, y=sell_prices, mode='markers', name='🎉 익절 매도',
-                marker=dict(symbol='star', size=14, color='#EC4899'),
-                text=sell_texts, hoverinfo='text'
-            ))
-        if fail_dates:
-            fig.add_trace(go.Scatter(
-                x=fail_dates, y=fail_prices, mode='markers', name='❌ 매수 실패',
-                marker=dict(symbol='x', size=12, color='#F97316'),
-                text=fail_texts, hoverinfo='text'
+                x=df_chart['date_fmt'],
+                y=df_chart['close'],
+                mode='lines+markers',
+                name=f'{symbol} 종가',
+                line=dict(color='#38BDF8', width=2),
+                marker=dict(size=4)
             ))
 
-    if avg_p > 0:
-        fig.add_hline(
-            y=avg_p, line_dash="dash", line_color="#F59E0B",
-            annotation_text=f"현재 평단가 (${avg_p:.2f})", annotation_position="top left"
+        history = st_data.get("history", [])
+        if history:
+            buy_dates, buy_prices, buy_texts = [], [], []
+            sell_dates, sell_prices, sell_texts = [], [], []
+            fail_dates, fail_prices, fail_texts = [], [], []
+
+            for h in history:
+                h_date = str(h.get("date", ""))[:10]
+                h_type = h.get("type", "")
+                h_qty = h.get("qty", 0)
+                h_price = h.get("price", 0.0)
+
+                if h_type in ["BUY", "ORDER_SENT"]:
+                    buy_dates.append(h_date)
+                    buy_prices.append(h_price)
+                    buy_texts.append(f"🟢 매수 체결: {h_qty}주 @ ${h_price:.2f} ({h.get('round', 0)}회차)")
+                elif h_type == "SELL":
+                    sell_dates.append(h_date)
+                    sell_prices.append(h_price)
+                    sell_texts.append(f"🎉 익절 매도: {h_qty}주 @ ${h_price:.2f} (수익률: +{h.get('roi_pct', 0)}%)")
+                elif h_type == "BUY_FAILED":
+                    fail_dates.append(h_date)
+                    fail_prices.append(h_price)
+                    fail_texts.append(f"❌ 매수 실패 ({h_qty}주 @ ${h_price:.2f}): {h.get('note', '')}")
+
+            if buy_dates:
+                fig.add_trace(go.Scatter(
+                    x=buy_dates, y=buy_prices, mode='markers', name='🟢 매수 체결',
+                    marker=dict(symbol='triangle-up', size=12, color='#22C55E'),
+                    text=buy_texts, hoverinfo='text'
+                ))
+            if sell_dates:
+                fig.add_trace(go.Scatter(
+                    x=sell_dates, y=sell_prices, mode='markers', name='🎉 익절 매도',
+                    marker=dict(symbol='star', size=14, color='#EC4899'),
+                    text=sell_texts, hoverinfo='text'
+                ))
+            if fail_dates:
+                fig.add_trace(go.Scatter(
+                    x=fail_dates, y=fail_prices, mode='markers', name='❌ 매수 실패',
+                    marker=dict(symbol='x', size=12, color='#F97316'),
+                    text=fail_texts, hoverinfo='text'
+                ))
+
+        if avg_p > 0:
+            fig.add_hline(
+                y=avg_p, line_dash="dash", line_color="#F59E0B",
+                annotation_text=f"현재 평단가 (${avg_p:.2f})", annotation_position="top left"
+            )
+
+        fig.update_layout(
+            template="plotly_dark",
+            margin=dict(l=20, r=20, t=30, b=20),
+            height=380,
+            xaxis_title="날짜",
+            yaxis_title="주가 ($)",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
         )
 
-    fig.update_layout(
-        template="plotly_dark",
-        margin=dict(l=20, r=20, t=30, b=20),
-        height=380,
-        xaxis_title="날짜",
-        yaxis_title="주가 ($)",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-    )
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        if chart_data:
+            df_c = pd.DataFrame(chart_data)
+            df_c['date_fmt'] = pd.to_datetime(df_c['date'], format='%Y%m%d', errors='coerce').dt.strftime('%Y-%m-%d')
+            st.line_chart(df_c.set_index('date_fmt')['close'])
+        st.info("💡 `pip install plotly`를 가상환경(.venv)에 설치하시면 대화형 매수/매도 이력 마커 차트가 표출됩니다.")
 
-    st.plotly_chart(fig, use_container_width=True)
 
     # 5. 종목 매매 및 체결/실패 히스토리 테이블
     st.subheader(f"📜 [{symbol}] 매수/매도 & 체결/실패 이력 (Google Sheets 연동)")
