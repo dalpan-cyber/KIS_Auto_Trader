@@ -79,6 +79,9 @@ def main():
     # 5. 최종 무한매수 상태 저장 및 구글 시트 동기화 강제 실행
     bot.infinite_state_mgr.save_state()
 
+    # 6. Google Sheets에 보유 종목 평가 금액 및 체결 이력 동기화 (KIS API 실계좌)
+    bot.sync_holdings_to_state()
+
     logger.info("🎉 ===== 무한매수 당일 루틴 실행 완료 =====")
 
 if __name__ == "__main__":

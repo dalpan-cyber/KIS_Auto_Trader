@@ -145,12 +145,25 @@ class TraderBot:
 
     def sync_holdings_to_state(self):
         """
-        실시간 계좌 보유 종목 수량/평단가를 갱신
-        - 보유 수량/평단가는 KIS API가 Source of Truth이므로 JSON/구글 시트에 기록하지 않음
-        - 대시보드/전략은 API에서 실시간 조회하여 사용
+        실시간 계좌 보유 종목 수량/평단가를 갱신하고 Google Sheets에 동기화
+        - 보유 수량/평단가는 KIS API가 Source of Truth이므로 JSON에는 기록하지 않음
+        - Google Sheets 'Holdings' 워크시트에 주식평가 금액 동기화
+        - Google Sheets 'ExecutionHistory' 워크시트에 체결/실패 이력 동기화
         """
         self.fetch_account_balance()
-        self.logger.info("🔄 실계좌 보유 종목 수량/평단가를 API에서 갱신 완료 (JSON/구글 시트에는 전략 상태만 기록)")
+        self.logger.info("🔄 실계좌 보유 종목 수량/평단가를 API에서 갱신 완료 (JSON에는 전략 상태만 기록)")
+
+        # Google Sheets에 보유 종목 평가 금액 및 체결 이력 동기화 (KIS API 실계좌 데이터)
+        if hasattr(self, "infinite_state_mgr") and self.infinite_state_mgr:
+            gss = getattr(self.infinite_state_mgr, "gss_mgr", None)
+            if gss and gss.is_connected:
+                try:
+                    gss.sync_holdings(self.holdings, self.current_prices)
+                    history = self.api.get_overseas_execution_history()
+                    gss.sync_execution_history(history)
+                    self.logger.info("📊 Google Sheet 'Holdings'/'ExecutionHistory' 동기화 완료 (KIS API 실계좌)")
+                except Exception as e:
+                    self.logger.warning(f"Google Sheet Holdings/ExecutionHistory 동기화 예외: {e}")
 
     def start_infinite_buying(self, symbol: str):
         """특정 종목의 무한매수 수동 시작"""
@@ -251,6 +264,7 @@ class TraderBot:
                 self.risk_mgr.reset_error()
                 self.logger.info(f"🎉 [{symbol}] 해외주식 무한매수 {prop['action_kr']} 주문 성공!")
                 self.fetch_account_balance()
+                self.sync_holdings_to_state()
                 return True
             else:
                 err_msg = order_res.get('msg', '')
@@ -266,6 +280,7 @@ class TraderBot:
                 self.risk_mgr.reset_error()
                 self.logger.info(f"🎉 [{symbol}] {prop['action_kr']} 주문 체결 완료!")
                 self.fetch_account_balance()
+                self.sync_holdings_to_state()
                 return True
             else:
                 err_msg = order_res.get('msg', '')
@@ -402,6 +417,10 @@ class TraderBot:
                             self.logger.error(f"❌ [{symbol}] 해외주식 무한매수 {action_kr} 주문 실패: {err_msg}")
                             self._check_and_log_apbk1681_guidance(symbol, err_msg)
                             self.risk_mgr.record_error()
+
+                # 주문 실행 후 Google Sheets에 보유/체결 이력 동기화
+                if orders_sent:
+                    self.sync_holdings_to_state()
             except Exception as e:
                 self.logger.error(f"[{symbol}] 무한매수 루틴 실행 예외: {e}")
 
@@ -417,6 +436,9 @@ class TraderBot:
 
         # 계좌 잔고 및 외화 예수금 갱신
         self.fetch_account_balance()
+
+        # Google Sheets에 보유 종목 평가 금액 및 체결 이력 동기화 (KIS API 실계좌)
+        self.sync_holdings_to_state()
 
         # 라오어 무한매수법 전담 감시 및 주문 제안 생성
         if self.infinite_enabled:

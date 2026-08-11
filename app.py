@@ -198,11 +198,11 @@ with st.sidebar:
             logging.info("===== 대시보드: 감시 루프 정지 =====")
             st.rerun()
 
-    if st.button("🔄 잔고/시세 즉시 갱신", width="stretch"):
+    if st.button("🔄 잔고/시세/구글시트 즉시 갱신", width="stretch"):
         bot.fetch_account_balance()
         bot.fetch_target_prices()
         bot.sync_holdings_to_state()
-        st.success("계좌 잔고, 시세 및 구글 시트 동기화가 완료되었습니다.")
+        st.success("계좌 잔고, 시세 및 구글 시트(State/Holdings/ExecutionHistory) 동기화 완료.")
         st.rerun()
 
     st.divider()
