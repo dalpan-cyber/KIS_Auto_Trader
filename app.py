@@ -499,7 +499,10 @@ def render_stock_detail(symbol: str, bot: TraderBot):
             ))
 
         # 매매 이력은 KIS API 실계좌 체결내역이 Source of Truth
-        history = bot.api.get_overseas_execution_history(symbol=symbol)
+        # 전략 시작일부터 오늘까지의 체결 이력을 조회 (기본값: 오늘만 조회하면 이력이 비어있음)
+        hist_start = st_data.get("start_date", "")
+        hist_start_fmt = hist_start.replace("-", "") if hist_start else ""
+        history = bot.api.get_overseas_execution_history(symbol=symbol, start_date=hist_start_fmt)
         if history:
             buy_dates, buy_prices, buy_texts = [], [], []
             sell_dates, sell_prices, sell_texts = [], [], []

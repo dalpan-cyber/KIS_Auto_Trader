@@ -594,9 +594,13 @@ class KISApiClient:
                 res = requests.get(url, headers=headers, params=params, timeout=10)
                 data = res.json()
 
+                logger.info(f"[{symbol_upper}] 일봉 차트 [{ex}] HTTP {res.status_code} | rt_cd={data.get('rt_cd')} | msg1={data.get('msg1')} | msg_cd={data.get('msg_cd')}")
+
                 if res.status_code == 200 and data.get("rt_cd") == "0":
                     raw_output = data.get("output2", data.get("output", []))
+                    logger.info(f"[{symbol_upper}] 일봉 차트 [{ex}] output2 항목 수: {len(raw_output)}")
                     if raw_output:
+                        logger.info(f"[{symbol_upper}] 일봉 차트 [{ex}] 첫 항목: {json.dumps(raw_output[0], ensure_ascii=False)[:500]}")
                         results = []
                         for item in raw_output[:count]:
                             c_val = float(item.get("clos", item.get("last", 0)) or 0)
@@ -610,7 +614,14 @@ class KISApiClient:
                                     "volume": int(item.get("tvol", item.get("voum", 0)) or 0)
                                 })
                         if results:
+                            logger.info(f"[{symbol_upper}] 일봉 차트 [{ex}] 결과 {len(results)}건 반환")
                             return results
+                        else:
+                            logger.warning(f"[{symbol_upper}] 일봉 차트 [{ex}] 결과가 모두 0이거나 파싱 실패")
+                    else:
+                        logger.warning(f"[{symbol_upper}] 일봉 차트 [{ex}] output2가 비어있음, 전체 응답: {json.dumps(data, ensure_ascii=False)[:500]}")
+                else:
+                    logger.warning(f"[{symbol_upper}] 일봉 차트 [{ex}] API 오류: {data.get('msg1', '')}")
             except Exception as e:
                 logger.debug(f"[{symbol_upper}] {ex} 일봉 차트 조회 시도 예외: {e}")
 
