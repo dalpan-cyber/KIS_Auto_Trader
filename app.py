@@ -491,27 +491,11 @@ def render_stock_detail(symbol: str, bot: TraderBot):
     end_date_fmt = today_dt.strftime("%Y%m%d")
     history_api = bot.api.get_overseas_execution_history(symbol=symbol, start_date=query_start_fmt, end_date=end_date_fmt)
 
-    # 구글 시트 ExecutionHistory 워크시트 매매 이력 병합 (구글 시트 연동 시)
-    history_sheet = []
-    if hasattr(bot, "infinite_state_mgr") and bot.infinite_state_mgr and bot.infinite_state_mgr.gss_mgr:
-        history_sheet = bot.infinite_state_mgr.gss_mgr.read_execution_history_from_sheet(symbol=symbol)
-
-    # KIS API 이력과 구글 시트 이력 병합 및 중복 제거
-    history = []
-    seen_h_keys = set()
-    for item in history_api + history_sheet:
-        ord_no = str(item.get("order_no", "")).strip()
-        ord_time = str(item.get("order_time", "")).strip()
-        item_sym = str(item.get("symbol", "")).strip().upper()
-        h_key = f"{ord_no}_{item_sym}_{ord_time}" if (ord_no or ord_time) else f"item_{len(seen_h_keys)}"
-        if h_key in seen_h_keys:
-            continue
-        seen_h_keys.add(h_key)
-        history.append(item)
-
+    # KIS API 단일 소스로 매매 이력 구성 (Google Sheets 병합 제거 - 동기화 불일치 방지)
+    history = list(history_api)
     history.sort(key=lambda x: str(x.get("order_time", "")))
 
-    # 신규 KIS API 이력을 구글 시트에 누적 동기화
+    # 신규 KIS API 이력을 구글 시트에 백업용으로만 누적 동기화 (테이블 표시에는 사용하지 않음)
     if history_api and hasattr(bot, "infinite_state_mgr") and bot.infinite_state_mgr and bot.infinite_state_mgr.gss_mgr:
         bot.infinite_state_mgr.gss_mgr.sync_execution_history(history_api)
 
