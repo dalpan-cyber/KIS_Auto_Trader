@@ -915,7 +915,7 @@ class KISApiClient:
         if not end_date:
             end_date = time.strftime("%Y%m%d")
 
-        tr_id = "VTTS3035R" if self.mock else "TTTS3035R"
+        tr_id = "VTTS3035R" if self.mock else "JTTT3001R"
         url = f"{self.url_base}/uapi/overseas-stock/v1/trading/inquire-ccnl"
         headers = self._get_headers(tr_id)
         params = {
@@ -923,7 +923,7 @@ class KISApiClient:
             "ACNT_PRDT_CD": self.acnt_prdt_cd,
             # PDNO: 특정 종목 조회 시 해당 종목코드, 전체 조회 시 빈 문자열
             # KIS API TTTS3035R은 "%" 와일드카드를 지원하지 않으므로 사용하지 않음
-            "PDNO": "",
+            "PDNO": symbol.upper() if symbol else "",
             "ORD_STRT_DT": start_date,
             "ORD_END_DT": end_date,
             # SVR_DVSN_CD: 01=미국(나스닥/뉴욕/아멕스 통합), 02=홍콩, 03=중국, 04=일본, 05=베트남
