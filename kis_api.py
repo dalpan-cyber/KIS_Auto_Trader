@@ -926,9 +926,9 @@ class KISApiClient:
             "PDNO": symbol.upper() if symbol else "",
             "ORD_STRT_DT": start_date,
             "ORD_END_DT": end_date,
-            # SVR_DVSN_CD: 00=전체, 01=나스닥, 02=뉴욕, 03=아멕스
-            # (A는 이 엔드포인트에서 유효하지 않은 값이므로 00으로 변경)
-            "SVR_DVSN_CD": "00",
+            # SVR_DVSN_CD: 01=미국(나스닥/뉴욕/아멕스 통합), 02=홍콩, 03=중국, 04=일본, 05=베트남
+            # TQQQ 등 미국 주식 조회 시 반드시 01(미국)을 지정해야 함
+            "SVR_DVSN_CD": "01",
             "CCNL_DVSN": "00",
             "ORD_GDS_DVSN": "00",
             "CTX_AREA_FK200": "",
