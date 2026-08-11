@@ -136,12 +136,12 @@ class GoogleSheetManager:
                 headers = ["티커", "종목명", "보유수량", "평단가($)", "현재가($)", "평가금액($)", "평가손익($)", "수익률(%)", "최종갱신시각"]
                 self.holdings_worksheet.append_row(headers)
 
-            # 'ExecutionHistory' 워크시트 준비 (매수/매도 & 체결/실패 이력 - KIS API 실계좌)
+            # 'ExecutionHistory' 워크시트 준비 (매수/매도 & 체결/실패 이력)
             try:
                 self.history_worksheet = self.spreadsheet.worksheet("ExecutionHistory")
             except Exception:
-                self.history_worksheet = self.spreadsheet.add_worksheet(title="ExecutionHistory", rows="500", cols="10")
-                headers = ["일시", "티커", "구분", "수량", "단가($)", "총금액($)", "상태", "주문번호", "최종갱신시각"]
+                self.history_worksheet = self.spreadsheet.add_worksheet(title="ExecutionHistory", rows="1000", cols="12")
+                headers = ["일시", "티커", "구분", "주문수량", "체결수량", "주문단가($)", "체결단가($)", "총금액($)", "상태", "주문번호", "최종갱신시각"]
                 self.history_worksheet.append_row(headers)
 
             self.is_connected = True
@@ -232,8 +232,6 @@ class GoogleSheetManager:
             logger.warning(f"Google Sheet 상태 읽기 실패: {e}")
         return sheet_states
 
-    
-
     def sync_holdings(self, holdings: Dict[str, Dict[str, Any]], current_prices: Dict[str, float] = None):
         """
         실계좌 보유 종목 평가 금액을 'Holdings' 워크시트에 동기화
@@ -288,10 +286,44 @@ class GoogleSheetManager:
             else:
                 logger.warning(f"Google Sheet Holdings 동기화 예외: {e}")
 
+    def read_execution_history_from_sheet(self, symbol: str = "") -> List[Dict[str, Any]]:
+        """Google Sheet 'ExecutionHistory' 워크시트에서 저장된 매매 이력 읽어오기"""
+        if not self.is_connected or not self.history_worksheet:
+            return []
+
+        history = []
+        try:
+            records = self.history_worksheet.get_all_records()
+            for rec in records:
+                rec_sym = str(rec.get("티커", "")).strip().upper()
+                if symbol and rec_sym != symbol.upper():
+                    continue
+
+                ord_qty = int(rec.get("주문수량", rec.get("수량", 0)) or 0)
+                exec_qty = int(rec.get("체결수량", rec.get("수량", 0)) or 0)
+                ord_price = float(rec.get("주문단가($)", rec.get("단가($)", 0.0)) or 0.0)
+                exec_price = float(rec.get("체결단가($)", rec.get("단가($)", 0.0)) or 0.0)
+
+                history.append({
+                    "order_time": str(rec.get("일시", "-")).strip(),
+                    "symbol": rec_sym,
+                    "order_type": str(rec.get("구분", "-")).strip(),
+                    "qty": ord_qty,
+                    "executed_qty": exec_qty,
+                    "price": ord_price,
+                    "executed_price": exec_price,
+                    "status": str(rec.get("상태", "-")).strip(),
+                    "order_no": str(rec.get("주문번호", "-")).strip()
+                })
+        except Exception as e:
+            logger.warning(f"Google Sheet ExecutionHistory 읽기 실패: {e}")
+        return history
+
     def sync_execution_history(self, history: List[Dict[str, Any]]):
         """
-        KIS API 실계좌 체결/미체결 이력을 'ExecutionHistory' 워크시트에 동기화
+        KIS API 실계좌 체결/미체결 이력을 'ExecutionHistory' 워크시트에 누적 동기화
         - history: get_overseas_execution_history() 결과 리스트
+        - 기존 수동 작성건이나 이전 기록을 지우지 않고 새 이력만 추가(병합)
         """
         if not self.is_connected or not self.history_worksheet:
             return
@@ -299,38 +331,54 @@ class GoogleSheetManager:
         try:
             now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-            # 기존 데이터 삭제 (헤더 제외)
+            # 1. 기존 시트 데이터 키 수집 (중복 방지)
+            existing_keys = set()
             try:
-                all_records = self.history_worksheet.get_all_records()
-                if all_records:
-                    self.history_worksheet.delete_rows(2, len(all_records) + 1)
+                records = self.history_worksheet.get_all_records()
+                for rec in records:
+                    ord_no = str(rec.get("주문번호", "")).strip()
+                    ord_time = str(rec.get("일시", "")).strip()
+                    ticker = str(rec.get("티커", "")).strip().upper()
+                    if ord_no or ord_time:
+                        existing_keys.add(f"{ord_no}_{ticker}_{ord_time}")
             except Exception:
                 pass
 
-            if not history:
-                return
-
-            rows = []
+            # 2. 신규 이력 추가
+            new_rows = []
             for h in history:
-                qty = h.get("executed_qty", 0) or h.get("qty", 0)
-                price = h.get("executed_price", 0.0) or h.get("price", 0.0)
-                total_amt = qty * price
+                ord_no = str(h.get("order_no", "")).strip()
+                ord_time = str(h.get("order_time", "")).strip()
+                ticker = str(h.get("symbol", "")).strip().upper()
+                dedup_key = f"{ord_no}_{ticker}_{ord_time}"
 
-                rows.append([
-                    h.get("order_time", "-"),
-                    h.get("symbol", "-"),
+                if dedup_key in existing_keys:
+                    continue
+
+                existing_keys.add(dedup_key)
+                qty = int(h.get("qty", 0) or 0)
+                exec_qty = int(h.get("executed_qty", 0) or 0)
+                price = float(h.get("price", 0.0) or 0.0)
+                exec_price = float(h.get("executed_price", 0.0) or 0.0)
+                total_amt = exec_qty * exec_price if exec_qty > 0 else (qty * price)
+
+                new_rows.append([
+                    ord_time,
+                    ticker,
                     h.get("order_type", "-"),
                     qty,
+                    exec_qty,
                     round(price, 2),
+                    round(exec_price, 2),
                     round(total_amt, 2),
                     h.get("status", "-"),
-                    h.get("order_no", "-"),
+                    ord_no,
                     now_str
                 ])
 
-            if rows:
-                self.history_worksheet.append_rows(rows)
-                logger.debug(f"Google Sheet 'ExecutionHistory' 워크시트 동기화 성공 ({len(rows)}건)")
+            if new_rows:
+                self.history_worksheet.append_rows(new_rows)
+                logger.info(f"📊 Google Sheet 'ExecutionHistory'에 신규 이력 {len(new_rows)}건 누적 동기화 성공")
         except Exception as e:
             if "429" in str(e) or "Quota exceeded" in str(e):
                 logger.debug("Google Sheet ExecutionHistory API 호출 할당량 초과 (다음 턴 재시도)")

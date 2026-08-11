@@ -2,6 +2,7 @@
 한국투자증권 Open Trading API (KIS Developers) Streamlit 자동 투자 대시보드 (app.py)
 """
 import time
+import datetime
 import logging
 import pandas as pd
 import numpy as np
@@ -414,11 +415,11 @@ def render_stock_detail(symbol: str, bot: TraderBot):
         pnl_rt = (pnl / (total_qty * avg_p) * 100) if (total_qty * avg_p) > 0 else 0.0
         st.metric("평가 손익", f"${pnl:+,.2f}", delta=f"{pnl_rt:+.2f}%")
 
-    st.caption(f"**상태**: {status_display} | **총 예산**: ${budget:,.2f}")
+    st.caption(f"**상태**: {status_display} | **전략 시작일**: {st_data.get('start_date', '-')} | **총 예산**: ${budget:,.2f}")
     st.progress(min(1.0, max(0.0, float(curr_round) / float(div_count))))
 
-    # 2. 수동 제어 버튼
-    col_b1, col_b2, col_b3, col_sp = st.columns([2.5, 2.5, 2.5, 4.5])
+    # 2. 수동 제어 및 설정 변경
+    col_b1, col_b2, col_b3, col_b4 = st.columns([2.5, 2.5, 2.5, 4.5])
     with col_b1:
         if st.button(f"▶ {symbol} 수동 시작", key=f"start_{symbol}", type="primary", width="stretch"):
             bot.start_infinite_buying(symbol)
@@ -434,6 +435,19 @@ def render_stock_detail(symbol: str, bot: TraderBot):
             bot.infinite_state_mgr.reset_round(symbol)
             st.info(f"🔄 [{symbol}] 회차가 0회차로 초기화되었습니다.")
             st.rerun()
+    with col_b4:
+        with st.popover("⚙️ 전략 시작일 변경"):
+            curr_sd_str = st_data.get("start_date", datetime.date.today().strftime("%Y-%m-%d"))
+            try:
+                curr_sd_obj = datetime.datetime.strptime(curr_sd_str, "%Y-%m-%d").date()
+            except Exception:
+                curr_sd_obj = datetime.date.today()
+            new_sd = st.date_input("전략 시작일 지정", value=curr_sd_obj, key=f"sd_input_{symbol}")
+            if st.button("시작일 저장", key=f"sd_save_{symbol}"):
+                new_sd_str = new_sd.strftime("%Y-%m-%d")
+                bot.infinite_state_mgr.update_start_date(symbol, new_sd_str)
+                st.success(f"전략 시작일이 {new_sd_str}로 변경되었습니다.")
+                st.rerun()
 
     st.markdown("---")
 
@@ -449,43 +463,63 @@ def render_stock_detail(symbol: str, bot: TraderBot):
         st.markdown("#### 🔴 당일 전량 익절 매도 주문 (지정가)")
         s_orders = [o for o in orders if o["action"] == "SELL"]
         if s_orders:
-            for s_o in s_orders:
-                st.write(f"- **주문 내용**: {s_o['desc']}")
-                st.write(f"- **주문 수량**: `{s_o['qty']:,} 주`")
-                st.write(f"- **목표 매도가**: `${s_o['price']:.2f}` (+10.0%)")
-                st.write(f"- **예상 총 매도금액**: **`${s_o['qty'] * s_o['price']:,.2f}`**")
+            for s in s_orders:
+                st.info(f"**익절 매도**: ${s['price']:.2f} (수량: {s['qty']:,}주 / +10% 익절)")
         else:
-            st.info("현재 보유 주식이 없어 매도 주문이 없습니다.")
+            st.write("보유 수량이 없거나 익절 조건 미충족")
 
     with col_det2:
-        st.markdown("#### 🟢 당일 40분할 매수 주문 (LOC 종가입찰)")
+        st.markdown("#### 🟢 당일 분할 매수 주문 (LOC)")
         b_orders = [o for o in orders if o["action"] == "BUY"]
         if b_orders:
-            tot_b_qty = sum(b['qty'] for b in b_orders)
-            tot_b_amt = sum(b['qty'] * b['price'] for b in b_orders)
-            for idx, b_o in enumerate(b_orders, 1):
-                st.write(f"**{idx}. {b_o['desc']}**")
-                st.write(f"  • 수량: `{b_o['qty']:,}주` | LOC단가: `${b_o['price']:.2f}` | 주문금액: `${b_o['qty'] * b_o['price']:,.2f}`")
-            st.markdown(f"**💰 당일 매수 총 예상금액**: **`${tot_b_amt:,.2f}`** (`{tot_b_qty:,}주`)")
+            for b in b_orders:
+                st.success(f"**LOC 매수**: ${b['price']:.2f} 이하 (수량: {b['qty']:,}주)")
         else:
-            if raw_status in ["STOPPED", "PAUSED"]:
-                st.warning("현재 무한매수가 강제 중지(STOPPED) 상태입니다.")
-            elif curr_round >= div_count:
-                st.warning("40회차가 모두 소진되었습니다.")
-            else:
-                st.info("당일 매수 주문 생성 대기 중입니다.")
+            st.write("매수 조건 미충족 또는 최대 회차 도달")
 
     st.markdown("---")
 
-    # 4. Plotly 주가 & 매수이력 그래프
-    st.subheader(f"📈 [{symbol}] 일별 주가 & 매수/매도/실패 이력 대조 차트")
-    chart_data = bot.api.get_daily_chart(symbol, count=60)
+    # 4. 차트 및 매매 이력
+    st.subheader(f"📈 [{symbol}] 주가 차트 및 매매 체결 이력")
+    chart_data = bot.api.get_daily_chart(symbol, count=90)
 
-    if PLOTLY_AVAILABLE:
+    today_dt = datetime.date.today()
+    hist_start = st_data.get("start_date", "")
+    clean_sd = hist_start.replace("-", "") if hist_start else ""
+    query_start_fmt = clean_sd if (clean_sd and clean_sd.isdigit()) else (today_dt - datetime.timedelta(days=30)).strftime("%Y%m%d")
+
+    end_date_fmt = today_dt.strftime("%Y%m%d")
+    history_api = bot.api.get_overseas_execution_history(symbol=symbol, start_date=query_start_fmt, end_date=end_date_fmt)
+
+    # 구글 시트 ExecutionHistory 워크시트 매매 이력 병합 (구글 시트 연동 시)
+    history_sheet = []
+    if hasattr(bot, "infinite_state_mgr") and bot.infinite_state_mgr and bot.infinite_state_mgr.gss_mgr:
+        history_sheet = bot.infinite_state_mgr.gss_mgr.read_execution_history_from_sheet(symbol=symbol)
+
+    # KIS API 이력과 구글 시트 이력 병합 및 중복 제거
+    history = []
+    seen_h_keys = set()
+    for item in history_api + history_sheet:
+        ord_no = str(item.get("order_no", "")).strip()
+        ord_time = str(item.get("order_time", "")).strip()
+        item_sym = str(item.get("symbol", "")).strip().upper()
+        h_key = f"{ord_no}_{item_sym}_{ord_time}" if (ord_no or ord_time) else f"item_{len(seen_h_keys)}"
+        if h_key in seen_h_keys:
+            continue
+        seen_h_keys.add(h_key)
+        history.append(item)
+
+    history.sort(key=lambda x: str(x.get("order_time", "")))
+
+    # 신규 KIS API 이력을 구글 시트에 누적 동기화
+    if history_api and hasattr(bot, "infinite_state_mgr") and bot.infinite_state_mgr and bot.infinite_state_mgr.gss_mgr:
+        bot.infinite_state_mgr.gss_mgr.sync_execution_history(history_api)
+
+    if PLOTLY_AVAILABLE and chart_data:
+        df_chart = pd.DataFrame(chart_data)
         fig = go.Figure()
 
-        if chart_data:
-            df_chart = pd.DataFrame(chart_data)
+        if 'date' in df_chart.columns and 'close' in df_chart.columns:
             df_chart['date_fmt'] = pd.to_datetime(df_chart['date'], format='%Y%m%d', errors='coerce').dt.strftime('%Y-%m-%d')
             df_chart = df_chart.sort_values('date_fmt').dropna(subset=['date_fmt'])
 
@@ -498,11 +532,6 @@ def render_stock_detail(symbol: str, bot: TraderBot):
                 marker=dict(size=4)
             ))
 
-        # 매매 이력은 KIS API 실계좌 체결내역이 Source of Truth
-        # 전략 시작일부터 오늘까지의 체결 이력을 조회 (기본값: 오늘만 조회하면 이력이 비어있음)
-        hist_start = st_data.get("start_date", "")
-        hist_start_fmt = hist_start.replace("-", "") if hist_start else ""
-        history = bot.api.get_overseas_execution_history(symbol=symbol, start_date=hist_start_fmt)
         if history:
             buy_dates, buy_prices, buy_texts = [], [], []
             sell_dates, sell_prices, sell_texts = [], [], []
@@ -511,13 +540,13 @@ def render_stock_detail(symbol: str, bot: TraderBot):
             for h in history:
                 h_date = str(h.get("order_time", ""))[:10]
                 h_type = h.get("order_type", "")
-                h_qty = h.get("executed_qty", 0)
-                h_price = h.get("executed_price", 0.0)
+                h_qty = h.get("executed_qty", 0) or h.get("qty", 0)
+                h_price = h.get("executed_price", 0.0) or h.get("price", 0.0)
 
                 if "매수" in h_type:
                     buy_dates.append(h_date)
                     buy_prices.append(h_price)
-                    buy_texts.append(f"🟢 매수 체결: {h_qty}주 @ ${h_price:.2f} ({h.get('status', '')})")
+                    buy_texts.append(f"🟢 매수 주문/체결: {h_qty}주 @ ${h_price:.2f} ({h.get('status', '')})")
                 elif "매도" in h_type:
                     sell_dates.append(h_date)
                     sell_prices.append(h_price)
@@ -525,7 +554,7 @@ def render_stock_detail(symbol: str, bot: TraderBot):
 
             if buy_dates:
                 fig.add_trace(go.Scatter(
-                    x=buy_dates, y=buy_prices, mode='markers', name='🟢 매수 체결',
+                    x=buy_dates, y=buy_prices, mode='markers', name='🟢 매수 주문/체결',
                     marker=dict(symbol='triangle-up', size=12, color='#22C55E'),
                     text=buy_texts, hoverinfo='text'
                 ))
@@ -566,18 +595,31 @@ def render_stock_detail(symbol: str, bot: TraderBot):
         st.info("💡 `pip install plotly`를 가상환경(.venv)에 설치하시면 대화형 매수/매도 이력 마커 차트가 표출됩니다.")
 
 
-    # 5. 종목 매매 및 체결/실패 히스토리 테이블 (KIS API 실계좌 체결내역)
-    st.subheader(f"📜 [{symbol}] 매수/매도 & 체결/실패 이력 (KIS API 실계좌)")
+    # 5. 종목 매매 및 체결/실패 히스토리 테이블 (Google Sheets & KIS API)
+    st.subheader(f"📜 [{symbol}] 매수/매도 & 체결/실패 이력 (Google Sheets & KIS API)")
     if history:
         h_rows = []
         for h in reversed(history):
+            h_qty = h.get("qty", 0)
+            h_exec_qty = h.get("executed_qty", 0)
+            h_price = h.get("price", 0.0)
+            h_exec_price = h.get("executed_price", 0.0)
+            status = h.get("status", "-")
+            h_type = h.get("order_type", "-")
+
+            disp_ord_price = f"${h_price:.2f}" if h_price > 0 else "-"
+            disp_exec_price = f"${h_exec_price:.2f}" if h_exec_qty > 0 else "-"
+            disp_exec_amt = f"${h_exec_qty * h_exec_price:,.2f}" if h_exec_qty > 0 else "-"
+
             h_rows.append({
                 "일시": h.get("order_time", "-"),
-                "구분": h.get("order_type", "-"),
-                "수량": f"{h.get('executed_qty', 0):,}주",
-                "단가 ($)": f"${h.get('executed_price', 0.0):.2f}",
-                "총금액 ($)": f"${h.get('executed_qty', 0) * h.get('executed_price', 0.0):,.2f}",
-                "상태": h.get("status", "-"),
+                "구분": h_type,
+                "주문수량": f"{h_qty:,}주",
+                "체결수량": f"{h_exec_qty:,}주",
+                "주문단가 ($)": disp_ord_price,
+                "체결단가 ($)": disp_exec_price,
+                "총 체결금액 ($)": disp_exec_amt,
+                "상태": status,
                 "주문번호": h.get("order_no", "-")
             })
         st.dataframe(pd.DataFrame(h_rows), width="stretch", hide_index=True)

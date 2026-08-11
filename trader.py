@@ -174,22 +174,14 @@ class TraderBot:
         """
         result: Dict[str, Dict[str, Any]] = {}
         try:
-            # 시작일은 무한매수 시작일부터 조회 (start_date가 있으면 그 날짜부터)
-            start_date = ""
+            self.logger.info(f"[체결이력] 체결 이력 조회 시작: infinite_stocks={self.infinite_stocks}")
+            history = []
             for sym in self.infinite_stocks:
                 st = self.infinite_state_mgr.get_symbol_state(sym)
                 sd = st.get("start_date", "")
-                self.logger.info(f"[체결이력] {sym} 상태: start_date={sd}, state={st}")
-                if sd and sd.replace("-", "").isdigit():
-                    start_date = sd.replace("-", "")
-                    break
-
-            self.logger.info(f"[체결이력] 체결 이력 조회 시작: start_date={start_date or '(오늘)'}, infinite_stocks={self.infinite_stocks}")
-            # KIS API TTTS3035R은 PDNO(종목코드)가 필수이므로 종목별로 조회
-            history = []
-            for sym in self.infinite_stocks:
-                sym_history = self.api.get_overseas_execution_history(symbol=sym, start_date=start_date)
-                self.logger.info(f"[체결이력] {sym} 조회 결과: {len(sym_history)}건")
+                sym_start_date = sd.replace("-", "") if (sd and sd.replace("-", "").isdigit()) else ""
+                sym_history = self.api.get_overseas_execution_history(symbol=sym, start_date=sym_start_date)
+                self.logger.info(f"[체결이력] {sym} 조회 결과 (start_date={sym_start_date or '오늘'}): {len(sym_history)}건")
                 history.extend(sym_history)
             self.logger.info(f"[체결이력] 체결 이력 조회 결과: {len(history)}건")
             if not history:
@@ -277,10 +269,12 @@ class TraderBot:
             if gss and gss.is_connected:
                 try:
                     gss.sync_holdings(self.holdings, self.current_prices)
-                    # KIS API TTTS3035R은 PDNO(종목코드)가 필수이므로 종목별로 조회
                     history = []
                     for sym in self.infinite_stocks:
-                        sym_history = self.api.get_overseas_execution_history(symbol=sym)
+                        st = self.infinite_state_mgr.get_symbol_state(sym)
+                        sd = st.get("start_date", "")
+                        sym_start_date = sd.replace("-", "") if (sd and sd.replace("-", "").isdigit()) else ""
+                        sym_history = self.api.get_overseas_execution_history(symbol=sym, start_date=sym_start_date)
                         history.extend(sym_history)
                     gss.sync_execution_history(history)
                     self.logger.info("📊 Google Sheet 'Holdings'/'ExecutionHistory' 동기화 완료 (KIS API 실계좌)")

@@ -103,6 +103,12 @@ class InfiniteStateManager:
         state["total_budget_usd"] = total_budget_usd
         self.save_state()
 
+    def update_start_date(self, symbol: str, start_date: str):
+        """전략 시작일 업데이트"""
+        state = self.get_symbol_state(symbol)
+        state["start_date"] = start_date
+        self.save_state()
+
     def start_buying(self, symbol: str):
         """수동 무한매수 시작 (상태를 BUYING으로 설정)"""
         state = self.get_symbol_state(symbol)

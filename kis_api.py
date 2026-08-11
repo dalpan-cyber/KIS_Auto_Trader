@@ -904,7 +904,8 @@ class KISApiClient:
         end_date: str = ""
     ) -> List[Dict[str, Any]]:
         """
-        해외주식 체결/미체결 이력 조회 (VTTS3035R: 모의 / TTTS3035R: 실전)
+        해외주식 체결/미체결 이력 조회
+        - 주간 원장 (TTTS3035R / VTTS3035R) 및 야간 원장 (JTTT3001R / VJTT3001R) 교차 조회 후 통합
         """
         self._ensure_token()
         if not self.access_token or not self.cano:
@@ -915,19 +916,86 @@ class KISApiClient:
         if not end_date:
             end_date = time.strftime("%Y%m%d")
 
-        tr_id = "VTTS3035R" if self.mock else "TTTS3035R"
         url = f"{self.url_base}/uapi/overseas-stock/v1/trading/inquire-ccnl"
-        headers = self._get_headers(tr_id)
-        params = {
+        results = []
+        seen_order_nos = set()
+
+        # 1. 야간 원장 체결/주문 이력 조회 (JTTT3001R / VJTT3001R) - 미국주식 야간/LOC 주문 포함
+        tr_id_night = "VJTT3001R" if self.mock else "JTTT3001R"
+        headers_night = self._get_headers(tr_id_night)
+        params_night = {
             "CANO": self.cano,
             "ACNT_PRDT_CD": self.acnt_prdt_cd,
-            # PDNO: 특정 종목 조회 시 해당 종목코드, 전체 조회 시 빈 문자열
-            # KIS API TTTS3035R은 "%" 와일드카드를 지원하지 않으므로 사용하지 않음
+            "PDNO": symbol.upper() if symbol else "%",
+            "ORD_DT": end_date,
+            "ORD_STRT_DT": start_date,
+            "ORD_END_DT": end_date,
+            "SLL_BUY_DVSN": "00",
+            "CCLD_NCCS_DVSN": "00",
+            "OVRS_EXCG_CD": "%",
+            "SORT_SQN": "DS",
+            "ORD_GNO_BRNO": "",
+            "ODNO": "",
+            "CTX_AREA_FK200": "",
+            "CTX_AREA_NK200": ""
+        }
+
+        try:
+            ctx_fk = ""
+            ctx_nk = ""
+            for _ in range(5):
+                params_night["CTX_AREA_FK200"] = ctx_fk
+                params_night["CTX_AREA_NK200"] = ctx_nk
+                self._rate_limit()
+                res = requests.get(url, headers=headers_night, params=params_night, timeout=10)
+                data = res.json()
+
+                if res.status_code == 200 and data.get("rt_cd") == "0":
+                    output = data.get("output", []) or data.get("output1", [])
+                    if not output:
+                        break
+                    for item in output:
+                        order_no = item.get("odno", "")
+                        if order_no and order_no in seen_order_nos:
+                            continue
+                        item_symbol = item.get("pdno", "").strip().upper()
+                        if symbol and item_symbol != symbol.upper():
+                            continue
+                        if order_no:
+                            seen_order_nos.add(order_no)
+
+                        exec_qty = int(item.get("ft_ccld_qty", item.get("ft_ccnl_qty", 0)) or 0)
+                        exec_price = float(item.get("ft_ccld_unpr3", item.get("ft_ccnl_unpr3", 0.0)) or 0.0)
+
+                        results.append({
+                            "order_no": order_no,
+                            "symbol": item_symbol,
+                            "order_type": item.get("sll_buy_dvsn_cd_name", ""),
+                            "qty": int(item.get("ft_ord_qty", 0) or 0),
+                            "price": float(item.get("ft_ord_unpr3", 0.0) or 0.0),
+                            "executed_qty": exec_qty,
+                            "executed_price": exec_price,
+                            "status": item.get("prcs_stat_name", ""),
+                            "order_time": (item.get("ord_dt", "") + " " + item.get("ord_tmd", "")).strip()
+                        })
+                    ctx_fk = (data.get("ctx_area_fk200", "") or "").strip()
+                    ctx_nk = (data.get("ctx_area_nk200", "") or "").strip()
+                    if not ctx_fk and not ctx_nk:
+                        break
+                else:
+                    break
+        except Exception as e:
+            logger.warning(f"[체결이력] 야간원장(JTTT3001R) 조회 예외: {e}")
+
+        # 2. 주간 원장 체결/주문 이력 조회 (TTTS3035R / VTTS3035R)
+        tr_id_day = "VTTS3035R" if self.mock else "TTTS3035R"
+        headers_day = self._get_headers(tr_id_day)
+        params_day = {
+            "CANO": self.cano,
+            "ACNT_PRDT_CD": self.acnt_prdt_cd,
             "PDNO": symbol.upper() if symbol else "",
             "ORD_STRT_DT": start_date,
             "ORD_END_DT": end_date,
-            # SVR_DVSN_CD: 01=미국(나스닥/뉴욕/아멕스 통합), 02=홍콩, 03=중국, 04=일본, 05=베트남
-            # TQQQ 등 미국 주식 조회 시 반드시 01(미국)을 지정해야 함
             "SVR_DVSN_CD": "01",
             "CCNL_DVSN": "00",
             "ORD_GDS_DVSN": "00",
@@ -936,70 +1004,58 @@ class KISApiClient:
         }
 
         try:
-            results = []
             ctx_fk = ""
             ctx_nk = ""
-            max_pages = 5  # 최대 5페이지까지 조회 (안전장치)
-
-            logger.info(f"[체결이력] API 호출: tr_id={tr_id}, start_date={start_date}, end_date={end_date}, symbol={symbol or '%'}")
-
-            for _ in range(max_pages):
-                params["CTX_AREA_FK200"] = ctx_fk
-                params["CTX_AREA_NK200"] = ctx_nk
-
+            for _ in range(5):
+                params_day["CTX_AREA_FK200"] = ctx_fk
+                params_day["CTX_AREA_NK200"] = ctx_nk
                 self._rate_limit()
-                res = requests.get(url, headers=headers, params=params, timeout=10)
+                res = requests.get(url, headers=headers_day, params=params_day, timeout=10)
                 data = res.json()
 
-                logger.info(f"[체결이력] HTTP {res.status_code} | rt_cd={data.get('rt_cd')} | msg1={data.get('msg1')} | msg_cd={data.get('msg_cd')}")
-
                 if res.status_code == 200 and data.get("rt_cd") == "0":
-                    output = data.get("output", [])
-                    logger.info(f"[체결이력] output 항목 수: {len(output)}")
-                    if output:
-                        logger.info(f"[체결이력] output 첫 항목 원본: {json.dumps(output[0], ensure_ascii=False)[:500]}")
-                        logger.info(f"[체결이력] output 전체 키 목록: {list(output[0].keys()) if output else []}")
-
+                    output = data.get("output", []) or data.get("output1", [])
+                    if not output:
+                        break
                     for item in output:
-                        logger.info(f"[체결이력] 원본 아이템: {json.dumps(item, ensure_ascii=False)[:500]}")
+                        order_no = item.get("odno", "")
+                        if order_no and order_no in seen_order_nos:
+                            continue
                         item_symbol = item.get("pdno", "").strip().upper()
-                        # symbol이 지정된 경우 해당 종목만 필터링
                         if symbol and item_symbol != symbol.upper():
                             continue
+                        if order_no:
+                            seen_order_nos.add(order_no)
+
+                        exec_qty = int(item.get("ft_ccnl_qty", item.get("ft_ccld_qty", 0)) or 0)
+                        exec_price = float(item.get("ft_ccnl_unpr3", item.get("ft_ccld_unpr3", 0.0)) or 0.0)
+
                         results.append({
-                            "order_no": item.get("odno", ""),
+                            "order_no": order_no,
                             "symbol": item_symbol,
                             "order_type": item.get("sll_buy_dvsn_cd_name", ""),
                             "qty": int(item.get("ft_ord_qty", 0) or 0),
                             "price": float(item.get("ft_ord_unpr3", 0.0) or 0.0),
-                            "executed_qty": int(item.get("ft_ccnl_qty", 0) or 0),
-                            "executed_price": float(item.get("ft_ccnl_unpr3", 0.0) or 0.0),
+                            "executed_qty": exec_qty,
+                            "executed_price": exec_price,
                             "status": item.get("prcs_stat_name", ""),
-                            "order_time": item.get("ord_dt", "") + " " + item.get("ord_tmd", "")
+                            "order_time": (item.get("ord_dt", "") + " " + item.get("ord_tmd", "")).strip()
                         })
-
-                    # 다음 페이지 여부 확인
                     ctx_fk = (data.get("ctx_area_fk200", "") or "").strip()
                     ctx_nk = (data.get("ctx_area_nk200", "") or "").strip()
-                    logger.info(f"[체결이력] 페이지 컨텍스트: ctx_fk={ctx_fk}, ctx_nk={ctx_nk}")
                     if not ctx_fk and not ctx_nk:
-                        logger.info(f"[체결이력] 페이지 컨텍스트가 비어있어 페이지네이션 종료")
                         break
                 else:
                     msg1 = data.get("msg1", "")
-                    logger.warning(f"[체결이력] API 오류: rt_cd={data.get('rt_cd')}, msg1={msg1}, msg_cd={data.get('msg_cd')}, 전체 응답: {json.dumps(data, ensure_ascii=False)[:500]}")
                     if "만료된" in msg1 or data.get("msg_cd") == "EGW00123":
                         logger.warning("Token 만료 감지: 해외 체결내역 재조회 시도...")
                         self.access_token = None
                         self.token_issued_at = 0
                         if self.get_access_token():
                             return self.get_overseas_execution_history(symbol=symbol, start_date=start_date, end_date=end_date)
-                    logger.debug(f"해외주식 체결내역 조회 실패: {msg1}")
                     break
-
-            logger.info(f"[체결이력] 최종 결과: {len(results)}건")
-            return results
         except Exception as e:
-            logger.error(f"해외주식 체결내역 조회 예외 발생: {e}")
-            return []
+            logger.warning(f"[체결이력] 주간원장(TTTS3035R) 조회 예외: {e}")
 
+        logger.info(f"[체결이력] 최종 결과 (통합): {len(results)}건 (symbol={symbol or '전체'})")
+        return results
