@@ -921,7 +921,9 @@ class KISApiClient:
         params = {
             "CANO": self.cano,
             "ACNT_PRDT_CD": self.acnt_prdt_cd,
-            "PDNO": symbol.upper() if symbol else "%",
+            # PDNO는 "%" (전체)로 조회 후 코드에서 symbol 필터링
+            # KIS API TTTS3035R은 특정 종목 PDNO로 조회 시 결과가 비어있을 수 있음
+            "PDNO": "%",
             "ORD_STRT_DT": start_date,
             "ORD_END_DT": end_date,
             "SVR_DVSN_CD": "0",
@@ -958,9 +960,13 @@ class KISApiClient:
 
                     for item in output:
                         logger.info(f"[체결이력] 원본 아이템: {json.dumps(item, ensure_ascii=False)[:500]}")
+                        item_symbol = item.get("pdno", "").strip().upper()
+                        # symbol이 지정된 경우 해당 종목만 필터링
+                        if symbol and item_symbol != symbol.upper():
+                            continue
                         results.append({
                             "order_no": item.get("odno", ""),
-                            "symbol": item.get("pdno", ""),
+                            "symbol": item_symbol,
                             "order_type": item.get("sll_buy_dvsn_cd_name", ""),
                             "qty": int(item.get("ft_ord_qty", 0) or 0),
                             "price": float(item.get("ft_ord_unpr3", 0.0) or 0.0),
