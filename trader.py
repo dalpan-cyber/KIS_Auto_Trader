@@ -185,7 +185,12 @@ class TraderBot:
                     break
 
             self.logger.info(f"[체결이력] 체결 이력 조회 시작: start_date={start_date or '(오늘)'}, infinite_stocks={self.infinite_stocks}")
-            history = self.api.get_overseas_execution_history(start_date=start_date)
+            # KIS API TTTS3035R은 PDNO(종목코드)가 필수이므로 종목별로 조회
+            history = []
+            for sym in self.infinite_stocks:
+                sym_history = self.api.get_overseas_execution_history(symbol=sym, start_date=start_date)
+                self.logger.info(f"[체결이력] {sym} 조회 결과: {len(sym_history)}건")
+                history.extend(sym_history)
             self.logger.info(f"[체결이력] 체결 이력 조회 결과: {len(history)}건")
             if not history:
                 self.logger.warning("[체결이력] 체결 이력이 비어 있습니다. (조회 기간 내 체결 내역이 없거나, API 오류일 수 있음)")
@@ -272,7 +277,11 @@ class TraderBot:
             if gss and gss.is_connected:
                 try:
                     gss.sync_holdings(self.holdings, self.current_prices)
-                    history = self.api.get_overseas_execution_history()
+                    # KIS API TTTS3035R은 PDNO(종목코드)가 필수이므로 종목별로 조회
+                    history = []
+                    for sym in self.infinite_stocks:
+                        sym_history = self.api.get_overseas_execution_history(symbol=sym)
+                        history.extend(sym_history)
                     gss.sync_execution_history(history)
                     self.logger.info("📊 Google Sheet 'Holdings'/'ExecutionHistory' 동기화 완료 (KIS API 실계좌)")
                 except Exception as e:

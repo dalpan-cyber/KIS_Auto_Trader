@@ -606,7 +606,7 @@ class KISApiClient:
                             c_val = float(item.get("clos", item.get("last", 0)) or 0)
                             if c_val > 0:
                                 results.append({
-                                    "date": item.get("ksam_date", item.get("date", "")),
+                                    "date": item.get("xymd", item.get("ksam_date", item.get("date", ""))),
                                     "close": c_val,
                                     "open": float(item.get("open", 0) or 0),
                                     "high": float(item.get("high", 0) or 0),
@@ -921,12 +921,14 @@ class KISApiClient:
         params = {
             "CANO": self.cano,
             "ACNT_PRDT_CD": self.acnt_prdt_cd,
-            # PDNO는 "%" (전체)로 조회 후 코드에서 symbol 필터링
-            # KIS API TTTS3035R은 특정 종목 PDNO로 조회 시 결과가 비어있을 수 있음
-            "PDNO": "%",
+            # PDNO: 특정 종목 조회 시 해당 종목코드, 전체 조회 시 빈 문자열
+            # KIS API TTTS3035R은 "%" 와일드카드를 지원하지 않으므로 사용하지 않음
+            "PDNO": symbol.upper() if symbol else "",
             "ORD_STRT_DT": start_date,
             "ORD_END_DT": end_date,
-            "SVR_DVSN_CD": "0",
+            # SVR_DVSN_CD: 00=전체, 01=나스닥, 02=뉴욕, 03=아멕스
+            # (A는 이 엔드포인트에서 유효하지 않은 값이므로 00으로 변경)
+            "SVR_DVSN_CD": "00",
             "CCNL_DVSN": "00",
             "ORD_GDS_DVSN": "00",
             "CTX_AREA_FK200": "",
