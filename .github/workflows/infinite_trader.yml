@@ -2,9 +2,10 @@ name: 🇺🇸 KIS 라오어 무한매수법 무인 자동매매
 
 on:
   schedule:
-    # 한국시간(KST) 평일 밤 22:38 (UTC 13:38)에만 자동 실행
-    # 미국 정규장 및 LOC 주문 개시 시간(22:30 KST) 직후 실행
+    # 1) 한국시간(KST) 평일 밤 22:38 (UTC 13:38) - 당일 LOC 매수 & 익절 매도 주문 발주
     - cron: '38 13 * * 1-5'
+    # 2) 한국시간(KST) 화~토 아침 05:10 (UTC 20:10) - 장 마감 직후 체결 결과 확인 & Google Sheets 동기화
+    - cron: '10 20 * * 2-6'
   workflow_dispatch: # GitHub 웹 UI에서 수동 실행 버튼 제공
 
 jobs:
