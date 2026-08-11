@@ -162,13 +162,17 @@ class InfiniteBuyingStrategy(BaseStrategy):
         self,
         symbol: str,
         current_price: float,
-        state: Dict[str, Any]
+        state: Dict[str, Any],
+        avg_price: float = 0.0,
+        total_qty: int = 0
     ) -> List[Dict[str, Any]]:
         """
         무한매수법 당일 매수/매도 상세 주문 제안 리스트 생성
         :param symbol: 종목 코드 (예: TQQQ)
         :param current_price: 현재가 ($)
-        :param state: InfiniteStateManager에서 가져온 종목 상태 dict
+        :param state: InfiniteStateManager에서 가져온 종목 상태 dict (전략 상태만)
+        :param avg_price: 보유 평단가 ($) - KIS API 실계좌에서 조회 (Source of Truth = API)
+        :param total_qty: 보유 수량 (주) - KIS API 실계좌에서 조회 (Source of Truth = API)
         :return: 생성할 주문 리스트 [{action: 'SELL'/'BUY', qty: int, price: float, ord_type: '00'/'34', desc: str}]
         """
         orders = []
@@ -179,8 +183,6 @@ class InfiniteBuyingStrategy(BaseStrategy):
         curr_round = state.get("current_round", 0)
         division = state.get("division_count", self.division_count)
         total_budget = state.get("total_budget_usd", 10000.0)
-        avg_price = state.get("avg_price", 0.0)
-        total_qty = state.get("total_qty", 0)
         target_roi = state.get("target_roi", self.target_roi)
 
         # 1. 익절 매도 주문 제안 (보유 수량이 있는 경우)

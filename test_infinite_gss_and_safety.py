@@ -1,5 +1,5 @@
 """
-무한매수법 Google Sheets 연동, 매수실패 기록 및 전량매도 수량 맞춤 안전장치 단위 테스트 (test_infinite_gss_and_safety.py)
+무한매수법 Google Sheets 연동, 전략 상태 관리 및 전량매도 수량 맞춤 안전장치 단위 테스트 (test_infinite_gss_and_safety.py)
 """
 import os
 import json
@@ -29,37 +29,39 @@ class TestInfiniteGSSAndSafety(unittest.TestCase):
         self.assertFalse(gss_mgr.is_connected)
         # 메서드 호출 시 예외 없이 무반응 수행되는지 확인
         gss_mgr.sync_all_states({})
-        gss_mgr.append_history_entry("TQQQ", "BUY", 10, 50.0)
 
-    def test_state_manager_record_buy_and_failure(self):
-        """InfiniteStateManager 매수 체결, 매수 실패, LOC 접수 기록 검증"""
+    def test_state_manager_round_advance_and_complete(self):
+        """InfiniteStateManager 회차 진행/완료 및 전략 상태만 관리하는지 검증"""
         mgr = InfiniteStateManager(file_path=self.test_state_file)
         mgr.gss_mgr = GoogleSheetManager(enabled=False)
 
-        # 1. 매수 체결 기록
-        mgr.record_buy_execution("TQQQ", qty=5, price=50.0, round_inc=0.5)
+        # 1. 초기 상태 (전략 상태만 존재, 보유 수량/평단가/이력 없음)
         st = mgr.get_symbol_state("TQQQ")
-        self.assertEqual(st["total_qty"], 5)
-        self.assertEqual(st["avg_price"], 50.0)
+        self.assertEqual(st["current_round"], 0)
+        self.assertEqual(st["status"], "IDLE")
+        self.assertNotIn("total_qty", st)
+        self.assertNotIn("avg_price", st)
+        self.assertNotIn("history", st)
+
+        # 2. 매수 체결 시 회차 진행 (0.5회차)
+        mgr.advance_round("TQQQ", round_inc=0.5)
+        st = mgr.get_symbol_state("TQQQ")
         self.assertEqual(st["current_round"], 0.5)
-        self.assertEqual(len(st["history"]), 1)
-        self.assertEqual(st["history"][0]["type"], "BUY")
+        self.assertEqual(st["status"], "BUYING")
 
-        # 2. 매수 실패 기록
-        mgr.record_buy_failure("TQQQ", qty=5, price=52.0, reason="APBK1681 기본예탁금 미등록")
+        # 3. 추가 매수 체결 시 회차 진행 (1.0회차)
+        mgr.advance_round("TQQQ", round_inc=0.5)
         st = mgr.get_symbol_state("TQQQ")
-        self.assertEqual(len(st["history"]), 2)
-        self.assertEqual(st["history"][1]["type"], "BUY_FAILED")
-        self.assertIn("APBK1681", st["history"][1]["note"])
+        self.assertEqual(st["current_round"], 1.0)
 
-        # 3. LOC 주문 접수 기록
-        mgr.record_order_sent("TQQQ", qty=5, price=50.0, ord_type="34", desc="0.5회차 LOC 매수")
+        # 4. 익절 매도 시 회차 리셋 및 COMPLETED
+        mgr.complete_round("TQQQ")
         st = mgr.get_symbol_state("TQQQ")
-        self.assertEqual(len(st["history"]), 3)
-        self.assertEqual(st["history"][2]["type"], "ORDER_SENT")
+        self.assertEqual(st["current_round"], 0)
+        self.assertEqual(st["status"], "COMPLETED")
 
     def test_trader_full_sell_qty_reconciliation(self):
-        """+10% 전량 익절 매도 시 계좌 수량과 상태 수량이 다를 때 계좌 수량으로 자동 수정되는 안전 로직 검증"""
+        """+10% 전량 익절 매도 시 계좌 수량과 제안 수량이 다를 때 계좌 수량으로 자동 수정되는 안전 로직 검증"""
         api_mock = MagicMock(spec=KISApiClient)
         api_mock.mock = True
         api_mock.app_key = "test"
@@ -73,13 +75,13 @@ class TestInfiniteGSSAndSafety(unittest.TestCase):
         bot.infinite_state_mgr = InfiniteStateManager(file_path=self.test_state_file)
         bot.infinite_state_mgr.gss_mgr = GoogleSheetManager(enabled=False)
 
-        # 상태에는 10주 보유 중으로 기록되어 있으나 계좌 실제 수량은 5주라고 가정 (수량 불일치)
+        # 전략 상태: 5회차 진행 중
         st = bot.infinite_state_mgr.get_symbol_state("TQQQ")
-        st["total_qty"] = 10
-        st["avg_price"] = 50.0
         st["current_round"] = 5.0
+        st["status"] = "BUYING"
         bot.infinite_state_mgr.save_state()
 
+        # 계좌 실제 보유: 5주 (KIS API가 Source of Truth)
         bot.holdings = {
             "TQQQ": {
                 "name": "TQQQ",
@@ -98,7 +100,7 @@ class TestInfiniteGSSAndSafety(unittest.TestCase):
             "stock_name": "TQQQ (무한매수)",
             "action": "SELL",
             "action_kr": "익절 매도",
-            "qty": 10,  # 제안 수량 10주
+            "qty": 10,  # 제안 수량 10주 (상태에 기록된 수량과 불일치)
             "price": 55.0,
             "total_price": 550.0,
             "reason": "+10% 전량 익절",
@@ -130,13 +132,13 @@ class TestInfiniteGSSAndSafety(unittest.TestCase):
         bot.require_approval = False
         bot.infinite_stocks = ["TQQQ"]
 
+        # 전략 상태: 5회차 진행 중
         st = bot.infinite_state_mgr.get_symbol_state("TQQQ")
-        st["total_qty"] = 10
-        st["avg_price"] = 50.0
         st["current_round"] = 5.0
         st["status"] = "BUYING"
         bot.infinite_state_mgr.save_state()
 
+        # 계좌 실제 보유: 4주 (KIS API가 Source of Truth)
         bot.holdings = {
             "TQQQ": {
                 "name": "TQQQ",

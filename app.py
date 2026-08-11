@@ -234,8 +234,8 @@ usd_stock_eval = 0.0
 holding_stock_count = 0
 
 for sym in infinite_stocks:
-    st_d = bot.infinite_state_mgr.get_symbol_state(sym)
-    q = st_d.get("total_qty", 0)
+    hld = bot.holdings.get(sym, {})
+    q = hld.get("qty", 0)
     cur_p = bot.current_prices.get(sym, 0.0)
     if cur_p == 0.0:
         p_res = bot.api.get_stock_price(sym)
@@ -377,8 +377,10 @@ def render_stock_detail(symbol: str, bot: TraderBot):
     curr_round = st_data.get("current_round", 0)
     div_count = st_data.get("division_count", 40)
     budget = st_data.get("total_budget_usd", 5000.0)
-    avg_p = st_data.get("avg_price", 0.0)
-    total_qty = st_data.get("total_qty", 0)
+    # 보유 수량/평단가는 KIS API 실계좌가 Source of Truth
+    hld = bot.holdings.get(symbol, {})
+    avg_p = hld.get("avg_price", 0.0)
+    total_qty = hld.get("qty", 0)
     raw_status = st_data.get("status", "IDLE")
 
     cur_p = bot.current_prices.get(symbol, 0.0)
@@ -437,7 +439,10 @@ def render_stock_detail(symbol: str, bot: TraderBot):
 
     # 3. 당일 매수/매도 주문 상세 수량
     calc_price = cur_p if cur_p > 0 else (avg_p if avg_p > 0 else 50.0)
-    orders = bot.infinite_strategy.generate_daily_orders(symbol, calc_price, st_data)
+    orders = bot.infinite_strategy.generate_daily_orders(
+        symbol, calc_price, st_data,
+        avg_price=avg_p, total_qty=total_qty
+    )
 
     col_det1, col_det2 = st.columns(2)
     with col_det1:
@@ -493,30 +498,27 @@ def render_stock_detail(symbol: str, bot: TraderBot):
                 marker=dict(size=4)
             ))
 
-        history = st_data.get("history", [])
+        # 매매 이력은 KIS API 실계좌 체결내역이 Source of Truth
+        history = bot.api.get_overseas_execution_history(symbol=symbol)
         if history:
             buy_dates, buy_prices, buy_texts = [], [], []
             sell_dates, sell_prices, sell_texts = [], [], []
             fail_dates, fail_prices, fail_texts = [], [], []
 
             for h in history:
-                h_date = str(h.get("date", ""))[:10]
-                h_type = h.get("type", "")
-                h_qty = h.get("qty", 0)
-                h_price = h.get("price", 0.0)
+                h_date = str(h.get("order_time", ""))[:10]
+                h_type = h.get("order_type", "")
+                h_qty = h.get("executed_qty", 0)
+                h_price = h.get("executed_price", 0.0)
 
-                if h_type in ["BUY", "ORDER_SENT"]:
+                if "매수" in h_type:
                     buy_dates.append(h_date)
                     buy_prices.append(h_price)
-                    buy_texts.append(f"🟢 매수 체결: {h_qty}주 @ ${h_price:.2f} ({h.get('round', 0)}회차)")
-                elif h_type == "SELL":
+                    buy_texts.append(f"🟢 매수 체결: {h_qty}주 @ ${h_price:.2f} ({h.get('status', '')})")
+                elif "매도" in h_type:
                     sell_dates.append(h_date)
                     sell_prices.append(h_price)
-                    sell_texts.append(f"🎉 익절 매도: {h_qty}주 @ ${h_price:.2f} (수익률: +{h.get('roi_pct', 0)}%)")
-                elif h_type == "BUY_FAILED":
-                    fail_dates.append(h_date)
-                    fail_prices.append(h_price)
-                    fail_texts.append(f"❌ 매수 실패 ({h_qty}주 @ ${h_price:.2f}): {h.get('note', '')}")
+                    sell_texts.append(f"🎉 익절 매도: {h_qty}주 @ ${h_price:.2f} ({h.get('status', '')})")
 
             if buy_dates:
                 fig.add_trace(go.Scatter(
@@ -561,20 +563,19 @@ def render_stock_detail(symbol: str, bot: TraderBot):
         st.info("💡 `pip install plotly`를 가상환경(.venv)에 설치하시면 대화형 매수/매도 이력 마커 차트가 표출됩니다.")
 
 
-    # 5. 종목 매매 및 체결/실패 히스토리 테이블
-    st.subheader(f"📜 [{symbol}] 매수/매도 & 체결/실패 이력 (Google Sheets 연동)")
+    # 5. 종목 매매 및 체결/실패 히스토리 테이블 (KIS API 실계좌 체결내역)
+    st.subheader(f"📜 [{symbol}] 매수/매도 & 체결/실패 이력 (KIS API 실계좌)")
     if history:
         h_rows = []
         for h in reversed(history):
             h_rows.append({
-                "일시": h.get("date", "-"),
-                "구분": h.get("status_label", h.get("type", "-")),
-                "수량": f"{h.get('qty', 0):,}주",
-                "단가 ($)": f"${h.get('price', 0.0):.2f}",
-                "총금액 ($)": f"${h.get('qty', 0) * h.get('price', 0.0):,.2f}",
-                "진행회차": f"{h.get('round', '-')} 회차" if 'round' in h else "-",
-                "평단가 ($)": f"${h.get('avg_price', 0.0):.2f}" if h.get('avg_price', 0) > 0 else "-",
-                "비고 / 실패사유": h.get("note", "-")
+                "일시": h.get("order_time", "-"),
+                "구분": h.get("order_type", "-"),
+                "수량": f"{h.get('executed_qty', 0):,}주",
+                "단가 ($)": f"${h.get('executed_price', 0.0):.2f}",
+                "총금액 ($)": f"${h.get('executed_qty', 0) * h.get('executed_price', 0.0):,.2f}",
+                "상태": h.get("status", "-"),
+                "주문번호": h.get("order_no", "-")
             })
         st.dataframe(pd.DataFrame(h_rows), width="stretch", hide_index=True)
     else:
@@ -599,12 +600,15 @@ with tab_infinite:
                 summary_data = []
                 for sym in infinite_stocks:
                     st_d = bot.infinite_state_mgr.get_symbol_state(sym)
+                    hld = bot.holdings.get(sym, {})
+                    avg_p = hld.get("avg_price", 0.0)
+                    total_qty = hld.get("qty", 0)
                     summary_data.append({
                         "티커": sym,
                         "진행 회차": f"{st_d.get('current_round', 0)} / {st_d.get('division_count', 40)} 회차",
                         "총 예산 ($)": f"${st_d.get('total_budget_usd', 0.0):,.2f}",
-                        "평단가 ($)": f"${st_d.get('avg_price', 0.0):.2f}" if st_d.get('avg_price', 0) > 0 else "-",
-                        "보유 수량": f"{st_d.get('total_qty', 0):,} 주",
+                        "평단가 ($)": f"${avg_p:.2f}" if avg_p > 0 else "-",
+                        "보유 수량": f"{total_qty:,} 주",
                         "상태": st_d.get("status", "IDLE")
                     })
                 st.dataframe(pd.DataFrame(summary_data), width="stretch", hide_index=True)

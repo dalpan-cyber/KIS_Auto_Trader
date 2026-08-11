@@ -144,17 +144,13 @@ class TraderBot:
             self.logger.error(f"계좌 잔고 조회 실패: {res.get('msg')}")
 
     def sync_holdings_to_state(self):
-        """실시간 계좌 보유 종목 수량/평단가를 무한매수 상태 및 구글 시트에 즉시 동기화"""
-        for symbol in self.infinite_stocks:
-            state = self.infinite_state_mgr.get_symbol_state(symbol)
-            actual_held_qty = int(self.holdings.get(symbol, {}).get("qty", 0))
-            actual_avg_p = float(self.holdings.get(symbol, {}).get("avg_price", 0.0))
-            state["total_qty"] = actual_held_qty
-            if actual_avg_p > 0:
-                state["avg_price"] = round(actual_avg_p, 4)
-            elif actual_held_qty == 0:
-                state["avg_price"] = 0.0
-        self.infinite_state_mgr.save_state()
+        """
+        실시간 계좌 보유 종목 수량/평단가를 갱신
+        - 보유 수량/평단가는 KIS API가 Source of Truth이므로 JSON/구글 시트에 기록하지 않음
+        - 대시보드/전략은 API에서 실시간 조회하여 사용
+        """
+        self.fetch_account_balance()
+        self.logger.info("🔄 실계좌 보유 종목 수량/평단가를 API에서 갱신 완료 (JSON/구글 시트에는 전략 상태만 기록)")
 
     def start_infinite_buying(self, symbol: str):
         """특정 종목의 무한매수 수동 시작"""
@@ -247,15 +243,11 @@ class TraderBot:
             if order_res.get("success"):
                 round_inc = prop.get("round_inc", 1.0)
                 if is_buy:
-                    if ord_type == "34":
-                        self.infinite_state_mgr.record_order_sent(
-                            symbol, qty=qty, price=price, ord_type=ord_type,
-                            desc=prop.get("reason", "LOC 매수 주문 전송 완료")
-                        )
-                    else:
-                        self.infinite_state_mgr.record_buy_execution(symbol, qty=qty, price=price, round_inc=round_inc)
+                    # 매수 주문 접수/체결 시 진행 회차 증가 (전략 상태만 JSON/구글 시트에 기록)
+                    self.infinite_state_mgr.advance_round(symbol, round_inc=round_inc)
                 else:
-                    self.infinite_state_mgr.record_sell_execution(symbol, qty=qty, price=price)
+                    # 전량 익절 매도 시 회차 리셋
+                    self.infinite_state_mgr.complete_round(symbol)
                 self.risk_mgr.reset_error()
                 self.logger.info(f"🎉 [{symbol}] 해외주식 무한매수 {prop['action_kr']} 주문 성공!")
                 self.fetch_account_balance()
@@ -263,8 +255,6 @@ class TraderBot:
             else:
                 err_msg = order_res.get('msg', '')
                 self.logger.error(f"❌ [{symbol}] 해외주식 주문 실행 실패: {err_msg}")
-                if is_buy:
-                    self.infinite_state_mgr.record_buy_failure(symbol, qty=qty, price=price, reason=err_msg)
                 self._check_and_log_apbk1681_guidance(symbol, err_msg)
                 self.risk_mgr.record_error()
                 return False
@@ -280,8 +270,6 @@ class TraderBot:
             else:
                 err_msg = order_res.get('msg', '')
                 self.logger.error(f"❌ [{symbol}] {prop['action_kr']} 주문 실행 실패: {err_msg}")
-                if is_buy:
-                    self.infinite_state_mgr.record_buy_failure(symbol, qty=qty, price=price, reason=err_msg)
                 self._check_and_log_apbk1681_guidance(symbol, err_msg)
                 self.risk_mgr.record_error()
                 return False
@@ -325,22 +313,13 @@ class TraderBot:
                 curr_round = state.get("current_round", 0)
                 div_count = state.get("division_count", 40)
 
-                # 계좌 실제 잔고 수량과 JSON 상태 수량 상호 동기화 (미보유 시 0주로 자동 보정)
+                # 보유 수량/평단가는 KIS API(실계좌)가 Source of Truth
+                # self.holdings는 fetch_account_balance()에서 API로 갱신됨
                 actual_held_qty = int(self.holdings.get(symbol, {}).get("qty", 0))
                 actual_avg_p = float(self.holdings.get(symbol, {}).get("avg_price", 0.0))
-                if actual_held_qty != state.get("total_qty", 0):
-                    self.logger.info(
-                        f"🔄 [{symbol}] 실시간 계좌 수량 동기화: JSON state ({state.get('total_qty', 0)}주) -> 실계좌 ({actual_held_qty}주)"
-                    )
-                    state["total_qty"] = actual_held_qty
-                    if actual_avg_p > 0:
-                        state["avg_price"] = round(actual_avg_p, 4)
-                    elif actual_held_qty == 0:
-                        state["avg_price"] = 0.0
-                    self.infinite_state_mgr.save_state()
 
-                tot_qty = state.get("total_qty", 0)
-                avg_p = state.get("avg_price", 0.0)
+                tot_qty = actual_held_qty
+                avg_p = actual_avg_p
                 avg_p_str = f"${avg_p:.2f}" if avg_p > 0 else "미보유(-)"
 
                 self.logger.info(
@@ -348,11 +327,11 @@ class TraderBot:
                     f"누적 수량: {tot_qty}주 | 평단가: {avg_p_str} | 현재가: ${cur_price:.2f}"
                 )
 
-                if state.get("last_order_date") == today_str and not self.require_approval:
-                    self.logger.info(f"⏳ [{symbol}] 오늘({today_str}) 이미 당일 무한매수 주문이 전송되었습니다. 중복 제출을 건너땁니다.")
-                    continue
-
-                orders = self.infinite_strategy.generate_daily_orders(symbol, cur_price, state)
+                # 보유 수량/평단가는 KIS API 실계좌가 Source of Truth (JSON에는 저장하지 않음)
+                orders = self.infinite_strategy.generate_daily_orders(
+                    symbol, cur_price, state,
+                    avg_price=actual_avg_p, total_qty=actual_held_qty
+                )
                 orders_sent = False
 
                 for order in orders:
@@ -365,15 +344,13 @@ class TraderBot:
 
                     # 전량 익절 매도 시 실시간 계좌 수량과 자동 맞춰서 수량 불일치 오류 방지
                     if action == "SELL":
-                        actual_held_qty = int(self.holdings.get(symbol, {}).get("qty", state.get("total_qty", 0)))
+                        actual_held_qty = int(self.holdings.get(symbol, {}).get("qty", 0))
                         if actual_held_qty > 0 and qty != actual_held_qty:
                             self.logger.warning(
                                 f"⚠️ [{symbol}] 전량 매도 수량 맞춤 보정! 주문 제안: {qty}주 -> 실시간 계좌 보유: {actual_held_qty}주"
                             )
                             qty = actual_held_qty
                             order["qty"] = qty
-                            state["total_qty"] = actual_held_qty
-                            self.infinite_state_mgr.save_state()
 
                     total_ord_amt = qty * price
                     proposal_id = f"INFINITE_{symbol}_{action}_{ord_type}_{price:.2f}"
@@ -410,12 +387,11 @@ class TraderBot:
                         if order_res.get("success"):
                             orders_sent = True
                             if is_buy:
-                                if ord_type == "34":
-                                    self.infinite_state_mgr.record_order_sent(symbol, qty=qty, price=price, ord_type=ord_type, desc=desc)
-                                else:
-                                    self.infinite_state_mgr.record_buy_execution(symbol, qty, price, round_inc=round_inc)
+                                # 매수 주문 접수/체결 시 진행 회차 증가 (전략 상태만 JSON/구글 시트에 기록)
+                                self.infinite_state_mgr.advance_round(symbol, round_inc=round_inc)
                             else:
-                                self.infinite_state_mgr.record_sell_execution(symbol, qty, price)
+                                # 전량 익절 매도 시 회차 리셋
+                                self.infinite_state_mgr.complete_round(symbol)
                                 self.logger.info(
                                     f"🎉 [{symbol}] 해외주식 익절 매도 주문 접수 성공! "
                                     f"(매도수량: {qty}주, 목표가: ${price:.2f}, 예상총액: ${total_ord_amt:,.2f})"
@@ -424,13 +400,8 @@ class TraderBot:
                         else:
                             err_msg = order_res.get('msg', '')
                             self.logger.error(f"❌ [{symbol}] 해외주식 무한매수 {action_kr} 주문 실패: {err_msg}")
-                            if is_buy:
-                                self.infinite_state_mgr.record_buy_failure(symbol, qty=qty, price=price, reason=err_msg)
                             self._check_and_log_apbk1681_guidance(symbol, err_msg)
                             self.risk_mgr.record_error()
-
-                if orders_sent:
-                    self.infinite_state_mgr.update_last_order_date(symbol, today_str)
             except Exception as e:
                 self.logger.error(f"[{symbol}] 무한매수 루틴 실행 예외: {e}")
 

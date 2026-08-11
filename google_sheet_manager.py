@@ -43,7 +43,6 @@ class GoogleSheetManager:
         self.client: Optional[Any] = None
         self.spreadsheet: Optional[Any] = None
         self.state_worksheet: Optional[Any] = None
-        self.history_worksheet: Optional[Any] = None
         self.is_connected = False
 
         if self.enabled and GSPREAD_AVAILABLE:
@@ -124,16 +123,8 @@ class GoogleSheetManager:
                 self.state_worksheet = self.spreadsheet.worksheet("State")
             except Exception:
                 self.state_worksheet = self.spreadsheet.add_worksheet(title="State", rows="50", cols="10")
-                headers = ["티커", "진행회차", "총예산($)", "평단가($)", "누적수량", "목표수익률(%)", "상태", "마지막주문일자", "최종갱신시각"]
+                headers = ["티커", "시작일", "진행회차", "총예산($)", "목표수익률(%)", "상태", "최종갱신시각"]
                 self.state_worksheet.append_row(headers)
-
-            # 'History' 워크시트 준비
-            try:
-                self.history_worksheet = self.spreadsheet.worksheet("History")
-            except Exception:
-                self.history_worksheet = self.spreadsheet.add_worksheet(title="History", rows="1000", cols="12")
-                headers = ["일시", "티커", "구분", "수량", "단가($)", "총금액($)", "회차", "평단가($)", "누적수량", "수익률(%)", "비고/상태"]
-                self.history_worksheet.append_row(headers)
 
             self.is_connected = True
             logger.info(f"🟢 Google Sheets 연동 성공! (서비스 계정: {sa_email} | 시트: {self.spreadsheet.title})")
@@ -149,7 +140,7 @@ class GoogleSheetManager:
             return False
 
     def sync_all_states(self, states: Dict[str, Dict[str, Any]]):
-        """전체 종목 상태를 'State' 워크시트에 반영"""
+        """전체 종목 전략 상태를 'State' 워크시트에 반영 (보유수량/평단가는 API에서 실시간 조회)"""
         if not self.is_connected or not self.state_worksheet:
             return
 
@@ -169,19 +160,17 @@ class GoogleSheetManager:
                 sym_upper = symbol.upper()
                 row_data = [
                     sym_upper,
+                    state.get("start_date", "-"),
                     state.get("current_round", 0),
                     state.get("total_budget_usd", 0.0),
-                    state.get("avg_price", 0.0),
-                    state.get("total_qty", 0),
                     round(state.get("target_roi", 0.10) * 100, 1),
                     state.get("status", "IDLE"),
-                    state.get("last_order_date", "-"),
                     now_str
                 ]
 
                 if sym_upper in ticker_row_map:
                     row_idx = ticker_row_map[sym_upper]
-                    self.state_worksheet.update([row_data], range_name=f"A{row_idx}:I{row_idx}")
+                    self.state_worksheet.update([row_data], range_name=f"A{row_idx}:G{row_idx}")
                 else:
                     self.state_worksheet.append_row(row_data)
 
@@ -193,7 +182,7 @@ class GoogleSheetManager:
                 logger.warning(f"Google Sheet State 동기화 예외: {e}")
 
     def read_states_from_sheet(self) -> Dict[str, Dict[str, Any]]:
-        """Google Sheet 'State' 워크시트에서 사용자가 수동 편집한 종목 상태 읽어오기"""
+        """Google Sheet 'State' 워크시트에서 사용자가 수동 편집한 전략 상태 읽어오기"""
         if not self.is_connected or not self.state_worksheet:
             return {}
 
@@ -213,14 +202,11 @@ class GoogleSheetManager:
                 sheet_states[ticker] = {
                     "symbol": ticker,
                     "division_count": 40,
+                    "start_date": str(rec.get("시작일", "-")).strip(),
                     "current_round": float(rec.get("진행회차", 0.0) or 0.0),
                     "total_budget_usd": float(rec.get("총예산($)", 5000.0) or 5000.0),
-                    "avg_price": float(rec.get("평단가($)", 0.0) or 0.0),
-                    "total_qty": int(rec.get("누적수량", 0) or 0),
                     "target_roi": round(roi_float, 4),
                     "status": str(rec.get("상태", "IDLE")).strip().upper(),
-                    "last_order_date": str(rec.get("마지막주문일자", "-")).strip(),
-                    "history": []
                 }
             if sheet_states:
                 logger.info(f"📊 Google Sheet 'State'에서 {len(sheet_states)}개 종목 상태 불러오기 성공 ({', '.join(sheet_states.keys())})")
@@ -228,39 +214,4 @@ class GoogleSheetManager:
             logger.warning(f"Google Sheet 상태 읽기 실패: {e}")
         return sheet_states
 
-    def append_history_entry(
-        self,
-        symbol: str,
-        entry_type: str,
-        qty: int,
-        price: float,
-        round_val: float = 0.0,
-        avg_price: float = 0.0,
-        total_qty: int = 0,
-        roi_pct: float = 0.0,
-        note: str = ""
-    ):
-        """매매 및 주문 실패 이력을 'History' 워크시트에 추가"""
-        if not self.is_connected or not self.history_worksheet:
-            return
-
-        try:
-            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            tot_amt = round(qty * price, 2)
-            row_data = [
-                now_str,
-                symbol.upper(),
-                entry_type,
-                qty,
-                round(price, 2),
-                tot_amt,
-                round_val,
-                round(avg_price, 2),
-                total_qty,
-                round(roi_pct, 2) if roi_pct != 0.0 else "-",
-                note
-            ]
-            self.history_worksheet.append_row(row_data)
-            logger.info(f"📊 Google Sheet History 기록 완료: [{symbol}] {entry_type} ({qty}주 @ ${price:.2f})")
-        except Exception as e:
-            logger.warning(f"Google Sheet History 추가 실패: {e}")
+    

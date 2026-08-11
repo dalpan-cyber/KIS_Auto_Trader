@@ -360,14 +360,19 @@ class TradingDashboard(QMainWindow):
                 curr_round = st.get("current_round", 0)
                 div_count = st.get("division_count", 40)
                 budget = st.get("total_budget_usd", 10000.0)
-                avg_p = st.get("avg_price", 0.0)
-                qty = st.get("total_qty", 0)
+                # 보유 수량/평단가는 KIS API 실계좌가 Source of Truth
+                hld = self.bot.holdings.get(sym, {})
+                avg_p = hld.get("avg_price", 0.0)
+                qty = hld.get("qty", 0)
                 roi = st.get("target_roi", 0.10)
                 status = st.get("status", "IDLE")
 
                 cur_p = self.bot.current_prices.get(sym, 0.0)
                 calc_p = cur_p if cur_p > 0 else (avg_p if avg_p > 0 else 50.0)
-                sample_orders = self.bot.infinite_strategy.generate_daily_orders(sym, calc_p, st)
+                sample_orders = self.bot.infinite_strategy.generate_daily_orders(
+                    sym, calc_p, st,
+                    avg_price=avg_p, total_qty=qty
+                )
 
                 sell_orders = [o for o in sample_orders if o['action'] == 'SELL']
                 buy_orders = [o for o in sample_orders if o['action'] == 'BUY']

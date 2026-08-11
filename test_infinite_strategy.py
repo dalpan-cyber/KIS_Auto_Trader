@@ -22,42 +22,39 @@ class TestInfiniteStrategy(unittest.TestCase):
         symbol = "TQQQ"
         state = self.state_mgr.get_symbol_state(symbol, default_budget_usd=10000.0, division_count=40)
         self.assertEqual(state["current_round"], 0)
-        self.assertEqual(state["total_qty"], 0)
+        self.assertEqual(state["status"], "IDLE")
+        # 전략 상태만 관리 (보유 수량/평단가는 API가 Source of Truth)
+        self.assertNotIn("total_qty", state)
+        self.assertNotIn("avg_price", state)
+        self.assertNotIn("history", state)
 
-        # 1차 매수 체결 기록 (0.5회차, 5주 @ $50.0)
-        self.state_mgr.record_buy_execution(symbol, qty=5, price=50.0, round_inc=0.5)
+        # 1차 매수 체결 시 회차 진행 (0.5회차)
+        self.state_mgr.advance_round(symbol, round_inc=0.5)
         state = self.state_mgr.get_symbol_state(symbol)
         self.assertEqual(state["current_round"], 0.5)
-        self.assertEqual(state["total_qty"], 5)
-        self.assertEqual(state["avg_price"], 50.0)
+        self.assertEqual(state["status"], "BUYING")
 
-        # 2차 매수 체결 기록 (0.5회차, 5주 @ $60.0)
-        self.state_mgr.record_buy_execution(symbol, qty=5, price=60.0, round_inc=0.5)
+        # 2차 매수 체결 시 회차 진행 (0.5회차)
+        self.state_mgr.advance_round(symbol, round_inc=0.5)
         state = self.state_mgr.get_symbol_state(symbol)
         self.assertEqual(state["current_round"], 1.0)
-        self.assertEqual(state["total_qty"], 10)
-        self.assertEqual(state["avg_price"], 55.0)
 
-        # 익절 매도 체결 기록
-        self.state_mgr.record_sell_execution(symbol, qty=10, price=60.5)
+        # 익절 매도 시 회차 리셋 및 COMPLETED
+        self.state_mgr.complete_round(symbol)
         state = self.state_mgr.get_symbol_state(symbol)
         self.assertEqual(state["current_round"], 0)
-        self.assertEqual(state["total_qty"], 0)
-        self.assertEqual(state["avg_price"], 0.0)
         self.assertEqual(state["status"], "COMPLETED")
 
     def test_strategy_order_generation(self):
         strategy = StrategyFactory.create_strategy("INFINITE_BUYING", division_count=40, target_roi=0.10)
         symbol = "TQQQ"
         
-        # 1. 신규 시작 상태 (0회차)
+        # 1. 신규 시작 상태 (0회차, 미보유)
         state_0 = {
             "symbol": symbol,
             "total_budget_usd": 10000.0,
             "division_count": 40,
             "current_round": 0,
-            "avg_price": 0.0,
-            "total_qty": 0,
             "target_roi": 0.10
         }
         orders = strategy.generate_daily_orders(symbol, current_price=50.0, state=state_0)
@@ -66,17 +63,18 @@ class TestInfiniteStrategy(unittest.TestCase):
         self.assertEqual(orders[0]["ord_type"], "34")
         self.assertEqual(orders[0]["price"], 50.0)
 
-        # 2. 보유 중 상태 (1회차, 평단가 50.0, 보유 10주)
+        # 2. 보유 중 상태 (1회차, 평단가 50.0, 보유 10주) - API 실계좌 데이터를 별도 파라미터로 전달
         state_1 = {
             "symbol": symbol,
             "total_budget_usd": 10000.0,
             "division_count": 40,
             "current_round": 1.0,
-            "avg_price": 50.0,
-            "total_qty": 10,
             "target_roi": 0.10
         }
-        orders = strategy.generate_daily_orders(symbol, current_price=52.0, state=state_1)
+        orders = strategy.generate_daily_orders(
+            symbol, current_price=52.0, state=state_1,
+            avg_price=50.0, total_qty=10
+        )
         self.assertEqual(len(orders), 3)  # 익절 매도 1건 + 매수 LOC 2건
         sell_order = [o for o in orders if o["action"] == "SELL"][0]
         self.assertEqual(sell_order["price"], 55.0)  # +10% 지정가 = 55.0
