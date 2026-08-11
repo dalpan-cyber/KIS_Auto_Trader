@@ -690,8 +690,9 @@ class KISApiClient:
         logger.info(f"[해외잔고] API 호출 시작: tr_id={tr_id}, url={url}, mock={self.mock}")
 
         # 여러 거래소(NAS/NYS/AMS)를 순회하며 보유 종목 통합 조회
-        # KIS API 거래소 코드: NAS=나스닥, NYS=뉴욕, AMS=아멕스, NMS=나스닥(대체), NYQ=뉴욕(대체)
-        exchanges = ["NAS", "NYS", "AMS", "NMS", "NYQ"]
+        # KIS API 거래소 코드: NAS=나스닥, NYS=뉴욕, AMS=아멕스
+        # (NMS/NYQ는 NAS/NYS의 대체 코드로, 별도 조회 시 중복 데이터만 발생하므로 제외)
+        exchanges = ["NAS", "NYS", "AMS"]
         all_holdings = []
         last_error = ""
         exchange_results: Dict[str, Dict[str, Any]] = {}
@@ -766,10 +767,11 @@ class KISApiClient:
                             exch_holdings.append(holding_item)
 
                         # 다음 페이지 확인
-                        ctx_fk = data.get("ctx_area_fk200", "")
-                        ctx_nk = data.get("ctx_area_nk200", "")
+                        ctx_fk = (data.get("ctx_area_fk200", "") or "").strip()
+                        ctx_nk = (data.get("ctx_area_nk200", "") or "").strip()
                         logger.info(f"[해외잔고] [{exch}] 페이지 컨텍스트: ctx_fk={ctx_fk}, ctx_nk={ctx_nk}")
                         if not ctx_fk and not ctx_nk:
+                            logger.info(f"[해외잔고] [{exch}] 페이지 컨텍스트가 비어있어 페이지네이션 종료")
                             break
                     else:
                         msg1 = data.get("msg1", "")
@@ -793,7 +795,7 @@ class KISApiClient:
             }
             logger.info(f"[해외잔고] [{exch}] 거래소 조회 완료: 보유 종목 {len(exch_holdings)}개 | last_error={last_error}")
 
-        logger.info(f"[해외잔고] 전체 거래소 조회 결과: NAS={exchange_results.get('NAS', {}).get('holdings_count', 0)}개, NYS={exchange_results.get('NYS', {}).get('holdings_count', 0)}개, AMS={exchange_results.get('AMS', {}).get('holdings_count', 0)}개, NMS={exchange_results.get('NMS', {}).get('holdings_count', 0)}개, NYQ={exchange_results.get('NYQ', {}).get('holdings_count', 0)}개 | 총 {len(all_holdings)}개")
+        logger.info(f"[해외잔고] 전체 거래소 조회 결과: NAS={exchange_results.get('NAS', {}).get('holdings_count', 0)}개, NYS={exchange_results.get('NYS', {}).get('holdings_count', 0)}개, AMS={exchange_results.get('AMS', {}).get('holdings_count', 0)}개 | 총 {len(all_holdings)}개")
 
         if all_holdings:
             holdings_summary = ", ".join([f"{h['code']}({h['qty']}주)" for h in all_holdings])
@@ -958,10 +960,11 @@ class KISApiClient:
                         })
 
                     # 다음 페이지 여부 확인
-                    ctx_fk = data.get("ctx_area_fk200", "")
-                    ctx_nk = data.get("ctx_area_nk200", "")
+                    ctx_fk = (data.get("ctx_area_fk200", "") or "").strip()
+                    ctx_nk = (data.get("ctx_area_nk200", "") or "").strip()
                     logger.info(f"[체결이력] 페이지 컨텍스트: ctx_fk={ctx_fk}, ctx_nk={ctx_nk}")
                     if not ctx_fk and not ctx_nk:
+                        logger.info(f"[체결이력] 페이지 컨텍스트가 비어있어 페이지네이션 종료")
                         break
                 else:
                     msg1 = data.get("msg1", "")
