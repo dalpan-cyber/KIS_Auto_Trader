@@ -114,6 +114,7 @@ class TraderBot:
                     "current_price": item["current_price"],
                     "pnl_rate": item.get("pnl_rate", 0.0)
                 }
+            self.logger.info(f"[계좌잔고] 국내 보유 종목: {len(new_holdings)}개 | {list(new_holdings.keys())}")
             self.holdings = new_holdings
             
             # 해외 외화(USD) 예수금 및 환율 수신
@@ -122,11 +123,17 @@ class TraderBot:
                 self.available_usd_cash = float(overseas_res.get("usd_deposit", 5000.0))
                 self.exchange_rate = float(overseas_res.get("exchange_rate", 1428.20))
                 self.is_usd_simulated = overseas_res.get("is_simulated", True)
+                self.logger.info(f"[계좌잔고] 외화예수금: ${self.available_usd_cash:,.2f} | 환율: {self.exchange_rate} | 시뮬레이션: {self.is_usd_simulated}")
+            else:
+                self.logger.warning(f"[계좌잔고] 외화예수금 조회 실패: {overseas_res.get('msg', 'Unknown')}")
 
             # 해외주식 보유 잔고 수신 및 통합
             overseas_stock_res = self.api.get_overseas_stock_balance()
+            self.logger.info(f"[계좌잔고] 해외주식 잔고 API 응답: success={overseas_stock_res.get('success')}, 보유종목수={len(overseas_stock_res.get('holdings', []))}, is_simulated={overseas_stock_res.get('is_simulated')}, msg={overseas_stock_res.get('msg', '')}")
             if overseas_stock_res.get("success"):
-                for item in overseas_stock_res.get("holdings", []):
+                overseas_items = overseas_stock_res.get("holdings", [])
+                self.logger.info(f"[계좌잔고] 해외주식 잔고 상세: {[(item.get('code'), item.get('name'), item.get('qty')) for item in overseas_items]}")
+                for item in overseas_items:
                     code = item["code"]
                     new_holdings[code] = {
                         "name": item.get("name", f"해외_{code}"),
@@ -135,21 +142,28 @@ class TraderBot:
                         "current_price": item["current_price"],
                         "pnl_rate": item.get("pnl_rate", 0.0)
                     }
+            else:
+                self.logger.warning(f"[계좌잔고] 해외주식 잔고 조회 실패: {overseas_stock_res.get('msg', 'Unknown')}")
 
             # 해외주식 잔고 API가 빈 결과를 반환한 경우, 체결 이력에서 보유 수량/평단가 계산 (Fallback)
             overseas_holdings_count = sum(1 for c in new_holdings if self.api.is_overseas_symbol(c))
+            self.logger.info(f"[계좌잔고] 통합 후 해외 보유 종목 수: {overseas_holdings_count}개 | 전체 종목: {list(new_holdings.keys())}")
             if overseas_holdings_count == 0:
+                self.logger.warning("[계좌잔고] 해외 보유 종목이 0개입니다. 체결 이력 기반 Fallback을 시도합니다...")
                 history_holdings = self._calculate_holdings_from_history()
                 if history_holdings:
                     self.logger.info(f"📊 해외주식 잔고 API가 빈 결과를 반환하여 체결 이력에서 보유 수량/평단가를 계산합니다. ({len(history_holdings)}개 종목)")
                     for code, h_data in history_holdings.items():
                         new_holdings[code] = h_data
+                else:
+                    self.logger.warning("[계좌잔고] 체결 이력 기반 Fallback도 결과가 없습니다. (체결 이력이 없거나, 날짜 범위가 잘못되었을 수 있음)")
 
             self.holdings = new_holdings
 
             sim_str = " (시뮬레이션)" if getattr(self, "is_usd_simulated", True) else " (실제 조회)"
             ovrs_hldg_cnt = sum(1 for c in self.holdings if self.api.is_overseas_symbol(c))
             self.logger.info(f"[계좌잔고] 원화예수금: ₩{self.available_cash:,.0f} | 외화예수금: ${self.available_usd_cash:,.2f}{sim_str} | 해외보유종목: {ovrs_hldg_cnt}개 | 총자산: ₩{self.total_eval_amount:,.0f}")
+            self.logger.info(f"[계좌잔고] 최종 보유 종목 상세: {[(k, v.get('qty'), v.get('avg_price')) for k, v in self.holdings.items()]}")
         else:
             self.logger.error(f"계좌 잔고 조회 실패: {res.get('msg')}")
     def _calculate_holdings_from_history(self) -> Dict[str, Dict[str, Any]]:
@@ -165,13 +179,21 @@ class TraderBot:
             for sym in self.infinite_stocks:
                 st = self.infinite_state_mgr.get_symbol_state(sym)
                 sd = st.get("start_date", "")
+                self.logger.info(f"[체결이력] {sym} 상태: start_date={sd}, state={st}")
                 if sd and sd.replace("-", "").isdigit():
                     start_date = sd.replace("-", "")
                     break
 
+            self.logger.info(f"[체결이력] 체결 이력 조회 시작: start_date={start_date or '(오늘)'}, infinite_stocks={self.infinite_stocks}")
             history = self.api.get_overseas_execution_history(start_date=start_date)
+            self.logger.info(f"[체결이력] 체결 이력 조회 결과: {len(history)}건")
             if not history:
+                self.logger.warning("[체결이력] 체결 이력이 비어 있습니다. (조회 기간 내 체결 내역이 없거나, API 오류일 수 있음)")
                 return result
+
+            # 체결 이력 샘플 로깅 (첫 5건)
+            for i, h in enumerate(history[:5]):
+                self.logger.info(f"[체결이력] 샘플 #{i+1}: {h}")
 
             # 종목별 매수/매도 집계
             buy_qty: Dict[str, int] = {}
@@ -182,26 +204,37 @@ class TraderBot:
             for h in history:
                 symbol = h.get("symbol", "").strip().upper()
                 if not symbol or not self.api.is_overseas_symbol(symbol):
+                    self.logger.info(f"[체결이력] 해외 종목 아님으로 스킵: symbol={symbol}, raw_symbol={h.get('symbol')}")
                     continue
                 order_type = h.get("order_type", "")
                 executed_qty = h.get("executed_qty", 0) or 0
                 executed_price = h.get("executed_price", 0.0) or 0.0
                 status = h.get("status", "")
 
+                self.logger.info(f"[체결이력] 처리: symbol={symbol}, order_type={order_type}, executed_qty={executed_qty}, executed_price={executed_price}, status={status}")
+
                 # 체결된 건만 집계 (미체결/취소 제외)
                 if "체결" not in status and "완료" not in status:
+                    self.logger.info(f"[체결이력] 체결/완료 상태 아님으로 스킵: status={status}")
                     continue
 
                 if "매수" in order_type:
                     buy_qty[symbol] = buy_qty.get(symbol, 0) + executed_qty
                     buy_amount[symbol] = buy_amount.get(symbol, 0.0) + (executed_qty * executed_price)
                     names.setdefault(symbol, f"해외_{symbol}")
+                    self.logger.info(f"[체결이력] 매수 집계: {symbol} 누적수량={buy_qty[symbol]}, 누적금액={buy_amount[symbol]}")
                 elif "매도" in order_type:
                     sell_qty[symbol] = sell_qty.get(symbol, 0) + executed_qty
+                    self.logger.info(f"[체결이력] 매도 집계: {symbol} 누적수량={sell_qty[symbol]}")
+                else:
+                    self.logger.info(f"[체결이력] 매수/매도 아님으로 스킵: order_type={order_type}")
+
+            self.logger.info(f"[체결이력] 집계 결과: 매수종목={list(buy_qty.keys())}, 매도종목={list(sell_qty.keys())}")
 
             for symbol in set(list(buy_qty.keys()) + list(sell_qty.keys())):
                 net_qty = buy_qty.get(symbol, 0) - sell_qty.get(symbol, 0)
                 if net_qty <= 0:
+                    self.logger.info(f"[체결이력] 순수량 0 이하로 스킵: {symbol} net_qty={net_qty}")
                     continue
                 avg_price = buy_amount.get(symbol, 0.0) / buy_qty.get(symbol, 1) if buy_qty.get(symbol, 0) > 0 else 0.0
                 result[symbol] = {
@@ -211,10 +244,13 @@ class TraderBot:
                     "current_price": self.current_prices.get(symbol, 0.0),
                     "pnl_rate": 0.0
                 }
+                self.logger.info(f"[체결이력] 최종 계산: {symbol} net_qty={net_qty}, avg_price={round(avg_price, 2)}")
 
             if result:
                 summary_str = ", ".join([f"{s}({d['qty']}주)" for s, d in result.items()])
                 self.logger.info(f"📊 체결 이력 기반 보유 종목 계산 완료: {summary_str}")
+            else:
+                self.logger.warning("[체결이력] 체결 이력이 있지만 계산 결과가 없습니다. (모든 종목이 매도되었거나, 상태/타입 필터링 문제일 수 있음)")
         except Exception as e:
             self.logger.warning(f"체결 이력 기반 보유 종목 계산 실패: {e}")
         return result

@@ -681,16 +681,20 @@ class KISApiClient:
                         "current_price": float(item.get("current_price", 0.0)),
                         "pnl_rate": float(item.get("pnl_rate", 0.0))
                     })
+            logger.info(f"[해외잔고] 시뮬레이션 모드: 가상 해외 보유 종목 {len(mock_holdings)}개 반환")
             return {"success": True, "holdings": mock_holdings, "is_simulated": True}
 
         tr_id = "VTTS3012R" if self.mock else "TTTS3012R"
         url = f"{self.url_base}/uapi/overseas-stock/v1/trading/inquire-balance"
         headers = self._get_headers(tr_id)
+        logger.info(f"[해외잔고] API 호출 시작: tr_id={tr_id}, url={url}, mock={self.mock}")
 
         # 여러 거래소(NAS/NYS/AMS)를 순회하며 보유 종목 통합 조회
-        exchanges = ["NAS", "NYS", "AMS"]
+        # KIS API 거래소 코드: NAS=나스닥, NYS=뉴욕, AMS=아멕스, NMS=나스닥(대체), NYQ=뉴욕(대체)
+        exchanges = ["NAS", "NYS", "AMS", "NMS", "NYQ"]
         all_holdings = []
         last_error = ""
+        exchange_results: Dict[str, Dict[str, Any]] = {}
 
         for exch in exchanges:
             params = {
@@ -702,6 +706,7 @@ class KISApiClient:
                 "CTX_AREA_NK200": ""
             }
 
+            exch_holdings = []
             try:
                 ctx_fk = ""
                 ctx_nk = ""
@@ -715,54 +720,90 @@ class KISApiClient:
                     res = requests.get(url, headers=headers, params=params, timeout=10)
                     data = res.json()
 
+                    logger.info(f"[해외잔고] [{exch}] HTTP {res.status_code} | rt_cd={data.get('rt_cd')} | msg1={data.get('msg1')} | msg_cd={data.get('msg_cd')}")
+
                     if res.status_code == 200 and data.get("rt_cd") == "0":
                         output1 = data.get("output1", [])
+                        logger.info(f"[해외잔고] [{exch}] output1 항목 수: {len(output1)}")
+                        if output1:
+                            logger.info(f"[해외잔고] [{exch}] output1 첫 항목 원본: {json.dumps(output1[0], ensure_ascii=False)[:500]}")
+                            logger.info(f"[해외잔고] [{exch}] output1 전체 키 목록: {list(output1[0].keys()) if output1 else []}")
+
                         for item in output1:
-                            qty = int(float(item.get("ovrs_ccls_qty", item.get("ccls_qty", item.get("hldg_qty", 0))) or 0))
+                            # 디버깅: 원본 아이템의 모든 키와 값 로깅
+                            logger.info(f"[해외잔고] [{exch}] 원본 아이템: {json.dumps(item, ensure_ascii=False)[:500]}")
+
+                            # 수량 필드 디버깅 - 여러 가능한 필드명 확인
+                            qty_raw = item.get("ovrs_cblc_qty", item.get("ovrs_ccls_qty", item.get("ccls_qty", item.get("hldg_qty", item.get("ovrs_hldg_qty", 0)))))
+                            logger.info(f"[해외잔고] [{exch}] 수량 필드 확인: ovrs_cblc_qty={item.get('ovrs_cblc_qty')}, ovrs_ccls_qty={item.get('ovrs_ccls_qty')}, ccls_qty={item.get('ccls_qty')}, hldg_qty={item.get('hldg_qty')}, ovrs_hldg_qty={item.get('ovrs_hldg_qty')}")
+
+                            qty = int(float(qty_raw or 0))
                             if qty <= 0:
+                                logger.info(f"[해외잔고] [{exch}] 수량 0 이하로 스킵: pdno={item.get('pdno')}, ovrs_pdno={item.get('ovrs_pdno')}, symb={item.get('symb')}, qty_raw={qty_raw}")
                                 continue
+
                             code = item.get("ovrs_pdno", item.get("pdno", item.get("symb", ""))).strip().upper()
                             if not code:
+                                logger.info(f"[해외잔고] [{exch}] 종목코드 없음으로 스킵: item={json.dumps(item, ensure_ascii=False)[:300]}")
                                 continue
+
                             name = item.get("ovrs_item_name", item.get("item_name", item.get("prdt_name", code)))
                             avg_p = float(item.get("pchs_avg_pric", item.get("avg_pric", 0.0)) or 0.0)
                             cur_p = float(item.get("now_pric2", item.get("last_prik", 0.0)) or 0.0)
                             pnl_rate = float(item.get("evlu_pfls_rt", item.get("pfls_rt", 0.0)) or 0.0)
 
-                            all_holdings.append({
+                            logger.info(f"[해외잔고] [{exch}] 보유 종목 파싱: code={code}, name={name}, qty={qty}, avg_p={avg_p}, cur_p={cur_p}, pnl_rate={pnl_rate}")
+
+                            holding_item = {
                                 "code": code,
                                 "name": name,
                                 "qty": qty,
                                 "avg_price": avg_p,
                                 "current_price": cur_p,
                                 "pnl_rate": pnl_rate
-                            })
+                            }
+                            all_holdings.append(holding_item)
+                            exch_holdings.append(holding_item)
 
                         # 다음 페이지 확인
                         ctx_fk = data.get("ctx_area_fk200", "")
                         ctx_nk = data.get("ctx_area_nk200", "")
+                        logger.info(f"[해외잔고] [{exch}] 페이지 컨텍스트: ctx_fk={ctx_fk}, ctx_nk={ctx_nk}")
                         if not ctx_fk and not ctx_nk:
                             break
                     else:
                         msg1 = data.get("msg1", "")
+                        logger.warning(f"[해외잔고] [{exch}] API 오류: rt_cd={data.get('rt_cd')}, msg1={msg1}, msg_cd={data.get('msg_cd')}, 전체 응답: {json.dumps(data, ensure_ascii=False)[:500]}")
                         if "만료된" in msg1 or data.get("msg_cd") == "EGW00123":
                             logger.warning("Token 만료 감지: 해외 잔고 재조회 시도...")
                             self.access_token = None
                             self.token_issued_at = 0
                             if self.get_access_token():
                                 return self.get_overseas_stock_balance()
-                        last_error = msg1
+                        last_error = f"[{exch}] {msg1}"
                         break
             except Exception as e:
                 last_error = str(e)
                 logger.error(f"해외주식 잔고 조회 예외 발생 ({exch}): {e}")
 
+            exchange_results[exch] = {
+                "holdings_count": len(exch_holdings),
+                "holdings": exch_holdings,
+                "error": last_error if last_error and f"[{exch}]" in last_error else ""
+            }
+            logger.info(f"[해외잔고] [{exch}] 거래소 조회 완료: 보유 종목 {len(exch_holdings)}개 | last_error={last_error}")
+
+        logger.info(f"[해외잔고] 전체 거래소 조회 결과: NAS={exchange_results.get('NAS', {}).get('holdings_count', 0)}개, NYS={exchange_results.get('NYS', {}).get('holdings_count', 0)}개, AMS={exchange_results.get('AMS', {}).get('holdings_count', 0)}개, NMS={exchange_results.get('NMS', {}).get('holdings_count', 0)}개, NYQ={exchange_results.get('NYQ', {}).get('holdings_count', 0)}개 | 총 {len(all_holdings)}개")
+
         if all_holdings:
+            holdings_summary = ", ".join([f"{h['code']}({h['qty']}주)" for h in all_holdings])
+            logger.info(f"[해외잔고] 해외 보유 종목 {len(all_holdings)}개 반환: {holdings_summary}")
             return {"success": True, "holdings": all_holdings, "is_simulated": False}
         elif last_error:
             logger.error(f"해외주식 잔고 조회 실패: {last_error}")
             return {"success": False, "msg": last_error, "holdings": []}
         else:
+            logger.warning("[해외잔고] 해외주식 잔고 API가 성공했지만 보유 종목이 0개입니다. (실제 보유 종목이 없거나, API 응답 파싱 문제일 수 있음)")
             return {"success": True, "holdings": [], "is_simulated": False}
 
     def order_overseas_cash(
@@ -883,6 +924,8 @@ class KISApiClient:
             ctx_nk = ""
             max_pages = 5  # 최대 5페이지까지 조회 (안전장치)
 
+            logger.info(f"[체결이력] API 호출: tr_id={tr_id}, start_date={start_date}, end_date={end_date}, symbol={symbol or '%'}")
+
             for _ in range(max_pages):
                 params["CTX_AREA_FK200"] = ctx_fk
                 params["CTX_AREA_NK200"] = ctx_nk
@@ -891,9 +934,17 @@ class KISApiClient:
                 res = requests.get(url, headers=headers, params=params, timeout=10)
                 data = res.json()
 
+                logger.info(f"[체결이력] HTTP {res.status_code} | rt_cd={data.get('rt_cd')} | msg1={data.get('msg1')} | msg_cd={data.get('msg_cd')}")
+
                 if res.status_code == 200 and data.get("rt_cd") == "0":
                     output = data.get("output", [])
+                    logger.info(f"[체결이력] output 항목 수: {len(output)}")
+                    if output:
+                        logger.info(f"[체결이력] output 첫 항목 원본: {json.dumps(output[0], ensure_ascii=False)[:500]}")
+                        logger.info(f"[체결이력] output 전체 키 목록: {list(output[0].keys()) if output else []}")
+
                     for item in output:
+                        logger.info(f"[체결이력] 원본 아이템: {json.dumps(item, ensure_ascii=False)[:500]}")
                         results.append({
                             "order_no": item.get("odno", ""),
                             "symbol": item.get("pdno", ""),
@@ -909,10 +960,12 @@ class KISApiClient:
                     # 다음 페이지 여부 확인
                     ctx_fk = data.get("ctx_area_fk200", "")
                     ctx_nk = data.get("ctx_area_nk200", "")
+                    logger.info(f"[체결이력] 페이지 컨텍스트: ctx_fk={ctx_fk}, ctx_nk={ctx_nk}")
                     if not ctx_fk and not ctx_nk:
                         break
                 else:
                     msg1 = data.get("msg1", "")
+                    logger.warning(f"[체결이력] API 오류: rt_cd={data.get('rt_cd')}, msg1={msg1}, msg_cd={data.get('msg_cd')}, 전체 응답: {json.dumps(data, ensure_ascii=False)[:500]}")
                     if "만료된" in msg1 or data.get("msg_cd") == "EGW00123":
                         logger.warning("Token 만료 감지: 해외 체결내역 재조회 시도...")
                         self.access_token = None
@@ -922,6 +975,7 @@ class KISApiClient:
                     logger.debug(f"해외주식 체결내역 조회 실패: {msg1}")
                     break
 
+            logger.info(f"[체결이력] 최종 결과: {len(results)}건")
             return results
         except Exception as e:
             logger.error(f"해외주식 체결내역 조회 예외 발생: {e}")
