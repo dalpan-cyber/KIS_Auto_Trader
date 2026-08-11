@@ -915,7 +915,7 @@ class KISApiClient:
         if not end_date:
             end_date = time.strftime("%Y%m%d")
 
-        tr_id = "VTTS3035R" if self.mock else "TTTS3035R"
+        tr_id = "VTTS3035R" if self.mock else "JTTT3001R"
         url = f"{self.url_base}/uapi/overseas-stock/v1/trading/inquire-ccnl"
         headers = self._get_headers(tr_id)
         params = {
