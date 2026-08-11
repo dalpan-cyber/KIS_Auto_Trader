@@ -686,57 +686,84 @@ class KISApiClient:
         tr_id = "VTTS3012R" if self.mock else "TTTS3012R"
         url = f"{self.url_base}/uapi/overseas-stock/v1/trading/inquire-balance"
         headers = self._get_headers(tr_id)
-        params = {
-            "CANO": self.cano,
-            "ACNT_PRDT_CD": self.acnt_prdt_cd,
-            "OVRS_EXCG_CD": "NASD",
-            "TR_CRCY_CD": "USD",
-            "CTX_AREA_FK200": "",
-            "CTX_AREA_NK200": ""
-        }
 
-        try:
-            self._rate_limit()
-            res = requests.get(url, headers=headers, params=params, timeout=10)
-            data = res.json()
+        # 여러 거래소(NAS/NYS/AMS)를 순회하며 보유 종목 통합 조회
+        exchanges = ["NAS", "NYS", "AMS"]
+        all_holdings = []
+        last_error = ""
 
-            if res.status_code == 200 and data.get("rt_cd") == "0":
-                output1 = data.get("output1", [])
-                holdings_list = []
-                for item in output1:
-                    qty = int(float(item.get("ovrs_ccls_qty", item.get("ccls_qty", item.get("hldg_qty", 0))) or 0))
-                    if qty <= 0:
-                        continue
-                    code = item.get("ovrs_pdno", item.get("pdno", item.get("symb", ""))).strip().upper()
-                    if not code:
-                        continue
-                    name = item.get("ovrs_item_name", item.get("item_name", item.get("prdt_name", code)))
-                    avg_p = float(item.get("pchs_avg_pric", item.get("avg_pric", 0.0)) or 0.0)
-                    cur_p = float(item.get("now_pric2", item.get("last_prik", 0.0)) or 0.0)
-                    pnl_rate = float(item.get("evlu_pfls_rt", item.get("pfls_rt", 0.0)) or 0.0)
+        for exch in exchanges:
+            params = {
+                "CANO": self.cano,
+                "ACNT_PRDT_CD": self.acnt_prdt_cd,
+                "OVRS_EXCG_CD": exch,
+                "TR_CRCY_CD": "USD",
+                "CTX_AREA_FK200": "",
+                "CTX_AREA_NK200": ""
+            }
 
-                    holdings_list.append({
-                        "code": code,
-                        "name": name,
-                        "qty": qty,
-                        "avg_price": avg_p,
-                        "current_price": cur_p,
-                        "pnl_rate": pnl_rate
-                    })
-                return {"success": True, "holdings": holdings_list, "is_simulated": False}
-            else:
-                msg1 = data.get("msg1", "")
-                if "만료된" in msg1 or data.get("msg_cd") == "EGW00123":
-                    logger.warning("Token 만료 감지: 해외 잔고 재조회 시도...")
-                    self.access_token = None
-                    self.token_issued_at = 0
-                    if self.get_access_token():
-                        return self.get_overseas_stock_balance()
-                logger.error(f"해외주식 잔고 조회 실패: {msg1}")
-                return {"success": False, "msg": msg1, "holdings": []}
-        except Exception as e:
-            logger.error(f"해외주식 잔고 조회 예외 발생: {e}")
-            return {"success": False, "msg": str(e), "holdings": []}
+            try:
+                ctx_fk = ""
+                ctx_nk = ""
+                max_pages = 5
+
+                for _ in range(max_pages):
+                    params["CTX_AREA_FK200"] = ctx_fk
+                    params["CTX_AREA_NK200"] = ctx_nk
+
+                    self._rate_limit()
+                    res = requests.get(url, headers=headers, params=params, timeout=10)
+                    data = res.json()
+
+                    if res.status_code == 200 and data.get("rt_cd") == "0":
+                        output1 = data.get("output1", [])
+                        for item in output1:
+                            qty = int(float(item.get("ovrs_ccls_qty", item.get("ccls_qty", item.get("hldg_qty", 0))) or 0))
+                            if qty <= 0:
+                                continue
+                            code = item.get("ovrs_pdno", item.get("pdno", item.get("symb", ""))).strip().upper()
+                            if not code:
+                                continue
+                            name = item.get("ovrs_item_name", item.get("item_name", item.get("prdt_name", code)))
+                            avg_p = float(item.get("pchs_avg_pric", item.get("avg_pric", 0.0)) or 0.0)
+                            cur_p = float(item.get("now_pric2", item.get("last_prik", 0.0)) or 0.0)
+                            pnl_rate = float(item.get("evlu_pfls_rt", item.get("pfls_rt", 0.0)) or 0.0)
+
+                            all_holdings.append({
+                                "code": code,
+                                "name": name,
+                                "qty": qty,
+                                "avg_price": avg_p,
+                                "current_price": cur_p,
+                                "pnl_rate": pnl_rate
+                            })
+
+                        # 다음 페이지 확인
+                        ctx_fk = data.get("ctx_area_fk200", "")
+                        ctx_nk = data.get("ctx_area_nk200", "")
+                        if not ctx_fk and not ctx_nk:
+                            break
+                    else:
+                        msg1 = data.get("msg1", "")
+                        if "만료된" in msg1 or data.get("msg_cd") == "EGW00123":
+                            logger.warning("Token 만료 감지: 해외 잔고 재조회 시도...")
+                            self.access_token = None
+                            self.token_issued_at = 0
+                            if self.get_access_token():
+                                return self.get_overseas_stock_balance()
+                        last_error = msg1
+                        break
+            except Exception as e:
+                last_error = str(e)
+                logger.error(f"해외주식 잔고 조회 예외 발생 ({exch}): {e}")
+
+        if all_holdings:
+            return {"success": True, "holdings": all_holdings, "is_simulated": False}
+        elif last_error:
+            logger.error(f"해외주식 잔고 조회 실패: {last_error}")
+            return {"success": False, "msg": last_error, "holdings": []}
+        else:
+            return {"success": True, "holdings": [], "is_simulated": False}
 
     def order_overseas_cash(
         self,
@@ -851,29 +878,51 @@ class KISApiClient:
         }
 
         try:
-            self._rate_limit()
-            res = requests.get(url, headers=headers, params=params, timeout=10)
-            data = res.json()
+            results = []
+            ctx_fk = ""
+            ctx_nk = ""
+            max_pages = 5  # 최대 5페이지까지 조회 (안전장치)
 
-            if res.status_code == 200 and data.get("rt_cd") == "0":
-                output = data.get("output", [])
-                results = []
-                for item in output:
-                    results.append({
-                        "order_no": item.get("odno", ""),
-                        "symbol": item.get("pdno", ""),
-                        "order_type": item.get("sll_buy_dvsn_cd_name", ""),
-                        "qty": int(item.get("ft_ord_qty", 0) or 0),
-                        "price": float(item.get("ft_ord_unpr3", 0.0) or 0.0),
-                        "executed_qty": int(item.get("ft_ccnl_qty", 0) or 0),
-                        "executed_price": float(item.get("ft_ccnl_unpr3", 0.0) or 0.0),
-                        "status": item.get("prcs_stat_name", ""),
-                        "order_time": item.get("ord_dt", "") + " " + item.get("ord_tmd", "")
-                    })
-                return results
-            else:
-                logger.debug(f"해외주식 체결내역 조회 실패: {data.get('msg1')}")
-                return []
+            for _ in range(max_pages):
+                params["CTX_AREA_FK200"] = ctx_fk
+                params["CTX_AREA_NK200"] = ctx_nk
+
+                self._rate_limit()
+                res = requests.get(url, headers=headers, params=params, timeout=10)
+                data = res.json()
+
+                if res.status_code == 200 and data.get("rt_cd") == "0":
+                    output = data.get("output", [])
+                    for item in output:
+                        results.append({
+                            "order_no": item.get("odno", ""),
+                            "symbol": item.get("pdno", ""),
+                            "order_type": item.get("sll_buy_dvsn_cd_name", ""),
+                            "qty": int(item.get("ft_ord_qty", 0) or 0),
+                            "price": float(item.get("ft_ord_unpr3", 0.0) or 0.0),
+                            "executed_qty": int(item.get("ft_ccnl_qty", 0) or 0),
+                            "executed_price": float(item.get("ft_ccnl_unpr3", 0.0) or 0.0),
+                            "status": item.get("prcs_stat_name", ""),
+                            "order_time": item.get("ord_dt", "") + " " + item.get("ord_tmd", "")
+                        })
+
+                    # 다음 페이지 여부 확인
+                    ctx_fk = data.get("ctx_area_fk200", "")
+                    ctx_nk = data.get("ctx_area_nk200", "")
+                    if not ctx_fk and not ctx_nk:
+                        break
+                else:
+                    msg1 = data.get("msg1", "")
+                    if "만료된" in msg1 or data.get("msg_cd") == "EGW00123":
+                        logger.warning("Token 만료 감지: 해외 체결내역 재조회 시도...")
+                        self.access_token = None
+                        self.token_issued_at = 0
+                        if self.get_access_token():
+                            return self.get_overseas_execution_history(symbol=symbol, start_date=start_date, end_date=end_date)
+                    logger.debug(f"해외주식 체결내역 조회 실패: {msg1}")
+                    break
+
+            return results
         except Exception as e:
             logger.error(f"해외주식 체결내역 조회 예외 발생: {e}")
             return []

@@ -135,6 +135,16 @@ class TraderBot:
                         "current_price": item["current_price"],
                         "pnl_rate": item.get("pnl_rate", 0.0)
                     }
+
+            # 해외주식 잔고 API가 빈 결과를 반환한 경우, 체결 이력에서 보유 수량/평단가 계산 (Fallback)
+            overseas_holdings_count = sum(1 for c in new_holdings if self.api.is_overseas_symbol(c))
+            if overseas_holdings_count == 0:
+                history_holdings = self._calculate_holdings_from_history()
+                if history_holdings:
+                    self.logger.info(f"📊 해외주식 잔고 API가 빈 결과를 반환하여 체결 이력에서 보유 수량/평단가를 계산합니다. ({len(history_holdings)}개 종목)")
+                    for code, h_data in history_holdings.items():
+                        new_holdings[code] = h_data
+
             self.holdings = new_holdings
 
             sim_str = " (시뮬레이션)" if getattr(self, "is_usd_simulated", True) else " (실제 조회)"
@@ -142,6 +152,73 @@ class TraderBot:
             self.logger.info(f"[계좌잔고] 원화예수금: ₩{self.available_cash:,.0f} | 외화예수금: ${self.available_usd_cash:,.2f}{sim_str} | 해외보유종목: {ovrs_hldg_cnt}개 | 총자산: ₩{self.total_eval_amount:,.0f}")
         else:
             self.logger.error(f"계좌 잔고 조회 실패: {res.get('msg')}")
+    def _calculate_holdings_from_history(self) -> Dict[str, Dict[str, Any]]:
+        """
+        해외주식 체결 이력에서 보유 수량/평단가를 계산 (잔고 API가 빈 결과일 때 Fallback)
+        - 매수 체결 수량은 더하고, 매도 체결 수량은 빼서 현재 보유 수량 계산
+        - 평단가는 매수 체결 금액 합계 / 매수 체결 수량 합계로 계산
+        """
+        result: Dict[str, Dict[str, Any]] = {}
+        try:
+            # 시작일은 무한매수 시작일부터 조회 (start_date가 있으면 그 날짜부터)
+            start_date = ""
+            for sym in self.infinite_stocks:
+                st = self.infinite_state_mgr.get_symbol_state(sym)
+                sd = st.get("start_date", "")
+                if sd and sd.replace("-", "").isdigit():
+                    start_date = sd.replace("-", "")
+                    break
+
+            history = self.api.get_overseas_execution_history(start_date=start_date)
+            if not history:
+                return result
+
+            # 종목별 매수/매도 집계
+            buy_qty: Dict[str, int] = {}
+            buy_amount: Dict[str, float] = {}
+            sell_qty: Dict[str, int] = {}
+            names: Dict[str, str] = {}
+
+            for h in history:
+                symbol = h.get("symbol", "").strip().upper()
+                if not symbol or not self.api.is_overseas_symbol(symbol):
+                    continue
+                order_type = h.get("order_type", "")
+                executed_qty = h.get("executed_qty", 0) or 0
+                executed_price = h.get("executed_price", 0.0) or 0.0
+                status = h.get("status", "")
+
+                # 체결된 건만 집계 (미체결/취소 제외)
+                if "체결" not in status and "완료" not in status:
+                    continue
+
+                if "매수" in order_type:
+                    buy_qty[symbol] = buy_qty.get(symbol, 0) + executed_qty
+                    buy_amount[symbol] = buy_amount.get(symbol, 0.0) + (executed_qty * executed_price)
+                    names.setdefault(symbol, f"해외_{symbol}")
+                elif "매도" in order_type:
+                    sell_qty[symbol] = sell_qty.get(symbol, 0) + executed_qty
+
+            for symbol in set(list(buy_qty.keys()) + list(sell_qty.keys())):
+                net_qty = buy_qty.get(symbol, 0) - sell_qty.get(symbol, 0)
+                if net_qty <= 0:
+                    continue
+                avg_price = buy_amount.get(symbol, 0.0) / buy_qty.get(symbol, 1) if buy_qty.get(symbol, 0) > 0 else 0.0
+                result[symbol] = {
+                    "name": names.get(symbol, f"해외_{symbol}"),
+                    "qty": net_qty,
+                    "avg_price": round(avg_price, 2),
+                    "current_price": self.current_prices.get(symbol, 0.0),
+                    "pnl_rate": 0.0
+                }
+
+            if result:
+                summary_str = ", ".join([f"{s}({d['qty']}주)" for s, d in result.items()])
+                self.logger.info(f"📊 체결 이력 기반 보유 종목 계산 완료: {summary_str}")
+        except Exception as e:
+            self.logger.warning(f"체결 이력 기반 보유 종목 계산 실패: {e}")
+        return result
+
 
     def sync_holdings_to_state(self):
         """
