@@ -49,11 +49,20 @@ class InfiniteStateManager:
                     self.states[symbol] = s_data
                 else:
                     # 구글 시트 수동 변경사항(진행회차, 총예산, 목표수익률, 매매상태 등) 반영
-                    self.states[symbol]["current_round"] = s_data.get("current_round", self.states[symbol].get("current_round", 0))
+                    sheet_status = s_data.get("status")
+                    if sheet_status:
+                        self.states[symbol]["status"] = sheet_status
+
+                    # 매수 진행 중일 경우 구글 시트의 오래된(작은) 회차가 JSON의 최신 회차를 강제로 덮어쓰지 않도록 max 적용
+                    sheet_round = s_data.get("current_round", 0)
+                    json_round = self.states[symbol].get("current_round", 0)
+                    if self.states[symbol].get("status") in ["IDLE", "COMPLETED"]:
+                        self.states[symbol]["current_round"] = sheet_round
+                    else:
+                        self.states[symbol]["current_round"] = max(json_round, sheet_round)
+
                     self.states[symbol]["total_budget_usd"] = s_data.get("total_budget_usd", self.states[symbol].get("total_budget_usd", 5000.0))
                     self.states[symbol]["target_roi"] = s_data.get("target_roi", self.states[symbol].get("target_roi", 0.10))
-                    if s_data.get("status"):
-                        self.states[symbol]["status"] = s_data["status"]
                     self.states[symbol].setdefault("division_count", 40)
 
         return self.states

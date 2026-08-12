@@ -155,6 +155,42 @@ class TestInfiniteGSSAndSafety(unittest.TestCase):
         # 전량 익절 매도 주문이 4주로 자동 보정되어 제출되었는지 검증
         api_mock.order_overseas_cash.assert_any_call("TQQQ", 4, price=55.0, buy=False, ord_type="00")
 
+    def test_stale_google_sheet_round_protection(self):
+        """구글 시트에 오래된 회차가 남아있을 때 BUYING 상태인 JSON 회차(예: 3.0)가 1.0으로 다운그레이드되지 않도록 보호하는지 검증"""
+        initial_data = {
+            "TQQQ": {
+                "symbol": "TQQQ",
+                "start_date": "2026-08-07",
+                "total_budget_usd": 5000.0,
+                "division_count": 40,
+                "current_round": 3.0,
+                "target_roi": 0.1,
+                "status": "BUYING"
+            }
+        }
+        with open(self.test_state_file, "w", encoding="utf-8") as f:
+            json.dump(initial_data, f)
+
+        mgr = InfiniteStateManager(file_path=self.test_state_file, enable_gss=False)
+        mock_gss = MagicMock()
+        mock_gss.is_connected = True
+        mock_gss.read_states_from_sheet.return_value = {
+            "TQQQ": {
+                "symbol": "TQQQ",
+                "division_count": 40,
+                "start_date": "2026-08-07",
+                "current_round": 1.0,
+                "total_budget_usd": 5000.0,
+                "target_roi": 0.1,
+                "status": "BUYING"
+            }
+        }
+        mgr.gss_mgr = mock_gss
+        mgr.load_state()
+
+        st = mgr.get_symbol_state("TQQQ")
+        self.assertEqual(st["current_round"], 3.0)
+
 
 if __name__ == "__main__":
     unittest.main()
