@@ -848,7 +848,7 @@ class KISApiClient:
             end_date = time.strftime("%Y%m%d")
 
         tr_id = "VTTT1006R" if self.mock else "TTTT1006R"
-        url = f"{self.url_base}/uapi/overseas-stock/v1/trading/inquire-balance"
+        url = f"{self.url_base}/uapi/overseas-order/v1/trading/inquire-ccnl"
         headers = self._get_headers(tr_id)
         logger.info(f"[해외체결잔고] API 호출 시작: tr_id={tr_id}, url={url}, mock={self.mock}, 기간={start_date}~{end_date}")
 
