@@ -1079,7 +1079,7 @@ class KISApiClient:
         if not end_date:
             end_date = time.strftime("%Y%m%d")
 
-        url = f"{self.url_base}/uapi/overseas-stock/v1/trading/inquire-ccnl"
+        url = f"{self.url_base}/uapi/overseas-order/v1/trading/inquire-ccnl"
         results = []
         # NOTE: 페이지네이션 중복(연속 페이지에서 동일 레코드 반복)은 스킵하되,
         #       실제 중복(야간+주간 원장에 동일 주문이 존재)은 모두 표시한다.
