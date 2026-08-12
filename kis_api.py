@@ -875,9 +875,9 @@ class KISApiClient:
         cblc_dvsn: str = "00"
     ) -> Dict[str, Any]:
         """
-        해외주식 체결기준 현물 잔고 조회 (TTTT1006R: 실전 / VTTT1006R: 모의)
+        해외주식 체결기준 현물 잔고 조회 (TTTC1006R: 실전 / VTTC1006R: 모의)
         - 체결(Execution) 기준으로 보유 종목의 체결수량/체결단가/미체결수량을 조회
-        - TTTT1006R(체결기준 현물 잔고) API를 사용하여 실제 체결된 수량과 단가를 기준으로 잔고를 계산
+        - TTTC1006R(체결기준 현물 잔고) API를 사용하여 실제 체결된 수량과 단가를 기준으로 잔고를 계산
         - 매수/매도 & 체결/실패 이력을 Google Sheets에 기록할 때 사용
         - cblc_dvsn: 체결구분 (00: 전체, 01: 미체결, 02: 체결)
         """
@@ -906,7 +906,7 @@ class KISApiClient:
         if not end_date:
             end_date = time.strftime("%Y%m%d")
 
-        tr_id = "VTTT1006R" if self.mock else "TTTT1006R"
+        tr_id = "VTTC1006R" if self.mock else "TTTC1006R"
         url = f"{self.url_base}/uapi/overseas-stock/v1/trading/inquire-ccnl"
         headers = self._get_headers(tr_id)
         logger.info(f"[해외체결잔고] API 호출 시작: tr_id={tr_id}, url={url}, mock={self.mock}, 기간={start_date}~{end_date}")
@@ -952,7 +952,7 @@ class KISApiClient:
                         logger.info(f"[해외체결잔고] [{exch}] output1 항목 수: {len(output1)}")
 
                         for item in output1:
-                            # 체결기준 수량 필드 (TTTT1006R 응답 필드)
+                            # 체결기준 수량 필드 (TTTC1006R 응답 필드)
                             # - ovrs_cblc_qty: 체결기준 보유수량
                             # - ft_ccld_qty: 체결수량
                             # - nccs_qty: 미체결수량
@@ -1126,8 +1126,8 @@ class KISApiClient:
     ) -> List[Dict[str, Any]]:
         """
         해외주식 체결/미체결 이력 조회
-        - 체결기준 현물 잔고 (TTTT1006R / VTTT1006R) 및 주간 원장 (TTTS3035R / VTTS3035R) 교차 조회 후 통합
-        - NOTE: 야간 원장(JTTT3001R)은 한국 시간 낮에 데이터가 매칭되지 않아 TTTT1006R(체결기준)로 대체
+        - 체결기준 현물 잔고 (TTTC1006R / VTTC1006R) 및 주간 원장 (TTTS3035R / VTTS3035R) 교차 조회 후 통합
+        - NOTE: 야간 원장(JTTT3001R)은 한국 시간 낮에 데이터가 매칭되지 않아 TTTC1006R(체결기준)로 대체
         """
         self._ensure_token()
         if not self.access_token or not self.cano:
@@ -1145,10 +1145,10 @@ class KISApiClient:
         total_fetched = 0
         total_skipped_symbol = 0
 
-        # 1. 체결기준 현물 잔고 조회 (TTTT1006R / VTTT1006R) - 미국주식 야간/LOC 주문 포함
+        # 1. 체결기준 현물 잔고 조회 (TTTC1006R / VTTC1006R) - 미국주식 야간/LOC 주문 포함
         # NOTE: 야간 원장(JTTT3001R)은 한국 시간 낮에 데이터가 매칭되지 않아,
-        #       TTTT1006R(체결기준 현물 잔고)로 대체하여 체결수량/체결단가가 정확히 반영된 데이터를 조회한다.
-        # NOTE: TTTT1006R은 get_overseas_execution_balance()에서 구현되어 있으며,
+        #       TTTC1006R(체결기준 현물 잔고)로 대체하여 체결수량/체결단가가 정확히 반영된 데이터를 조회한다.
+        # NOTE: TTTC1006R은 get_overseas_execution_balance()에서 구현되어 있으며,
         #       NASD/NYSE/AMEX 거래소를 순회하며 체결기준 보유 종목을 통합 조회한다.
         exec_balance_res = self.get_overseas_execution_balance(
             symbol=symbol,
@@ -1158,7 +1158,7 @@ class KISApiClient:
         )
         if exec_balance_res.get("success"):
             exec_items = exec_balance_res.get("holdings", [])
-            logger.info(f"[체결이력] 체결기준 잔고(TTTT1006R) 조회 성공: {len(exec_items)}개 종목 (기간={start_date}~{end_date})")
+            logger.info(f"[체결이력] 체결기준 잔고(TTTC1006R) 조회 성공: {len(exec_items)}개 종목 (기간={start_date}~{end_date})")
             for item in exec_items:
                 total_fetched += 1
                 item_symbol = item.get("code", "").strip().upper()
@@ -1210,9 +1210,9 @@ class KISApiClient:
                     "mdia_dvsn_name": "",
                     "usa_amk_exts_rqst_yn": ""
                 })
-                logger.debug(f"[체결이력] 체결기준 잔고(TTTT1006R) 레코드: symbol={item_symbol}, qty={qty}, exec_qty={exec_qty}, unexec_qty={unexec_qty}, exec_price={exec_price}, avg_price={avg_price}")
+                logger.debug(f"[체결이력] 체결기준 잔고(TTTC1006R) 레코드: symbol={item_symbol}, qty={qty}, exec_qty={exec_qty}, unexec_qty={unexec_qty}, exec_price={exec_price}, avg_price={avg_price}")
         else:
-            logger.warning(f"[체결이력] 체결기준 잔고(TTTT1006R) 조회 실패: {exec_balance_res.get('msg', 'Unknown')}")
+            logger.warning(f"[체결이력] 체결기준 잔고(TTTC1006R) 조회 실패: {exec_balance_res.get('msg', 'Unknown')}")
 
         # TQQQ/SOXL 등 미국 주식은 NASDAQ 상장 종목이므로 OVRS_EXCG_CD를 NASD로 지정
         # (빈 값으로 두면 API가 거래소를 특정하지 못해 일부 레코드가 누락될 수 있음)
