@@ -134,9 +134,10 @@ def setup_logger():
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
     
+    # 기존 핸들러를 모두 제거하여 중복 로그 방지
+    # (basicConfig의 StreamHandler, 이전 StreamlitLogHandler 등)
     for handler in list(logger.handlers):
-        if isinstance(handler, StreamlitLogHandler):
-            logger.removeHandler(handler)
+        logger.removeHandler(handler)
             
     st_handler = StreamlitLogHandler()
     logger.addHandler(st_handler)

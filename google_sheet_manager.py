@@ -518,7 +518,7 @@ class GoogleSheetManager:
 
                 if dedup_key in existing_keys:
                     skipped_existing += 1
-                    logger.info(f"[ExecutionHistory] 기존 키로 스킵: {dedup_key}")
+                    logger.debug(f"[ExecutionHistory] 기존 키로 스킵: {dedup_key}")
                     continue
 
                 existing_keys.add(dedup_key)
