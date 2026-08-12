@@ -492,7 +492,7 @@ def render_stock_detail(symbol: str, bot: TraderBot):
     # NOTE: 상태의 start_date가 없거나 오늘 날짜면, 최소 30일 전부터 조회하여 과거 이력 누락을 방지한다.
     default_start = (today_dt - datetime.timedelta(days=30)).strftime("%Y%m%d")
     if clean_sd and clean_sd.isdigit():
-        query_start_fmt = min(clean_sd, default_start)  # 더 과거(작은 값)를 선택
+        query_start_fmt = clean_sd  # JSON의 start_date 사용
     else:
         query_start_fmt = default_start
     logger.info(f"[대시보드] 체결이력 조회 기간 결정: state_start={hist_start or '없음'}, query_start={query_start_fmt}, end={today_dt.strftime('%Y%m%d')}")
@@ -502,16 +502,50 @@ def render_stock_detail(symbol: str, bot: TraderBot):
     history_api = bot.api.get_overseas_execution_history(symbol=symbol, start_date=query_start_fmt, end_date=end_date_fmt)
     logger.info(f"[대시보드] 체결이력 조회 완료: {len(history_api)}건 (symbol={symbol})")
 
-    # KIS API 단일 소스로 매매 이력 구성 (Google Sheets 병합 제거 - 동기화 불일치 방지)
-    history = list(history_api)
+    # KIS API 단일 소스로 매매 이력 구성 (Google Sheets 읽기 참조 제거)
+    merged_history = []
+    seen_keys = set()
+
+    for h in list(history_api):
+        ord_no = str(h.get("order_no", "")).strip()
+        ord_time = str(h.get("order_time", "")).strip()
+        sym = str(h.get("symbol", "")).strip().upper()
+        if symbol and sym and sym != symbol.upper():
+            continue
+
+        ord_type = str(h.get("order_type", "")).strip()
+        qty = int(h.get("qty", 0) or 0)
+        exec_qty = int(h.get("executed_qty", 0) or 0)
+        price = float(h.get("price", 0.0) or 0.0)
+        exec_price = float(h.get("executed_price", 0.0) or 0.0)
+        status = str(h.get("status", "")).strip()
+
+        # 중복 식별 키 생성
+        if ord_no and not ord_no.startswith("EXEC_"):
+            key = f"{sym}|{ord_no}|{ord_type}|{qty}|{exec_qty}|{status}"
+        else:
+            key = f"{sym}|{ord_time}|{ord_type}|{qty}|{exec_qty}|{price}|{exec_price}|{status}"
+
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+
+        # start_date 필터링 (start_date 이전 레코드는 제외)
+        rec_dt = ord_time.replace("-", "").replace(":", "").replace(" ", "")[:8]
+        if clean_sd and rec_dt and rec_dt.isdigit() and rec_dt < clean_sd:
+            continue
+
+        merged_history.append(h)
+
+    history = merged_history
     history.sort(key=lambda x: str(x.get("order_time", "")))
 
-    # 신규 KIS API 이력을 구글 시트에 백업용으로만 누적 동기화 (테이블 표시에는 사용하지 않음)
+    # 신규 KIS API 이력을 구글 시트에 백업용으로만 누적 동기화
     if history_api and hasattr(bot, "infinite_state_mgr") and bot.infinite_state_mgr and bot.infinite_state_mgr.gss_mgr:
-        logger.info(f"[대시보드] KIS API 체결이력 {len(history_api)}건을 Google Sheets 'ExecutionHistory'에 백업 동기화 시도")
-        bot.infinite_state_mgr.gss_mgr.sync_execution_history(history_api)
-    else:
-        logger.info(f"[대시보드] Google Sheets 백업 동기화 생략 (history={len(history_api)}건, gss_mgr={'있음' if hasattr(bot, 'infinite_state_mgr') and bot.infinite_state_mgr and bot.infinite_state_mgr.gss_mgr else '없음'})")
+        try:
+            bot.infinite_state_mgr.gss_mgr.sync_execution_history(history_api)
+        except Exception as e:
+            logger.warning(f"[대시보드] Google Sheets 백업 동기화 예외: {e}")
 
     if PLOTLY_AVAILABLE and chart_data:
         df_chart = pd.DataFrame(chart_data)
@@ -607,16 +641,23 @@ def render_stock_detail(symbol: str, bot: TraderBot):
         st.info("💡 `pip install plotly`를 가상환경(.venv)에 설치하시면 대화형 매수/매도 이력 마커 차트가 표출됩니다.")
 
 
-    # 5. 종목 매매 및 체결/실패 히스토리 테이블 (Google Sheets & KIS API)
-    st.subheader(f"📜 [{symbol}] 매수/매도 & 체결/실패 이력 (Google Sheets & KIS API)")
+    # 5. 종목 매매 및 체결/실패 히스토리 테이블 (KIS API 실계좌 단일 소스)
+    st.subheader(f"📜 [{symbol}] 매수/매도 & 체결/실패 이력 (KIS API 실계좌)")
     if history:
         h_rows = []
         for h in reversed(history):
+            rvse_cncl_name = str(h.get("rvse_cncl_dvsn_name", "")).strip()
+            rvse_cncl_cd = str(h.get("rvse_cncl_dvsn", "")).strip()
+            status = str(h.get("status", "")).strip()
+
+            # "취소" 항목 제외 (정정/취소구분 또는 상태에 '취소'가 포함된 경우 테이블에서 제외)
+            if "취소" in rvse_cncl_name or rvse_cncl_cd == "02" or "취소" in status:
+                continue
+
             h_qty = h.get("qty", 0)
             h_exec_qty = h.get("executed_qty", 0)
             h_price = h.get("price", 0.0)
             h_exec_price = h.get("executed_price", 0.0)
-            status = h.get("status", "-")
             h_type = h.get("order_type", "-")
 
             disp_ord_price = f"${h_price:.2f}" if h_price > 0 else "-"

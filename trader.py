@@ -230,8 +230,8 @@ class TraderBot:
                 sd = st.get("start_date", "")
                 sym_start_date = sd.replace("-", "") if (sd and sd.replace("-", "").isdigit()) else ""
                 if sym_start_date and sym_start_date.isdigit():
-                    # JSON의 start_date를 사용 (더 과거인 값 선택)
-                    start_date = min(sym_start_date, start_date)
+                    # JSON의 start_date를 사용
+                    start_date = sym_start_date
                     break
 
             self.logger.info(f"[체결기준] 조회 기간: {start_date} ~ {today_str} (JSON start_date 기반)")
@@ -317,7 +317,7 @@ class TraderBot:
                         sd = st.get("start_date", "")
                         sym_start_date = sd.replace("-", "") if (sd and sd.replace("-", "").isdigit()) else ""
                         if sym_start_date and sym_start_date.isdigit():
-                            start_date = min(sym_start_date, default_start)  # 더 과거(작은 값)를 선택
+                            start_date = sym_start_date
                             break
                     exec_balance = self.api.get_overseas_execution_balance(
                         symbol="",

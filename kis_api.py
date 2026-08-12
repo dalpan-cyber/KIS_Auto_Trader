@@ -1180,18 +1180,20 @@ class KISApiClient:
                 exec_price = float(item.get("executed_price", item.get("avg_price", 0.0)) or 0.0)
                 avg_price = float(item.get("avg_price", 0.0) or 0.0)
 
+                now_dt_str = time.strftime("%Y%m%d")
+                now_full_str = time.strftime("%Y-%m-%d %H:%M:%S")
                 results.append({
-                    "order_no": "",
+                    "order_no": f"BAL_{item_symbol}",
                     "symbol": item_symbol,
-                    "order_type": "",
+                    "order_type": "체결잔고",
                     "qty": qty,
                     "price": avg_price,
                     "executed_qty": exec_qty,
                     "executed_price": exec_price,
                     "status": "체결" if exec_qty > 0 else "미체결",
-                    "order_time": "",
-                    "ord_dt": "",
-                    "ord_tmd": "",
+                    "order_time": now_full_str,
+                    "ord_dt": now_dt_str,
+                    "ord_tmd": time.strftime("%H%M%S"),
                     "ord_gno_brno": "",
                     "orgn_odno": "",
                     "prdt_name": item.get("name", f"해외_{item_symbol}"),
@@ -1217,144 +1219,160 @@ class KISApiClient:
         else:
             logger.warning(f"[체결이력] 체결기준 잔고(TTTS3012R) 조회 실패: {exec_balance_res.get('msg', 'Unknown')}")
 
-        # TQQQ/SOXL 등 미국 주식은 NASDAQ 상장 종목이므로 OVRS_EXCG_CD를 NASD로 지정
-        # (빈 값으로 두면 API가 거래소를 특정하지 못해 일부 레코드가 누락될 수 있음)
-        # NOTE: NASDAQ 상장 종목(TQQQ, SOXL 등)은 NASD, NYSE 상장 종목은 NYSE로 지정
-        ovrs_excg = "NASD" if symbol.upper() in ("TQQQ", "SOXL") else ""
+        # NOTE: OVRS_EXCG_CD를 빈 값("")으로 설정하여 거래소 구분 없이 계좌의 전체 해외주식 주문체결 이력을 조회한다.
+        ovrs_excg = ""
 
-        # 2. 주간 원장 체결/주문 이력 조회 (TTTS3035R / VTTS3035R) - 일반(1) + 연장(2) 서버 모두 조회
-        # NOTE: TTTS3035R도 ORD_DT(단일일자)를 지정하면 페이지네이션 시 동일 레코드를 반복 반환하는 문제가 있다.
-        #       ORD_STRT_DT/ORD_END_DT로 기간 조회하면 전체 레코드를 반환한다.
-        # NOTE: KIS API TTTS3035R 파라미터명은 SVR_DVS_CD / CCLN_DVS_CD / ORD_GDS_DVS_CD 이며,
-        #       값은 0(전체)/1(체결)/2(미체결) 형식이다. (기존 SVR_DVSN_CD/CCNL_DVSN/ORD_GDS_DVSN은 잘못된 이름)
-        # NOTE: KIS API TTTS3035R의 SVR_DVS_CD 값은 0(전체)/1(일반)/2(연장) 형식이다.
-        #       "01"/"02"로 보내면 API가 레코드를 반환하지 않는다.
-        tr_id_day = "VTTS3035R" if self.mock else "TTTS3035R"
-        url_day = f"{self.url_base}/uapi/overseas-stock/v1/trading/inquire-daily-ccld"
-        headers_day = self._get_headers(tr_id_day)
-        for svr_dvsn in ["1", "2"]:
-            # NOTE: TTTS3035R도 ORD_STRT_DT(싱글 S)를 사용한다.
-            #       OVRS_EXCG_CD를 NASD로 지정하여 NASDAQ 종목(TQQQ)을 정확히 조회한다.
-            params_day = {
-                "CANO": self.cano,
-                "ACNT_PRDT_CD": self.acnt_prdt_cd,
-                "PDNO": symbol.upper() if symbol else "",
-                "ORD_STRT_DT": start_date,
-                "ORD_END_DT": end_date,
-                "SVR_DVS_CD": svr_dvsn,
-                "CCNL_DVS_CD": "0",
-                "ORD_GDS_DVS_CD": "0",
-                "OVRS_EXCG_CD": ovrs_excg,
-                "CTX_AREA_FK200": "",
-                "CTX_AREA_NK200": ""
+        # 2. 해외주식 주문/체결 이력 다중 엔드포인트 교차 조회 (TTTS3035R, JTTT3001R, TTTS3011R)
+        # NOTE: 주간원장(TTTS3035R), 야간원장(JTTT3001R), 체결내역(TTTS3011R)을 모두 교차 조회하여 파라미터 규격 차이로 인한 누락을 방지한다.
+        endpoints = [
+            {
+                "tr_id": "VTTS3035R" if self.mock else "TTTS3035R",
+                "url": f"{self.url_base}/uapi/overseas-stock/v1/trading/inquire-ccnl",
+                "name": "주간원장(TTTS3035R)"
+            },
+            {
+                "tr_id": "VJTT3001R" if self.mock else "JTTT3001R",
+                "url": f"{self.url_base}/uapi/overseas-stock/v1/trading/inquire-ccnl",
+                "name": "야간원장(JTTT3001R)"
+            },
+            {
+                "tr_id": "VTTS3011R" if self.mock else "TTTS3011R",
+                "url": f"{self.url_base}/uapi/overseas-stock/v1/trading/inquire-daily-trans",
+                "name": "일별거래(TTTS3011R)"
+            },
+            {
+                "tr_id": "VTTS3011R" if self.mock else "TTTS3011R",
+                "url": f"{self.url_base}/uapi/overseas-stock/v1/trading/inquire-period-trans",
+                "name": "기간별거래(TTTS3011R)"
             }
+        ]
 
-            try:
-                ctx_fk = ""
-                ctx_nk = ""
-                prev_page_keys = set()  # 이전 페이지에서 본 레코드 키 (페이지 중복 감지용)
-                for _ in range(5):
-                    params_day["CTX_AREA_FK200"] = ctx_fk
-                    params_day["CTX_AREA_NK200"] = ctx_nk
-                    self._rate_limit()
-                    res = requests.get(url_day, headers=headers_day, params=params_day, timeout=10)
-                    data = self._safe_json_response(res, context=f"체결이력[{svr_dvsn}]")
+        for ep in endpoints:
+            tr_id_day = ep["tr_id"]
+            url_day = ep["url"]
+            ep_name = ep["name"]
+            headers_day = self._get_headers(tr_id_day)
 
-                    if res.status_code == 200 and data.get("rt_cd") == "0":
-                        output = data.get("output", []) or data.get("output1", [])
-                        if not output:
-                            logger.info(f"[체결이력] 주간원장(TTTS3035R) 조회 결과 없음 (SVR_DVS_CD={svr_dvsn}, 기간={start_date}~{end_date}, page={_ + 1})")
+            # NOTE: SVR_DVS_CD="0"은 전체 서버를 통합 조회하므로 반복 호출 없이 1회 조회로 최적화한다.
+            for svr_dvsn in ["0"]:
+                params_day = {
+                    "CANO": self.cano,
+                    "ACNT_PRDT_CD": self.acnt_prdt_cd,
+                    "PDNO": symbol.upper() if symbol else "",
+                    "ORD_STRT_DT": start_date,
+                    "ORD_END_DT": end_date,
+                    "SVR_DVS_CD": svr_dvsn,
+                    "CCNL_DVS_CD": "00",
+                    "CCLD_NCCS_DVSN": "00",
+                    "SLL_BUY_DVSN": "00",
+                    "SLL_BUY_DVSN_CD": "00",
+                    "ORD_GDS_DVS_CD": "0",
+                    "OVRS_EXCG_CD": ovrs_excg,
+                    "CTX_AREA_FK200": "",
+                    "CTX_AREA_NK200": ""
+                }
+
+                try:
+                    ctx_fk = ""
+                    ctx_nk = ""
+                    prev_page_keys = set()
+                    for _ in range(5):
+                        params_day["CTX_AREA_FK200"] = ctx_fk
+                        params_day["CTX_AREA_NK200"] = ctx_nk
+                        time.sleep(0.05)
+                        res = requests.get(url_day, headers=headers_day, params=params_day, timeout=8)
+                        data = self._safe_json_response(res, context=f"체결이력[{ep_name}]")
+
+                        if res.status_code == 200 and data.get("rt_cd") == "0":
+                            output = data.get("output", []) or data.get("output1", []) or data.get("output2", [])
+                            if not output:
+                                break
+                            logger.info(f"[체결이력] {ep_name} 조회 성공 (건수={len(output)}, page={_ + 1})")
+
+                            current_page_keys = set()
+                            for item in output:
+                                total_fetched += 1
+                                order_no = str(item.get("odno", item.get("ord_no", ""))).strip()
+                                item_symbol = str(item.get("pdno", item.get("symb", item.get("symbol", "")))).strip().upper()
+                                sll_buy_cd = str(item.get("sll_buy_dvsn_cd", item.get("sll_buy_dvsn", ""))).strip()
+                                order_type = str(item.get("sll_buy_dvsn_cd_name", item.get("sll_buy_dvsn_name", item.get("sll_buy_name", "")))).strip()
+                                if not order_type or order_type == "-":
+                                    if sll_buy_cd in ("01", "1"):
+                                        order_type = "매도"
+                                    elif sll_buy_cd in ("02", "2"):
+                                        order_type = "매수"
+                                qty = int(item.get("ft_ord_qty", item.get("ord_qty", item.get("qty", 0))) or 0)
+                                exec_qty = int(item.get("ft_ccnl_qty", item.get("ft_ccld_qty", item.get("ccld_qty", item.get("exec_qty", 0)))) or 0)
+                                exec_price = float(item.get("ft_ccnl_unpr3", item.get("ft_ccld_unpr3", item.get("ccld_unpr", item.get("exec_price", 0.0)))) or 0.0)
+                                ord_price = float(item.get("ft_ord_unpr3", item.get("ord_unpr", item.get("price", 0.0))) or 0.0)
+                                ord_dt_raw = str(item.get("ord_dt", item.get("order_dt", ""))).strip()
+                                ord_tmd_raw = str(item.get("ord_tmd", item.get("order_tmd", ""))).strip()
+                                order_time = (ord_dt_raw + " " + ord_tmd_raw).strip()
+                                status = str(item.get("prcs_stat_name", item.get("stat_name", item.get("status", "")))).strip()
+                                orgn_odno = str(item.get("orgn_odno", "")).strip()
+                                ord_gno_brno = str(item.get("ord_gno_brno", "")).strip()
+
+                                if symbol and item_symbol and item_symbol != symbol.upper():
+                                    total_skipped_symbol += 1
+                                    continue
+
+                                dedup_key = f"{order_no}|{order_type}|{qty}|{exec_qty}|{ord_tmd_raw}|{orgn_odno}"
+                                current_page_keys.add(dedup_key)
+
+                                results.append({
+                                    "order_no": order_no,
+                                    "symbol": item_symbol,
+                                    "order_type": order_type,
+                                    "qty": qty,
+                                    "price": ord_price,
+                                    "executed_qty": exec_qty,
+                                    "executed_price": exec_price,
+                                    "status": status,
+                                    "order_time": order_time,
+                                    "ord_dt": ord_dt_raw,
+                                    "ord_tmd": ord_tmd_raw,
+                                    "ord_gno_brno": ord_gno_brno,
+                                    "orgn_odno": orgn_odno,
+                                    "prdt_name": str(item.get("prdt_name", "")).strip(),
+                                    "sll_buy_dvsn_cd": str(item.get("sll_buy_dvsn_cd", "")).strip(),
+                                    "rvse_cncl_dvsn": str(item.get("rvse_cncl_dvsn", "")).strip(),
+                                    "rvse_cncl_dvsn_name": str(item.get("rvse_cncl_dvsn_name", "")).strip(),
+                                    "ft_ccld_amt3": str(item.get("ft_ccld_amt3", "")).strip(),
+                                    "nccs_qty": str(item.get("nccs_qty", "")).strip(),
+                                    "rjct_rson": str(item.get("rjct_rson", "")).strip(),
+                                    "rjct_rson_name": str(item.get("rjct_rson_name", "")).strip(),
+                                    "tr_mket_name": str(item.get("tr_mket_name", "")).strip(),
+                                    "tr_natn_name": str(item.get("tr_natn_name", "")).strip(),
+                                    "ovrs_excg_cd": str(item.get("ovrs_excg_cd", "")).strip(),
+                                    "tr_crcy_cd": str(item.get("tr_crcy_cd", "")).strip(),
+                                    "dmst_ord_dt": str(item.get("dmst_ord_dt", "")).strip(),
+                                    "thco_ord_tmd": str(item.get("thco_ord_tmd", "")).strip(),
+                                    "loan_type_cd": str(item.get("loan_type_cd", "")).strip(),
+                                    "loan_dt": str(item.get("loan_dt", "")).strip(),
+                                    "mdia_dvsn_name": str(item.get("mdia_dvsn_name", "")).strip(),
+                                    "usa_amk_exts_rqst_yn": str(item.get("usa_amk_exts_rqst_yn", "")).strip()
+                                })
+
+                            if prev_page_keys and current_page_keys.issubset(prev_page_keys):
+                                break
+                            prev_page_keys = current_page_keys
+
+                            ctx_fk = (data.get("ctx_area_fk200", "") or "").strip()
+                            ctx_nk = (data.get("ctx_area_nk200", "") or "").strip()
+                            if not ctx_fk and not ctx_nk:
+                                break
+                        else:
+                            msg1 = data.get("msg1", "")
+                            if "만료된" in msg1 or data.get("msg_cd") == "EGW00123":
+                                logger.warning("Token 만료 감지: 해외 체결내역 재조회 시도...")
+                                self.access_token = None
+                                self.token_issued_at = 0
+                                if self.get_access_token():
+                                    return self.get_overseas_execution_history(symbol=symbol, start_date=start_date, end_date=end_date)
                             break
-                        logger.info(f"[체결이력] 주간원장(TTTS3035R) 조회 성공 (SVR_DVS_CD={svr_dvsn}, 기간={start_date}~{end_date}, page={_ + 1}, 건수={len(output)})")
-
-                        current_page_keys = set()
-                        for item in output:
-                            total_fetched += 1
-                            order_no = item.get("odno", "")
-                            item_symbol = item.get("pdno", "").strip().upper()
-                            order_type = item.get("sll_buy_dvsn_cd_name", "")
-                            qty = int(item.get("ft_ord_qty", 0) or 0)
-                            exec_qty = int(item.get("ft_ccnl_qty", item.get("ft_ccld_qty", 0)) or 0)
-                            exec_price = float(item.get("ft_ccnl_unpr3", item.get("ft_ccld_unpr3", 0.0)) or 0.0)
-                            ord_dt_raw = str(item.get("ord_dt", "")).strip()
-                            ord_tmd_raw = str(item.get("ord_tmd", "")).strip()
-                            order_time = (ord_dt_raw + " " + ord_tmd_raw).strip()
-                            status = item.get("prcs_stat_name", "")
-                            # 추가 고유 필드 (API 응답에서 사용 가능한 필드)
-                            orgn_odno = str(item.get("orgn_odno", "")).strip()
-                            ord_gno_brno = str(item.get("ord_gno_brno", "")).strip()
-                            ccld_amt = str(item.get("ccld_amt", "")).strip()
-                            rqst_amt = str(item.get("rqst_amt", "")).strip()
-                            ccld_cndt_name = str(item.get("ccld_cndt_name", "")).strip()
-
-                            # 종목 필터
-                            if symbol and item_symbol != symbol.upper():
-                                total_skipped_symbol += 1
-                                logger.debug(f"[체결이력] 주간원장 종목 필터 스킵: symbol={item_symbol}, order_no={order_no}, order_time={order_time}")
-                                continue
-
-                            # 페이지 중복 감지용 키 (중복 스킵은 하지 않고 페이지네이션 판단에만 사용)
-                            dedup_key = f"{order_no}|{order_type}|{qty}|{exec_qty}|{ord_tmd_raw}|{orgn_odno}|{ord_gno_brno}|{ccld_amt}|{rqst_amt}|{ccld_cndt_name}"
-                            current_page_keys.add(dedup_key)
-                            logger.debug(f"[체결이력] 주간원장 page={_ + 1} 레코드: key={dedup_key}, symbol={item_symbol}, status={status}, odno={order_no}, qty={qty}, exec_qty={exec_qty}, time={order_time}, ord_tmd={ord_tmd_raw}, orgn_odno={orgn_odno}")
-
-                            results.append({
-                                "order_no": order_no,
-                                "symbol": item_symbol,
-                                "order_type": order_type,
-                                "qty": qty,
-                                "price": float(item.get("ft_ord_unpr3", 0.0) or 0.0),
-                                "executed_qty": exec_qty,
-                                "executed_price": exec_price,
-                                "status": status,
-                                "order_time": order_time,
-                                "ord_dt": str(item.get("ord_dt", "")).strip(),
-                                "ord_tmd": ord_tmd_raw,
-                                "ord_gno_brno": ord_gno_brno,
-                                "orgn_odno": orgn_odno,
-                                "prdt_name": str(item.get("prdt_name", "")).strip(),
-                                "sll_buy_dvsn_cd": str(item.get("sll_buy_dvsn_cd", "")).strip(),
-                                "rvse_cncl_dvsn": str(item.get("rvse_cncl_dvsn", "")).strip(),
-                                "rvse_cncl_dvsn_name": str(item.get("rvse_cncl_dvsn_name", "")).strip(),
-                                "ft_ccld_amt3": str(item.get("ft_ccld_amt3", "")).strip(),
-                                "nccs_qty": str(item.get("nccs_qty", "")).strip(),
-                                "rjct_rson": str(item.get("rjct_rson", "")).strip(),
-                                "rjct_rson_name": str(item.get("rjct_rson_name", "")).strip(),
-                                "tr_mket_name": str(item.get("tr_mket_name", "")).strip(),
-                                "tr_natn_name": str(item.get("tr_natn_name", "")).strip(),
-                                "ovrs_excg_cd": str(item.get("ovrs_excg_cd", "")).strip(),
-                                "tr_crcy_cd": str(item.get("tr_crcy_cd", "")).strip(),
-                                "dmst_ord_dt": str(item.get("dmst_ord_dt", "")).strip(),
-                                "thco_ord_tmd": str(item.get("thco_ord_tmd", "")).strip(),
-                                "loan_type_cd": str(item.get("loan_type_cd", "")).strip(),
-                                "loan_dt": str(item.get("loan_dt", "")).strip(),
-                                "mdia_dvsn_name": str(item.get("mdia_dvsn_name", "")).strip(),
-                                "usa_amk_exts_rqst_yn": str(item.get("usa_amk_exts_rqst_yn", "")).strip()
-                            })
-
-                        # 페이지 중복 감지: 이전 페이지와 동일한 레코드만 있으면 페이지네이션이 진행되지 않는 것
-                        if prev_page_keys and current_page_keys.issubset(prev_page_keys):
-                            logger.warning(f"[체결이력] 주간원장(TTTS3035R) 페이지 중복 감지 (SVR_DVS_CD={svr_dvsn}, 기간={start_date}~{end_date}, page={_ + 1}): 이전 페이지와 동일한 레코드만 반환됨. 페이지네이션 중단")
-                            break
-                        prev_page_keys = current_page_keys
-
-                        ctx_fk = (data.get("ctx_area_fk200", "") or "").strip()
-                        ctx_nk = (data.get("ctx_area_nk200", "") or "").strip()
-                        if not ctx_fk and not ctx_nk:
-                            break
-                    else:
-                        msg1 = data.get("msg1", "")
-                        if "만료된" in msg1 or data.get("msg_cd") == "EGW00123":
-                            logger.warning("Token 만료 감지: 해외 체결내역 재조회 시도...")
-                            self.access_token = None
-                            self.token_issued_at = 0
-                            if self.get_access_token():
-                                return self.get_overseas_execution_history(symbol=symbol, start_date=start_date, end_date=end_date)
-                        logger.warning(f"[체결이력] 주간원장(TTTS3035R) API 오류 (SVR_DVS_CD={svr_dvsn}, 기간={start_date}~{end_date}, rt_cd={data.get('rt_cd')}, msg={msg1})")
-                        break
-            except Exception as e:
-                logger.warning(f"[체결이력] 주간원장(TTTS3035R) 조회 예외 (SVR_DVS_CD={svr_dvsn}, 기간={start_date}~{end_date}): {e}")
-                continue
+                except Exception as e:
+                    logger.warning(f"[체결이력] {ep_name} 조회 예외: {e}")
+                    continue
 
         logger.info(f"[체결이력] 최종 결과 (통합): {len(results)}건 (symbol={symbol or '전체'}, 기간={start_date}~{end_date})")
         logger.info(f"[체결이력] 진단: 총 조회={total_fetched}건, 종목필터 스킵={total_skipped_symbol}건, 중복 스킵=0건(중복 포함 표시), 최종={len(results)}건")
