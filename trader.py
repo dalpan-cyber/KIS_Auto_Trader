@@ -159,6 +159,39 @@ class TraderBot:
                 else:
                     self.logger.warning("[계좌잔고] 체결 이력 기반 Fallback도 결과가 없습니다. (체결 이력이 없거나, 날짜 범위가 잘못되었을 수 있음)")
 
+            # 체결기준 현물 잔고(TTTT1006R)를 추가 Fallback으로 사용
+            # - 기존 잔고 API(TTTS3012R)와 체결 이력 기반 계산이 모두 실패/빈 결과일 때,
+            #   체결기준 잔고 API로 실제 체결된 수량/단가를 조회하여 보유 종목을 보정한다.
+            overseas_holdings_count = sum(1 for c in new_holdings if self.api.is_overseas_symbol(c))
+            if overseas_holdings_count == 0:
+                try:
+                    today_str = time.strftime("%Y%m%d")
+                    default_start = (datetime.date.today() - datetime.timedelta(days=30)).strftime("%Y%m%d")
+                    exec_balance_res = self.api.get_overseas_execution_balance(
+                        symbol="",
+                        start_date=default_start,
+                        end_date=today_str
+                    )
+                    if exec_balance_res.get("success"):
+                        exec_items = exec_balance_res.get("holdings", [])
+                        if exec_items:
+                            self.logger.info(f"📊 체결기준 잔고(TTTT1006R)에서 보유 종목 {len(exec_items)}개 조회 성공")
+                            for item in exec_items:
+                                code = item["code"]
+                                new_holdings[code] = {
+                                    "name": item.get("name", f"해외_{code}"),
+                                    "qty": item.get("qty", item.get("executed_qty", 0)),
+                                    "avg_price": item.get("avg_price", item.get("executed_price", 0.0)),
+                                    "current_price": item.get("current_price", 0.0),
+                                    "pnl_rate": item.get("pnl_rate", 0.0)
+                                }
+                        else:
+                            self.logger.warning("[계좌잔고] 체결기준 잔고(TTTT1006R)도 보유 종목이 0개입니다.")
+                    else:
+                        self.logger.warning(f"[계좌잔고] 체결기준 잔고(TTTT1006R) 조회 실패: {exec_balance_res.get('msg', 'Unknown')}")
+                except Exception as e:
+                    self.logger.warning(f"[계좌잔고] 체결기준 잔고(TTTT1006R) 조회 예외: {e}")
+
             self.holdings = new_holdings
 
             sim_str = " (시뮬레이션)" if getattr(self, "is_usd_simulated", True) else " (실제 조회)"
@@ -266,6 +299,7 @@ class TraderBot:
         - 보유 수량/평단가는 KIS API가 Source of Truth이므로 JSON에는 기록하지 않음
         - Google Sheets 'Holdings' 워크시트에 주식평가 금액 동기화
         - Google Sheets 'ExecutionHistory' 워크시트에 체결/실패 이력 동기화
+        - Google Sheets 'ExecutionBalance' 워크시트에 체결기준 현물 잔고 동기화 (TTTT1006R)
         """
         self.fetch_account_balance()
         self.logger.info("🔄 실계좌 보유 종목 수량/평단가를 API에서 갱신 완료 (JSON에는 전략 상태만 기록)")
@@ -276,6 +310,8 @@ class TraderBot:
             if gss and gss.is_connected:
                 try:
                     gss.sync_holdings(self.holdings, self.current_prices)
+
+                    # 1. 체결/실패 이력 동기화 (기존 방식 - TTTS3035R/JTTT3001R)
                     history = []
                     for sym in self.infinite_stocks:
                         st = self.infinite_state_mgr.get_symbol_state(sym)
@@ -292,9 +328,27 @@ class TraderBot:
                         history.extend(sym_history)
                     self.logger.info(f"[체결이력] Google Sheets 동기화 대상 총 {len(history)}건")
                     gss.sync_execution_history(history)
-                    self.logger.info("📊 Google Sheet 'Holdings'/'ExecutionHistory' 동기화 완료 (KIS API 실계좌)")
+
+                    # 2. 체결기준 현물 잔고 동기화 (신규 - TTTT1006R/VTTT1006R)
+                    try:
+                        today_str = time.strftime("%Y%m%d")
+                        default_start = (datetime.date.today() - datetime.timedelta(days=30)).strftime("%Y%m%d")
+                        exec_balance = self.api.get_overseas_execution_balance(
+                            symbol="",
+                            start_date=default_start,
+                            end_date=today_str
+                        )
+                        if exec_balance.get("success"):
+                            gss.sync_execution_balance(exec_balance.get("holdings", []))
+                            self.logger.info(f"📊 Google Sheet 'ExecutionBalance' 동기화 완료 (체결기준 {len(exec_balance.get('holdings', []))}개 종목)")
+                        else:
+                            self.logger.warning(f"[체결기준잔고] 동기화 실패: {exec_balance.get('msg', 'Unknown')}")
+                    except Exception as e:
+                        self.logger.warning(f"[체결기준잔고] Google Sheet 동기화 예외: {e}")
+
+                    self.logger.info("📊 Google Sheet 'Holdings'/'ExecutionHistory'/'ExecutionBalance' 동기화 완료 (KIS API 실계좌)")
                 except Exception as e:
-                    self.logger.warning(f"Google Sheet Holdings/ExecutionHistory 동기화 예외: {e}")
+                    self.logger.warning(f"Google Sheet Holdings/ExecutionHistory/ExecutionBalance 동기화 예외: {e}")
 
     def start_infinite_buying(self, symbol: str):
         """특정 종목의 무한매수 수동 시작"""

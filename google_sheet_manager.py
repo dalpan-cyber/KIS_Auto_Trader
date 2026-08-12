@@ -45,6 +45,7 @@ class GoogleSheetManager:
         self.state_worksheet: Optional[Any] = None
         self.holdings_worksheet: Optional[Any] = None
         self.history_worksheet: Optional[Any] = None
+        self.exec_balance_worksheet: Optional[Any] = None
         self.is_connected = False
 
         if self.enabled and GSPREAD_AVAILABLE:
@@ -143,6 +144,14 @@ class GoogleSheetManager:
                 self.history_worksheet = self.spreadsheet.add_worksheet(title="ExecutionHistory", rows="1000", cols="12")
                 headers = ["일시", "티커", "구분", "주문수량", "체결수량", "주문단가($)", "체결단가($)", "총금액($)", "상태", "주문번호", "최종갱신시각"]
                 self.history_worksheet.append_row(headers)
+
+            # 'ExecutionBalance' 워크시트 준비 (체결기준 현물 잔고 - TTTT1006R)
+            try:
+                self.exec_balance_worksheet = self.spreadsheet.worksheet("ExecutionBalance")
+            except Exception:
+                self.exec_balance_worksheet = self.spreadsheet.add_worksheet(title="ExecutionBalance", rows="100", cols="12")
+                headers = ["티커", "종목명", "보유수량", "체결수량", "미체결수량", "평단가($)", "체결단가($)", "현재가($)", "수익률(%)", "최종갱신시각"]
+                self.exec_balance_worksheet.append_row(headers)
 
             self.is_connected = True
             logger.info(f"🟢 Google Sheets 연동 성공! (서비스 계정: {sa_email} | 시트: {self.spreadsheet.title})")
@@ -285,6 +294,64 @@ class GoogleSheetManager:
                 logger.debug("Google Sheet Holdings API 호출 할당량 초과 (다음 턴 재시도)")
             else:
                 logger.warning(f"Google Sheet Holdings 동기화 예외: {e}")
+
+    def sync_execution_balance(self, holdings: List[Dict[str, Any]]):
+        """
+        해외주식 체결기준 현물 잔고를 'ExecutionBalance' 워크시트에 동기화
+        - holdings: get_overseas_execution_balance() 결과 리스트
+        - 체결수량/체결단가/미체결수량을 포함한 체결기준 잔고를 기록
+        """
+        if not self.is_connected or not self.exec_balance_worksheet:
+            return
+
+        try:
+            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            # 기존 데이터 삭제 (헤더 제외)
+            try:
+                all_records = self.exec_balance_worksheet.get_all_records()
+                if all_records:
+                    self.exec_balance_worksheet.delete_rows(2, len(all_records) + 1)
+            except Exception:
+                pass
+
+            if not holdings:
+                return
+
+            rows = []
+            for h in holdings:
+                code = h.get("code", "")
+                if not code:
+                    continue
+                qty = int(h.get("qty", 0) or 0)
+                exec_qty = int(h.get("executed_qty", 0) or 0)
+                unexec_qty = int(h.get("unexecuted_qty", 0) or 0)
+                avg_p = float(h.get("avg_price", 0.0) or 0.0)
+                exec_p = float(h.get("executed_price", 0.0) or 0.0)
+                cur_p = float(h.get("current_price", 0.0) or 0.0)
+                pnl_rate = float(h.get("pnl_rate", 0.0) or 0.0)
+
+                rows.append([
+                    code,
+                    h.get("name", f"해외_{code}"),
+                    qty,
+                    exec_qty,
+                    unexec_qty,
+                    round(avg_p, 2),
+                    round(exec_p, 2),
+                    round(cur_p, 2),
+                    round(pnl_rate, 2),
+                    now_str
+                ])
+
+            if rows:
+                self.exec_balance_worksheet.append_rows(rows)
+                logger.info(f"📊 Google Sheet 'ExecutionBalance' 워크시트 동기화 성공 ({len(rows)}개 종목)")
+        except Exception as e:
+            if "429" in str(e) or "Quota exceeded" in str(e):
+                logger.debug("Google Sheet ExecutionBalance API 호출 할당량 초과 (다음 턴 재시도)")
+            else:
+                logger.warning(f"Google Sheet ExecutionBalance 동기화 예외: {e}")
 
     def read_execution_history_from_sheet(self, symbol: str = "") -> List[Dict[str, Any]]:
         """Google Sheet 'ExecutionHistory' 워크시트에서 저장된 매매 이력 읽어오기"""
