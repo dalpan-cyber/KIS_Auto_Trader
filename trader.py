@@ -170,7 +170,8 @@ class TraderBot:
                     exec_balance_res = self.api.get_overseas_execution_balance(
                         symbol="",
                         start_date=default_start,
-                        end_date=today_str
+                        end_date=today_str,
+                        cblc_dvsn="02"  # 체결(02) 기준으로 조회
                     )
                     if exec_balance_res.get("success"):
                         exec_items = exec_balance_res.get("holdings", [])
@@ -336,7 +337,8 @@ class TraderBot:
                         exec_balance = self.api.get_overseas_execution_balance(
                             symbol="",
                             start_date=default_start,
-                            end_date=today_str
+                            end_date=today_str,
+                            cblc_dvsn="02"  # 체결(02) 기준으로 조회
                         )
                         if exec_balance.get("success"):
                             gss.sync_execution_balance(exec_balance.get("holdings", []))

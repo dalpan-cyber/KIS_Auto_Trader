@@ -823,13 +823,15 @@ class KISApiClient:
         self,
         symbol: str = "",
         start_date: str = "",
-        end_date: str = ""
+        end_date: str = "",
+        cblc_dvsn: str = "00"
     ) -> Dict[str, Any]:
         """
         해외주식 체결기준 현물 잔고 조회 (TTTT1006R: 실전 / VTTT1006R: 모의)
         - 체결(Execution) 기준으로 보유 종목의 체결수량/체결단가/미체결수량을 조회
         - 기존 TTTS3012R(잔고기준)과 달리, 실제 체결된 수량과 단가를 기준으로 잔고를 계산
         - 매수/매도 & 체결/실패 이력을 Google Sheets에 기록할 때 사용
+        - cblc_dvsn: 체결구분 (00: 전체, 01: 미체결, 02: 체결)
         """
         self._ensure_token()
         if not self.access_token or not self.cano:
@@ -877,7 +879,7 @@ class KISApiClient:
                 "ORD_STRT_DT": start_date,
                 "ORD_END_DT": end_date,
                 "SLL_BUY_DVSN": "00",
-                "CCLD_NCCS_DVSN": "00",
+                "CBLC_DVSN": cblc_dvsn,  # 체결구분: 00=전체, 01=미체결, 02=체결
                 "CTX_AREA_FK200": "",
                 "CTX_AREA_NK200": ""
             }
@@ -973,7 +975,7 @@ class KISApiClient:
                             self.access_token = None
                             self.token_issued_at = 0
                             if self.get_access_token():
-                                return self.get_overseas_execution_balance(symbol=symbol, start_date=start_date, end_date=end_date)
+                                return self.get_overseas_execution_balance(symbol=symbol, start_date=start_date, end_date=end_date, cblc_dvsn=cblc_dvsn)
                         last_error = f"[{exch}] {msg1}"
                         break
             except Exception as e:
