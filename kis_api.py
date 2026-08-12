@@ -926,42 +926,148 @@ class KISApiClient:
         total_skipped_symbol = 0
 
         # 1. 야간 원장 체결/주문 이력 조회 (JTTT3001R / VJTT3001R) - 미국주식 야간/LOC 주문 포함
-        # NOTE: JTTT3001R의 ORD_DT는 단일 날짜 기준으로 동작하므로, 조회 범위의 각 날짜별로 순회하여 누락을 방지한다.
+        # NOTE: JTTT3001R은 ORD_DT(단일일자)를 지정하면 해당 일자의 레코드만 반환하고,
+        #       페이지네이션 시 동일 레코드를 반복 반환하는 문제가 있다.
+        #       ORD_DT를 비우고 ORD_STRT_DT/ORD_END_DT로 기간 조회하면 전체 레코드를 반환한다.
         tr_id_night = "VJTT3001R" if self.mock else "JTTT3001R"
         headers_night = self._get_headers(tr_id_night)
 
-        # start_date~end_date 사이의 모든 날짜를 계산 (KST 기준 일자별 순회)
-        night_dates = []
-        try:
-            from datetime import datetime as dt, timedelta as td
-            d_start = dt.strptime(start_date, "%Y%m%d").date()
-            d_end = dt.strptime(end_date, "%Y%m%d").date()
-            d = d_start
-            while d <= d_end:
-                night_dates.append(d.strftime("%Y%m%d"))
-                d += td(days=1)
-        except Exception:
-            night_dates = [start_date]  # 파싱 실패 시 시작일만 시도
+        # TQQQ/SOXL 등 미국 주식은 NASDAQ 상장 종목이므로 OVRS_EXCG_CD를 NASD로 지정
+        # (빈 값으로 두면 API가 거래소를 특정하지 못해 일부 레코드가 누락될 수 있음)
+        # NOTE: NASDAQ 상장 종목(TQQQ, SOXL 등)은 NASD, NYSE 상장 종목은 NYSE로 지정
+        ovrs_excg = "NASD" if symbol.upper() in ("TQQQ", "SOXL") else ""
+        # NOTE: KIS API JTTT3001R의 시작일 파라미터명은 ORD_STRT_DT(싱글 S)이다.
+        #       (ORD_SSRT_DT로 보내면 API가 INPUT_FIELD_NAME 오류를 반환한다)
+        params_night = {
+            "CANO": self.cano,
+            "ACNT_PRDT_CD": self.acnt_prdt_cd,
+            "PDNO": symbol.upper() if symbol else "",
+            "ORD_DT": "",  # 단일일자 지정 시 페이지네이션 버그 발생 → 비움
+            "ORD_STRT_DT": start_date,
+            "ORD_END_DT": end_date,
+            "SLL_BUY_DVSN": "00",
+            "CCLD_NCCS_DVSN": "00",
+            "OVRS_EXCG_CD": ovrs_excg,
+            "SORT_SQN": "DS",
+            "ORD_GNO_BRNO": "",
+            "ODNO": "",
+            "CTX_AREA_FK200": "",
+            "CTX_AREA_NK200": ""
+        }
 
-        for ord_date in night_dates:
-            # TQQQ는 NASDAQ 상장 종목이므로 OVRS_EXCG_CD를 NASD로 지정
-            # (빈 값으로 두면 API가 거래소를 특정하지 못해 일부 레코드가 누락될 수 있음)
-            ovrs_excg = "NASD" if symbol.upper() == "TQQQ" else ""
-            # NOTE: KIS API JTTT3001R의 시작일 파라미터명은 ORD_STRT_DT(싱글 S)이다.
-            #       (ORD_SSRT_DT로 보내면 API가 INPUT_FIELD_NAME 오류를 반환한다)
-            params_night = {
+        try:
+            ctx_fk = ""
+            ctx_nk = ""
+            prev_page_keys = set()  # 이전 페이지에서 본 레코드 키 (페이지 중복 감지용)
+            for _ in range(5):
+                params_night["CTX_AREA_FK200"] = ctx_fk
+                params_night["CTX_AREA_NK200"] = ctx_nk
+                # 디버깅: 실제 전송되는 요청 파라미터 로깅
+                logger.info(f"[체결이력] 야간원장(JTTT3001R) 요청 파라미터 (기간={start_date}~{end_date}, page={_ + 1}): {json.dumps(params_night, ensure_ascii=False)}")
+                self._rate_limit()
+                res = requests.get(url, headers=headers_night, params=params_night, timeout=10)
+                data = res.json()
+
+                if res.status_code == 200 and data.get("rt_cd") == "0":
+                    output = data.get("output", []) or data.get("output1", [])
+                    if not output:
+                        logger.info(f"[체결이력] 야간원장(JTTT3001R) 조회 결과 없음 (기간={start_date}~{end_date}, page={_ + 1})")
+                        break
+                    logger.info(f"[체결이력] 야간원장(JTTT3001R) 조회 성공 (기간={start_date}~{end_date}, page={_ + 1}, 건수={len(output)})")
+                    # 디버깅: 실제 API 응답 필드 확인
+                    if _ == 0:
+                        logger.info(f"[체결이력] 야간원장(JTTT3001R) 응답 필드: {list(output[0].keys()) if output else 'N/A'}")
+                        logger.info(f"[체결이력] 야간원장(JTTT3001R) 응답 원본: {output[0] if output else 'N/A'}")
+                    # 페이지별 ctx 토큰 로깅
+                    logger.info(f"[체결이력] 야간원장(JTTT3001R) page={_ + 1} ctx_fk={ctx_fk!r}, ctx_nk={ctx_nk!r}")
+
+                    current_page_keys = set()
+                    for item in output:
+                        total_fetched += 1
+                        order_no = item.get("odno", "")
+                        item_symbol = item.get("pdno", "").strip().upper()
+                        order_type = item.get("sll_buy_dvsn_cd_name", "")
+                        qty = int(item.get("ft_ord_qty", 0) or 0)
+                        exec_qty = int(item.get("ft_ccld_qty", item.get("ft_ccnl_qty", 0)) or 0)
+                        exec_price = float(item.get("ft_ccld_unpr3", item.get("ft_ccnl_unpr3", 0.0)) or 0.0)
+                        ord_dt_raw = str(item.get("ord_dt", "")).strip()
+                        ord_tmd_raw = str(item.get("ord_tmd", "")).strip()
+                        order_time = (ord_dt_raw + " " + ord_tmd_raw).strip()
+                        status = item.get("prcs_stat_name", "")
+                        # 추가 고유 필드 (API 응답에서 사용 가능한 필드)
+                        orgn_odno = str(item.get("orgn_odno", "")).strip()
+                        ord_gno_brno = str(item.get("ord_gno_brno", "")).strip()
+                        ccld_amt = str(item.get("ccld_amt", "")).strip()
+                        rqst_amt = str(item.get("rqst_amt", "")).strip()
+                        ccld_cndt_name = str(item.get("ccld_cndt_name", "")).strip()
+
+                        # 종목 필터
+                        if symbol and item_symbol != symbol.upper():
+                            total_skipped_symbol += 1
+                            logger.info(f"[체결이력] 야간원장 종목 필터 스킵: symbol={item_symbol}, order_no={order_no}, order_time={order_time}")
+                            continue
+
+                        # 복합 키 기반 중복 판별
+                        # ord_tmd(초 단위 포함) + 원주문번호 + 주문지점 + 체결금액 + 요청금액 + 체결조건까지 포함하여
+                        # 동일 주문번호의 부분체결/다중 레코드가 서로 다른 키를 갖도록 한다.
+                        dedup_key = f"{order_no}|{order_type}|{qty}|{exec_qty}|{ord_tmd_raw}|{orgn_odno}|{ord_gno_brno}|{ccld_amt}|{rqst_amt}|{ccld_cndt_name}"
+                        current_page_keys.add(dedup_key)
+                        logger.info(f"[체결이력] 야간원장 page={_ + 1} 레코드: key={dedup_key}, symbol={item_symbol}, status={status}, odno={order_no}, qty={qty}, exec_qty={exec_qty}, time={order_time}, ord_tmd={ord_tmd_raw}, orgn_odno={orgn_odno}")
+
+                        if dedup_key in seen_keys:
+                            total_skipped_dup += 1
+                            logger.info(f"[체결이력] 야간원장 중복 스킵: key={dedup_key}, symbol={item_symbol}, status={status}")
+                            continue
+                        seen_keys.add(dedup_key)
+
+                        results.append({
+                            "order_no": order_no,
+                            "symbol": item_symbol,
+                            "order_type": order_type,
+                            "qty": qty,
+                            "price": float(item.get("ft_ord_unpr3", 0.0) or 0.0),
+                            "executed_qty": exec_qty,
+                            "executed_price": exec_price,
+                            "status": status,
+                            "order_time": order_time
+                        })
+
+                    # 페이지 중복 감지: 이전 페이지와 동일한 레코드만 있으면 페이지네이션이 진행되지 않는 것
+                    if prev_page_keys and current_page_keys.issubset(prev_page_keys):
+                        logger.warning(f"[체결이력] 야간원장(JTTT3001R) 페이지 중복 감지 (기간={start_date}~{end_date}, page={_ + 1}): 이전 페이지와 동일한 레코드만 반환됨. 페이지네이션 중단")
+                        break
+                    prev_page_keys = current_page_keys
+
+                    ctx_fk = (data.get("ctx_area_fk200", "") or "").strip()
+                    ctx_nk = (data.get("ctx_area_nk200", "") or "").strip()
+                    if not ctx_fk and not ctx_nk:
+                        break
+                else:
+                    logger.warning(f"[체결이력] 야간원장(JTTT3001R) API 오류 (기간={start_date}~{end_date}, rt_cd={data.get('rt_cd')}, msg={data.get('msg1', '')})")
+                    break
+        except Exception as e:
+            logger.warning(f"[체결이력] 야간원장(JTTT3001R) 조회 예외 (기간={start_date}~{end_date}): {e}")
+
+        # 2. 주간 원장 체결/주문 이력 조회 (TTTS3035R / VTTS3035R) - 일반(01) + 연장(02) 서버 모두 조회
+        # NOTE: TTTS3035R도 ORD_DT(단일일자)를 지정하면 페이지네이션 시 동일 레코드를 반복 반환하는 문제가 있다.
+        #       ORD_STRT_DT/ORD_END_DT로 기간 조회하면 전체 레코드를 반환한다.
+        # NOTE: KIS API TTTS3035R 파라미터명은 SVR_DVS_CD / CCLN_DVS_CD / ORD_GDS_DVS_CD 이며,
+        #       값은 0(전체)/1(체결)/2(미체결) 형식이다. (기존 SVR_DVSN_CD/CCNL_DVSN/ORD_GDS_DVSN은 잘못된 이름)
+        tr_id_day = "VTTS3035R" if self.mock else "TTTS3035R"
+        headers_day = self._get_headers(tr_id_day)
+        for svr_dvsn in ["01", "02"]:
+            # NOTE: TTTS3035R도 ORD_STRT_DT(싱글 S)를 사용한다.
+            #       OVRS_EXCG_CD를 NASD로 지정하여 NASDAQ 종목(TQQQ)을 정확히 조회한다.
+            params_day = {
                 "CANO": self.cano,
                 "ACNT_PRDT_CD": self.acnt_prdt_cd,
                 "PDNO": symbol.upper() if symbol else "",
-                "ORD_DT": ord_date,
-                "ORD_STRT_DT": ord_date,
-                "ORD_END_DT": ord_date,
-                "SLL_BUY_DVSN": "00",
-                "CCLD_NCCS_DVSN": "00",
+                "ORD_STRT_DT": start_date,
+                "ORD_END_DT": end_date,
+                "SVR_DVS_CD": svr_dvsn,
+                "CCNL_DVS_CD": "0",
+                "ORD_GDS_DVS_CD": "0",
                 "OVRS_EXCG_CD": ovrs_excg,
-                "SORT_SQN": "DS",
-                "ORD_GNO_BRNO": "",
-                "ODNO": "",
                 "CTX_AREA_FK200": "",
                 "CTX_AREA_NK200": ""
             }
@@ -971,26 +1077,21 @@ class KISApiClient:
                 ctx_nk = ""
                 prev_page_keys = set()  # 이전 페이지에서 본 레코드 키 (페이지 중복 감지용)
                 for _ in range(5):
-                    params_night["CTX_AREA_FK200"] = ctx_fk
-                    params_night["CTX_AREA_NK200"] = ctx_nk
+                    params_day["CTX_AREA_FK200"] = ctx_fk
+                    params_day["CTX_AREA_NK200"] = ctx_nk
                     # 디버깅: 실제 전송되는 요청 파라미터 로깅
-                    logger.info(f"[체결이력] 야간원장(JTTT3001R) 요청 파라미터 (date={ord_date}, page={_ + 1}): {json.dumps(params_night, ensure_ascii=False)}")
+                    logger.info(f"[체결이력] 주간원장(TTTS3035R) 요청 파라미터 (SVR_DVS_CD={svr_dvsn}, 기간={start_date}~{end_date}, page={_ + 1}): {json.dumps(params_day, ensure_ascii=False)}")
                     self._rate_limit()
-                    res = requests.get(url, headers=headers_night, params=params_night, timeout=10)
+                    res = requests.get(url, headers=headers_day, params=params_day, timeout=10)
                     data = res.json()
 
                     if res.status_code == 200 and data.get("rt_cd") == "0":
                         output = data.get("output", []) or data.get("output1", [])
                         if not output:
-                            logger.info(f"[체결이력] 야간원장(JTTT3001R) 조회 결과 없음 (date={ord_date}, page={_ + 1})")
+                            logger.info(f"[체결이력] 주간원장(TTTS3035R) 조회 결과 없음 (SVR_DVS_CD={svr_dvsn}, 기간={start_date}~{end_date}, page={_ + 1})")
                             break
-                        logger.info(f"[체결이력] 야간원장(JTTT3001R) 조회 성공 (date={ord_date}, page={_ + 1}, 건수={len(output)})")
-                        # 디버깅: 실제 API 응답 필드 확인
-                        if _ == 0:
-                            logger.info(f"[체결이력] 야간원장(JTTT3001R) 응답 필드: {list(output[0].keys()) if output else 'N/A'}")
-                            logger.info(f"[체결이력] 야간원장(JTTT3001R) 응답 원본: {output[0] if output else 'N/A'}")
-                        # 페이지별 ctx 토큰 로깅
-                        logger.info(f"[체결이력] 야간원장(JTTT3001R) page={_ + 1} ctx_fk={ctx_fk!r}, ctx_nk={ctx_nk!r}")
+                        logger.info(f"[체결이력] 주간원장(TTTS3035R) 조회 성공 (SVR_DVS_CD={svr_dvsn}, 기간={start_date}~{end_date}, page={_ + 1}, 건수={len(output)})")
+                        logger.info(f"[체결이력] 주간원장(TTTS3035R) page={_ + 1} ctx_fk={ctx_fk!r}, ctx_nk={ctx_nk!r}")
 
                         current_page_keys = set()
                         for item in output:
@@ -999,8 +1100,8 @@ class KISApiClient:
                             item_symbol = item.get("pdno", "").strip().upper()
                             order_type = item.get("sll_buy_dvsn_cd_name", "")
                             qty = int(item.get("ft_ord_qty", 0) or 0)
-                            exec_qty = int(item.get("ft_ccld_qty", item.get("ft_ccnl_qty", 0)) or 0)
-                            exec_price = float(item.get("ft_ccld_unpr3", item.get("ft_ccnl_unpr3", 0.0)) or 0.0)
+                            exec_qty = int(item.get("ft_ccnl_qty", item.get("ft_ccld_qty", 0)) or 0)
+                            exec_price = float(item.get("ft_ccnl_unpr3", item.get("ft_ccld_unpr3", 0.0)) or 0.0)
                             ord_dt_raw = str(item.get("ord_dt", "")).strip()
                             ord_tmd_raw = str(item.get("ord_tmd", "")).strip()
                             order_time = (ord_dt_raw + " " + ord_tmd_raw).strip()
@@ -1015,7 +1116,7 @@ class KISApiClient:
                             # 종목 필터
                             if symbol and item_symbol != symbol.upper():
                                 total_skipped_symbol += 1
-                                logger.info(f"[체결이력] 야간원장 종목 필터 스킵: symbol={item_symbol}, order_no={order_no}, order_time={order_time}")
+                                logger.info(f"[체결이력] 주간원장 종목 필터 스킵: symbol={item_symbol}, order_no={order_no}, order_time={order_time}")
                                 continue
 
                             # 복합 키 기반 중복 판별
@@ -1023,11 +1124,11 @@ class KISApiClient:
                             # 동일 주문번호의 부분체결/다중 레코드가 서로 다른 키를 갖도록 한다.
                             dedup_key = f"{order_no}|{order_type}|{qty}|{exec_qty}|{ord_tmd_raw}|{orgn_odno}|{ord_gno_brno}|{ccld_amt}|{rqst_amt}|{ccld_cndt_name}"
                             current_page_keys.add(dedup_key)
-                            logger.info(f"[체결이력] 야간원장 page={_ + 1} 레코드: key={dedup_key}, symbol={item_symbol}, status={status}, odno={order_no}, qty={qty}, exec_qty={exec_qty}, time={order_time}, ord_tmd={ord_tmd_raw}, orgn_odno={orgn_odno}")
+                            logger.info(f"[체결이력] 주간원장 page={_ + 1} 레코드: key={dedup_key}, symbol={item_symbol}, status={status}, odno={order_no}, qty={qty}, exec_qty={exec_qty}, time={order_time}, ord_tmd={ord_tmd_raw}, orgn_odno={orgn_odno}")
 
                             if dedup_key in seen_keys:
                                 total_skipped_dup += 1
-                                logger.info(f"[체결이력] 야간원장 중복 스킵: key={dedup_key}, symbol={item_symbol}, status={status}")
+                                logger.info(f"[체결이력] 주간원장 중복 스킵: key={dedup_key}, symbol={item_symbol}, status={status}")
                                 continue
                             seen_keys.add(dedup_key)
 
@@ -1045,17 +1146,7 @@ class KISApiClient:
 
                         # 페이지 중복 감지: 이전 페이지와 동일한 레코드만 있으면 페이지네이션이 진행되지 않는 것
                         if prev_page_keys and current_page_keys.issubset(prev_page_keys):
-                            # ctx_fk가 비어있지 않은데도 동일 레코드가 반복되면, 파라미터명이 잘못되었을 수 있다.
-                            # ORD_STRT_DT 대신 ORD_SSRT_DT로 재시도해본다.
-                            if _ == 1 and "ORD_STRT_DT" in params_night:
-                                logger.warning(f"[체결이력] 야간원장(JTTT3001R) 페이지 중복 감지 (date={ord_date}, page={_ + 1}): ORD_SSRT_DT로 재시도")
-                                params_night.pop("ORD_STRT_DT", None)
-                                params_night["ORD_SSRT_DT"] = ord_date
-                                ctx_fk = ""
-                                ctx_nk = ""
-                                prev_page_keys = set()
-                                continue
-                            logger.warning(f"[체결이력] 야간원장(JTTT3001R) 페이지 중복 감지 (date={ord_date}, page={_ + 1}): 이전 페이지와 동일한 레코드만 반환됨. 페이지네이션 중단")
+                            logger.warning(f"[체결이력] 주간원장(TTTS3035R) 페이지 중복 감지 (SVR_DVS_CD={svr_dvsn}, 기간={start_date}~{end_date}, page={_ + 1}): 이전 페이지와 동일한 레코드만 반환됨. 페이지네이션 중단")
                             break
                         prev_page_keys = current_page_keys
 
@@ -1064,141 +1155,18 @@ class KISApiClient:
                         if not ctx_fk and not ctx_nk:
                             break
                     else:
-                        logger.warning(f"[체결이력] 야간원장(JTTT3001R) API 오류 (date={ord_date}, rt_cd={data.get('rt_cd')}, msg={data.get('msg1', '')})")
+                        msg1 = data.get("msg1", "")
+                        if "만료된" in msg1 or data.get("msg_cd") == "EGW00123":
+                            logger.warning("Token 만료 감지: 해외 체결내역 재조회 시도...")
+                            self.access_token = None
+                            self.token_issued_at = 0
+                            if self.get_access_token():
+                                return self.get_overseas_execution_history(symbol=symbol, start_date=start_date, end_date=end_date)
+                        logger.warning(f"[체결이력] 주간원장(TTTS3035R) API 오류 (SVR_DVS_CD={svr_dvsn}, 기간={start_date}~{end_date}, rt_cd={data.get('rt_cd')}, msg={msg1})")
                         break
             except Exception as e:
-                logger.warning(f"[체결이력] 야간원장(JTTT3001R) 조회 예외 (date={ord_date}): {e}")
+                logger.warning(f"[체결이력] 주간원장(TTTS3035R) 조회 예외 (SVR_DVS_CD={svr_dvsn}, 기간={start_date}~{end_date}): {e}")
                 continue
-
-        # 2. 주간 원장 체결/주문 이력 조회 (TTTS3035R / VTTS3035R) - 일반(01) + 연장(02) 서버 모두 조회
-        # NOTE: TTTS3035R도 날짜 범위 제한이 있을 수 있으므로, 각 날짜별로 순회하여 누락을 방지한다.
-        # NOTE: KIS API TTTS3035R 파라미터명은 SVR_DVS_CD / CCLN_DVS_CD / ORD_GDS_DVS_CD 이며,
-        #       값은 0(전체)/1(체결)/2(미체결) 형식이다. (기존 SVR_DVSN_CD/CCNL_DVSN/ORD_GDS_DVSN은 잘못된 이름)
-        tr_id_day = "VTTS3035R" if self.mock else "TTTS3035R"
-        headers_day = self._get_headers(tr_id_day)
-        for svr_dvsn in ["01", "02"]:
-            for ord_date in night_dates:
-                # NOTE: TTTS3035R도 ORD_STRT_DT(싱글 S)를 사용한다.
-                #       OVRS_EXCG_CD를 NASD로 지정하여 NASDAQ 종목(TQQQ)을 정확히 조회한다.
-                params_day = {
-                    "CANO": self.cano,
-                    "ACNT_PRDT_CD": self.acnt_prdt_cd,
-                    "PDNO": symbol.upper() if symbol else "",
-                    "ORD_STRT_DT": ord_date,
-                    "ORD_END_DT": ord_date,
-                    "SVR_DVS_CD": svr_dvsn,
-                    "CCNL_DVS_CD": "0",
-                    "ORD_GDS_DVS_CD": "0",
-                    "OVRS_EXCG_CD": ovrs_excg,
-                    "CTX_AREA_FK200": "",
-                    "CTX_AREA_NK200": ""
-                }
-
-                try:
-                    ctx_fk = ""
-                    ctx_nk = ""
-                    prev_page_keys = set()  # 이전 페이지에서 본 레코드 키 (페이지 중복 감지용)
-                    for _ in range(5):
-                        params_day["CTX_AREA_FK200"] = ctx_fk
-                        params_day["CTX_AREA_NK200"] = ctx_nk
-                        # 디버깅: 실제 전송되는 요청 파라미터 로깅
-                        logger.info(f"[체결이력] 주간원장(TTTS3035R) 요청 파라미터 (SVR_DVS_CD={svr_dvsn}, date={ord_date}, page={_ + 1}): {json.dumps(params_day, ensure_ascii=False)}")
-                        self._rate_limit()
-                        res = requests.get(url, headers=headers_day, params=params_day, timeout=10)
-                        data = res.json()
-
-                        if res.status_code == 200 and data.get("rt_cd") == "0":
-                            output = data.get("output", []) or data.get("output1", [])
-                            if not output:
-                                logger.info(f"[체결이력] 주간원장(TTTS3035R) 조회 결과 없음 (SVR_DVS_CD={svr_dvsn}, date={ord_date}, page={_ + 1})")
-                                break
-                            logger.info(f"[체결이력] 주간원장(TTTS3035R) 조회 성공 (SVR_DVS_CD={svr_dvsn}, date={ord_date}, page={_ + 1}, 건수={len(output)})")
-                            logger.info(f"[체결이력] 주간원장(TTTS3035R) page={_ + 1} ctx_fk={ctx_fk!r}, ctx_nk={ctx_nk!r}")
-
-                            current_page_keys = set()
-                            for item in output:
-                                total_fetched += 1
-                                order_no = item.get("odno", "")
-                                item_symbol = item.get("pdno", "").strip().upper()
-                                order_type = item.get("sll_buy_dvsn_cd_name", "")
-                                qty = int(item.get("ft_ord_qty", 0) or 0)
-                                exec_qty = int(item.get("ft_ccnl_qty", item.get("ft_ccld_qty", 0)) or 0)
-                                exec_price = float(item.get("ft_ccnl_unpr3", item.get("ft_ccld_unpr3", 0.0)) or 0.0)
-                                ord_dt_raw = str(item.get("ord_dt", "")).strip()
-                                ord_tmd_raw = str(item.get("ord_tmd", "")).strip()
-                                order_time = (ord_dt_raw + " " + ord_tmd_raw).strip()
-                                status = item.get("prcs_stat_name", "")
-                                # 추가 고유 필드 (API 응답에서 사용 가능한 필드)
-                                orgn_odno = str(item.get("orgn_odno", "")).strip()
-                                ord_gno_brno = str(item.get("ord_gno_brno", "")).strip()
-                                ccld_amt = str(item.get("ccld_amt", "")).strip()
-                                rqst_amt = str(item.get("rqst_amt", "")).strip()
-                                ccld_cndt_name = str(item.get("ccld_cndt_name", "")).strip()
-
-                                # 종목 필터
-                                if symbol and item_symbol != symbol.upper():
-                                    total_skipped_symbol += 1
-                                    logger.info(f"[체결이력] 주간원장 종목 필터 스킵: symbol={item_symbol}, order_no={order_no}, order_time={order_time}")
-                                    continue
-
-                                # 복합 키 기반 중복 판별
-                                # ord_tmd(초 단위 포함) + 원주문번호 + 주문지점 + 체결금액 + 요청금액 + 체결조건까지 포함하여
-                                # 동일 주문번호의 부분체결/다중 레코드가 서로 다른 키를 갖도록 한다.
-                                dedup_key = f"{order_no}|{order_type}|{qty}|{exec_qty}|{ord_tmd_raw}|{orgn_odno}|{ord_gno_brno}|{ccld_amt}|{rqst_amt}|{ccld_cndt_name}"
-                                current_page_keys.add(dedup_key)
-                                logger.info(f"[체결이력] 주간원장 page={_ + 1} 레코드: key={dedup_key}, symbol={item_symbol}, status={status}, odno={order_no}, qty={qty}, exec_qty={exec_qty}, time={order_time}, ord_tmd={ord_tmd_raw}, orgn_odno={orgn_odno}")
-
-                                if dedup_key in seen_keys:
-                                    total_skipped_dup += 1
-                                    logger.info(f"[체결이력] 주간원장 중복 스킵: key={dedup_key}, symbol={item_symbol}, status={status}")
-                                    continue
-                                seen_keys.add(dedup_key)
-
-                                results.append({
-                                    "order_no": order_no,
-                                    "symbol": item_symbol,
-                                    "order_type": order_type,
-                                    "qty": qty,
-                                    "price": float(item.get("ft_ord_unpr3", 0.0) or 0.0),
-                                    "executed_qty": exec_qty,
-                                    "executed_price": exec_price,
-                                    "status": status,
-                                    "order_time": order_time
-                                })
-
-                            # 페이지 중복 감지: 이전 페이지와 동일한 레코드만 있으면 페이지네이션이 진행되지 않는 것
-                            if prev_page_keys and current_page_keys.issubset(prev_page_keys):
-                                # ctx_fk가 비어있지 않은데도 동일 레코드가 반복되면, 파라미터명이 잘못되었을 수 있다.
-                                # ORD_STRT_DT 대신 ORD_SSRT_DT로 재시도해본다.
-                                if _ == 1 and "ORD_STRT_DT" in params_day:
-                                    logger.warning(f"[체결이력] 주간원장(TTTS3035R) 페이지 중복 감지 (SVR_DVS_CD={svr_dvsn}, date={ord_date}, page={_ + 1}): ORD_SSRT_DT로 재시도")
-                                    params_day.pop("ORD_STRT_DT", None)
-                                    params_day["ORD_SSRT_DT"] = ord_date
-                                    ctx_fk = ""
-                                    ctx_nk = ""
-                                    prev_page_keys = set()
-                                    continue
-                                logger.warning(f"[체결이력] 주간원장(TTTS3035R) 페이지 중복 감지 (SVR_DVS_CD={svr_dvsn}, date={ord_date}, page={_ + 1}): 이전 페이지와 동일한 레코드만 반환됨. 페이지네이션 중단")
-                                break
-                            prev_page_keys = current_page_keys
-
-                            ctx_fk = (data.get("ctx_area_fk200", "") or "").strip()
-                            ctx_nk = (data.get("ctx_area_nk200", "") or "").strip()
-                            if not ctx_fk and not ctx_nk:
-                                break
-                        else:
-                            msg1 = data.get("msg1", "")
-                            if "만료된" in msg1 or data.get("msg_cd") == "EGW00123":
-                                logger.warning("Token 만료 감지: 해외 체결내역 재조회 시도...")
-                                self.access_token = None
-                                self.token_issued_at = 0
-                                if self.get_access_token():
-                                    return self.get_overseas_execution_history(symbol=symbol, start_date=start_date, end_date=end_date)
-                            logger.warning(f"[체결이력] 주간원장(TTTS3035R) API 오류 (SVR_DVS_CD={svr_dvsn}, date={ord_date}, rt_cd={data.get('rt_cd')}, msg={msg1})")
-                            break
-                except Exception as e:
-                    logger.warning(f"[체결이력] 주간원장(TTTS3035R) 조회 예외 (SVR_DVS_CD={svr_dvsn}, date={ord_date}): {e}")
-                    continue
 
         logger.info(f"[체결이력] 최종 결과 (통합): {len(results)}건 (symbol={symbol or '전체'}, 기간={start_date}~{end_date})")
         logger.info(f"[체결이력] 진단: 총 조회={total_fetched}건, 종목필터 스킵={total_skipped_symbol}건, 중복 스킵={total_skipped_dup}건, 최종={len(results)}건")
