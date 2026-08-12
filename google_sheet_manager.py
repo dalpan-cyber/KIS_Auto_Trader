@@ -423,8 +423,9 @@ class GoogleSheetManager:
     def sync_execution_history(self, history: List[Dict[str, Any]]):
         """
         KIS API 실계좌 체결/미체결 이력을 'ExecutionHistory' 워크시트에 누적 동기화
-        - history: get_overseas_execution_history() 결과 리스트
+        - history: get_overseas_execution_balance() 결과 리스트 (TTTT1006R 체결기준)
         - 기존 수동 작성건이나 이전 기록을 지우지 않고 새 이력만 추가(병합)
+        - TTTT1006R(체결기준) 데이터 형식: {code, name, qty, executed_qty, unexecuted_qty, avg_price, executed_price, current_price, pnl_rate}
         """
         if not self.is_connected or not self.history_worksheet:
             return
@@ -480,15 +481,40 @@ class GoogleSheetManager:
             new_rows = []
             skipped_existing = 0
             for h in history:
-                ord_no = str(h.get("order_no", "")).strip()
-                ord_time = str(h.get("order_time", "")).strip()
-                ticker = str(h.get("symbol", "")).strip().upper()
-                order_type = str(h.get("order_type", "-")).strip()
-                qty = int(h.get("qty", 0) or 0)
-                exec_qty = int(h.get("executed_qty", 0) or 0)
-                price = float(h.get("price", 0.0) or 0.0)
-                exec_price = float(h.get("executed_price", 0.0) or 0.0)
-                dedup_key = f"{ord_no}|{ticker}|{ord_time}|{order_type}|{qty}|{exec_qty}|{price}|{exec_price}"
+                # TTTT1006R(체결기준) 데이터 형식인지 확인
+                # - 체결기준: {code, name, qty, executed_qty, unexecuted_qty, avg_price, executed_price, current_price, pnl_rate}
+                # - 기존 주문이력: {order_no, order_time, symbol, order_type, qty, executed_qty, price, executed_price, status}
+                is_exec_balance_format = "code" in h and "executed_qty" in h and "unexecuted_qty" in h
+
+                if is_exec_balance_format:
+                    # TTTT1006R 체결기준 데이터
+                    ticker = str(h.get("code", "")).strip().upper()
+                    order_type = "체결기준"
+                    qty = int(h.get("qty", 0) or 0)
+                    exec_qty = int(h.get("executed_qty", 0) or 0)
+                    unexec_qty = int(h.get("unexecuted_qty", 0) or 0)
+                    price = float(h.get("avg_price", 0.0) or 0.0)
+                    exec_price = float(h.get("executed_price", 0.0) or 0.0)
+                    ord_no = f"EXEC_{ticker}"
+                    ord_time = now_str
+                    status = "체결" if exec_qty > 0 else "미체결"
+                    # 체결기준 데이터는 티커+체결수량+체결단가로 중복 판단
+                    dedup_key = f"{ord_no}|{ticker}|{ord_time}|{order_type}|{qty}|{exec_qty}|{price}|{exec_price}"
+                else:
+                    # 기존 주문이력 데이터
+                    ord_no = str(h.get("order_no", "")).strip()
+                    ord_time = str(h.get("order_time", "")).strip()
+                    ticker = str(h.get("symbol", "")).strip().upper()
+                    order_type = str(h.get("order_type", "-")).strip()
+                    qty = int(h.get("qty", 0) or 0)
+                    exec_qty = int(h.get("executed_qty", 0) or 0)
+                    price = float(h.get("price", 0.0) or 0.0)
+                    exec_price = float(h.get("executed_price", 0.0) or 0.0)
+                    status = str(h.get("status", "-")).strip()
+                    dedup_key = f"{ord_no}|{ticker}|{ord_time}|{order_type}|{qty}|{exec_qty}|{price}|{exec_price}"
+
+                if not ticker:
+                    continue
 
                 if dedup_key in existing_keys:
                     skipped_existing += 1
@@ -501,13 +527,13 @@ class GoogleSheetManager:
                 new_rows.append([
                     ord_time,
                     ticker,
-                    h.get("order_type", "-"),
+                    order_type,
                     qty,
                     exec_qty,
                     round(price, 2),
                     round(exec_price, 2),
                     round(total_amt, 2),
-                    h.get("status", "-"),
+                    status,
                     ord_no,
                     now_str
                 ])

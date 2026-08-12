@@ -299,7 +299,7 @@ class TraderBot:
         실시간 계좌 보유 종목 수량/평단가를 갱신하고 Google Sheets에 동기화
         - 보유 수량/평단가는 KIS API가 Source of Truth이므로 JSON에는 기록하지 않음
         - Google Sheets 'Holdings' 워크시트에 주식평가 금액 동기화
-        - Google Sheets 'ExecutionHistory' 워크시트에 체결/실패 이력 동기화
+        - Google Sheets 'ExecutionHistory' 워크시트에 체결/실패 이력 동기화 (TTTT1006R 체결기준)
         - Google Sheets 'ExecutionBalance' 워크시트에 체결기준 현물 잔고 동기화 (TTTT1006R)
         """
         self.fetch_account_balance()
@@ -312,41 +312,27 @@ class TraderBot:
                 try:
                     gss.sync_holdings(self.holdings, self.current_prices)
 
-                    # 1. 체결/실패 이력 동기화 (기존 방식 - TTTS3035R/JTTT3001R)
-                    history = []
-                    for sym in self.infinite_stocks:
-                        st = self.infinite_state_mgr.get_symbol_state(sym)
-                        sd = st.get("start_date", "")
-                        sym_start_date = sd.replace("-", "") if (sd and sd.replace("-", "").isdigit()) else ""
-                        # NOTE: 상태의 start_date가 없거나 오늘 날짜면, 최소 30일 전부터 조회하여 과거 이력 누락을 방지한다.
-                        default_start = (datetime.date.today() - datetime.timedelta(days=30)).strftime("%Y%m%d")
-                        if sym_start_date and sym_start_date.isdigit():
-                            sym_start_date = min(sym_start_date, default_start)  # 더 과거(작은 값)를 선택
-                        else:
-                            sym_start_date = default_start
-                        sym_history = self.api.get_overseas_execution_history(symbol=sym, start_date=sym_start_date)
-                        self.logger.info(f"[체결이력] {sym} 조회 결과 (start_date={sym_start_date}): {len(sym_history)}건")
-                        history.extend(sym_history)
-                    self.logger.info(f"[체결이력] Google Sheets 동기화 대상 총 {len(history)}건")
-                    gss.sync_execution_history(history)
-
-                    # 2. 체결기준 현물 잔고 동기화 (신규 - TTTT1006R/VTTT1006R)
-                    try:
-                        today_str = time.strftime("%Y%m%d")
-                        default_start = (datetime.date.today() - datetime.timedelta(days=30)).strftime("%Y%m%d")
-                        exec_balance = self.api.get_overseas_execution_balance(
-                            symbol="",
-                            start_date=default_start,
-                            end_date=today_str,
-                            cblc_dvsn="02"  # 체결(02) 기준으로 조회
-                        )
-                        if exec_balance.get("success"):
-                            gss.sync_execution_balance(exec_balance.get("holdings", []))
-                            self.logger.info(f"📊 Google Sheet 'ExecutionBalance' 동기화 완료 (체결기준 {len(exec_balance.get('holdings', []))}개 종목)")
-                        else:
-                            self.logger.warning(f"[체결기준잔고] 동기화 실패: {exec_balance.get('msg', 'Unknown')}")
-                    except Exception as e:
-                        self.logger.warning(f"[체결기준잔고] Google Sheet 동기화 예외: {e}")
+                    # 1. 체결/실패 이력 동기화 (TTTT1006R/VTTT1006R 체결기준)
+                    # NOTE: TTTS3035R/JTTT3001R 대신 TTTT1006R(체결기준 현물 잔고)을 사용하여
+                    #       체결수량/체결단가가 정확히 반영된 데이터를 Google Sheets에 기록한다.
+                    today_str = time.strftime("%Y%m%d")
+                    default_start = (datetime.date.today() - datetime.timedelta(days=30)).strftime("%Y%m%d")
+                    exec_balance = self.api.get_overseas_execution_balance(
+                        symbol="",
+                        start_date=default_start,
+                        end_date=today_str,
+                        cblc_dvsn="02"  # 체결(02) 기준으로 조회
+                    )
+                    if exec_balance.get("success"):
+                        exec_holdings = exec_balance.get("holdings", [])
+                        self.logger.info(f"[체결기준] TTTT1006R 조회 성공: {len(exec_holdings)}개 종목")
+                        # ExecutionHistory 워크시트에 체결기준 데이터 동기화
+                        gss.sync_execution_history(exec_holdings)
+                        # ExecutionBalance 워크시트에도 동일 데이터 동기화
+                        gss.sync_execution_balance(exec_holdings)
+                        self.logger.info(f"📊 Google Sheet 'ExecutionHistory'/'ExecutionBalance' 동기화 완료 (체결기준 {len(exec_holdings)}개 종목)")
+                    else:
+                        self.logger.warning(f"[체결기준] TTTT1006R 조회 실패: {exec_balance.get('msg', 'Unknown')}")
 
                     self.logger.info("📊 Google Sheet 'Holdings'/'ExecutionHistory'/'ExecutionBalance' 동기화 완료 (KIS API 실계좌)")
                 except Exception as e:
