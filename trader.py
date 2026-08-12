@@ -166,10 +166,19 @@ class TraderBot:
             if overseas_holdings_count == 0:
                 try:
                     today_str = time.strftime("%Y%m%d")
+                    # JSON 상태 파일의 start_date를 시작일로 사용
                     default_start = (datetime.date.today() - datetime.timedelta(days=30)).strftime("%Y%m%d")
+                    start_date = default_start
+                    for sym in self.infinite_stocks:
+                        st = self.infinite_state_mgr.get_symbol_state(sym)
+                        sd = st.get("start_date", "")
+                        sym_start_date = sd.replace("-", "") if (sd and sd.replace("-", "").isdigit()) else ""
+                        if sym_start_date and sym_start_date.isdigit():
+                            start_date = min(sym_start_date, default_start)  # 더 과거(작은 값)를 선택
+                            break
                     exec_balance_res = self.api.get_overseas_execution_balance(
                         symbol="",
-                        start_date=default_start,
+                        start_date=start_date,
                         end_date=today_str,
                         cblc_dvsn="02"  # 체결(02) 기준으로 조회
                     )
@@ -203,94 +212,76 @@ class TraderBot:
             self.logger.error(f"계좌 잔고 조회 실패: {res.get('msg')}")
     def _calculate_holdings_from_history(self) -> Dict[str, Dict[str, Any]]:
         """
-        해외주식 체결 이력에서 보유 수량/평단가를 계산 (잔고 API가 빈 결과일 때 Fallback)
-        - 매수 체결 수량은 더하고, 매도 체결 수량은 빼서 현재 보유 수량 계산
-        - 평단가는 매수 체결 금액 합계 / 매수 체결 수량 합계로 계산
+        해외주식 체결기준 잔고(TTTT1006R)에서 보유 수량/평단가를 계산 (잔고 API가 빈 결과일 때 Fallback)
+        - TTTT1006R(체결기준 현물 잔고)을 사용하여 체결수량/체결단가가 정확히 반영된 데이터를 조회
+        - JTTT3001R(야간원장)/TTTS3035R(주간원장)을 사용하지 않음
         """
         result: Dict[str, Dict[str, Any]] = {}
         try:
-            self.logger.info(f"[체결이력] 체결 이력 조회 시작: infinite_stocks={self.infinite_stocks}")
-            history = []
+            self.logger.info(f"[체결기준] 체결기준 잔고(TTTT1006R) 조회 시작: infinite_stocks={self.infinite_stocks}")
+
+            # 상태 파일의 start_date를 시작일로 사용 (JSON의 start_date 값)
+            today_str = time.strftime("%Y%m%d")
+            default_start = (datetime.date.today() - datetime.timedelta(days=30)).strftime("%Y%m%d")
+            start_date = default_start
             for sym in self.infinite_stocks:
                 st = self.infinite_state_mgr.get_symbol_state(sym)
                 sd = st.get("start_date", "")
                 sym_start_date = sd.replace("-", "") if (sd and sd.replace("-", "").isdigit()) else ""
-                # NOTE: 상태의 start_date가 없거나 오늘 날짜면, 최소 30일 전부터 조회하여 과거 이력 누락을 방지한다.
-                default_start = (datetime.date.today() - datetime.timedelta(days=30)).strftime("%Y%m%d")
                 if sym_start_date and sym_start_date.isdigit():
-                    sym_start_date = min(sym_start_date, default_start)  # 더 과거(작은 값)를 선택
-                else:
-                    sym_start_date = default_start
-                sym_history = self.api.get_overseas_execution_history(symbol=sym, start_date=sym_start_date)
-                self.logger.info(f"[체결이력] {sym} 조회 결과 (start_date={sym_start_date}): {len(sym_history)}건")
-                history.extend(sym_history)
-            self.logger.info(f"[체결이력] 체결 이력 조회 결과: {len(history)}건")
-            if not history:
-                self.logger.warning("[체결이력] 체결 이력이 비어 있습니다. (조회 기간 내 체결 내역이 없거나, API 오류일 수 있음)")
+                    # JSON의 start_date를 사용 (더 과거인 값 선택)
+                    start_date = min(sym_start_date, start_date)
+                    break
+
+            self.logger.info(f"[체결기준] 조회 기간: {start_date} ~ {today_str} (JSON start_date 기반)")
+
+            exec_balance_res = self.api.get_overseas_execution_balance(
+                symbol="",
+                start_date=start_date,
+                end_date=today_str,
+                cblc_dvsn="02"  # 체결(02) 기준으로 조회
+            )
+            if not exec_balance_res.get("success"):
+                self.logger.warning(f"[체결기준] TTTT1006R 조회 실패: {exec_balance_res.get('msg', 'Unknown')}")
                 return result
 
-            # 체결 이력 샘플 로깅 (첫 5건)
-            for i, h in enumerate(history[:5]):
-                self.logger.info(f"[체결이력] 샘플 #{i+1}: {h}")
+            exec_items = exec_balance_res.get("holdings", [])
+            self.logger.info(f"[체결기준] TTTT1006R 조회 결과: {len(exec_items)}개 종목")
+            if not exec_items:
+                self.logger.warning("[체결기준] 체결기준 잔고가 비어 있습니다. (조회 기간 내 체결 내역이 없거나, API 오류일 수 있음)")
+                return result
 
-            # 종목별 매수/매도 집계
-            buy_qty: Dict[str, int] = {}
-            buy_amount: Dict[str, float] = {}
-            sell_qty: Dict[str, int] = {}
-            names: Dict[str, str] = {}
+            # 체결기준 잔고 샘플 로깅 (첫 5건)
+            for i, item in enumerate(exec_items[:5]):
+                self.logger.info(f"[체결기준] 샘플 #{i+1}: {item}")
 
-            for h in history:
-                symbol = h.get("symbol", "").strip().upper()
+            # 체결기준 잔고 데이터를 보유 종목으로 변환
+            for item in exec_items:
+                symbol = item.get("code", "").strip().upper()
                 if not symbol or not self.api.is_overseas_symbol(symbol):
-                    self.logger.info(f"[체결이력] 해외 종목 아님으로 스킵: symbol={symbol}, raw_symbol={h.get('symbol')}")
+                    self.logger.info(f"[체결기준] 해외 종목 아님으로 스킵: symbol={symbol}")
                     continue
-                order_type = h.get("order_type", "")
-                executed_qty = h.get("executed_qty", 0) or 0
-                executed_price = h.get("executed_price", 0.0) or 0.0
-                status = h.get("status", "")
-
-                self.logger.info(f"[체결이력] 처리: symbol={symbol}, order_type={order_type}, executed_qty={executed_qty}, executed_price={executed_price}, status={status}")
-
-                # 체결된 건만 집계 (미체결/취소 제외)
-                if "체결" not in status and "완료" not in status:
-                    self.logger.info(f"[체결이력] 체결/완료 상태 아님으로 스킵: status={status}")
+                qty = int(item.get("qty", item.get("executed_qty", 0)) or 0)
+                if qty <= 0:
+                    self.logger.info(f"[체결기준] 수량 0 이하로 스킵: {symbol} qty={qty}")
                     continue
-
-                if "매수" in order_type:
-                    buy_qty[symbol] = buy_qty.get(symbol, 0) + executed_qty
-                    buy_amount[symbol] = buy_amount.get(symbol, 0.0) + (executed_qty * executed_price)
-                    names.setdefault(symbol, f"해외_{symbol}")
-                    self.logger.info(f"[체결이력] 매수 집계: {symbol} 누적수량={buy_qty[symbol]}, 누적금액={buy_amount[symbol]}")
-                elif "매도" in order_type:
-                    sell_qty[symbol] = sell_qty.get(symbol, 0) + executed_qty
-                    self.logger.info(f"[체결이력] 매도 집계: {symbol} 누적수량={sell_qty[symbol]}")
-                else:
-                    self.logger.info(f"[체결이력] 매수/매도 아님으로 스킵: order_type={order_type}")
-
-            self.logger.info(f"[체결이력] 집계 결과: 매수종목={list(buy_qty.keys())}, 매도종목={list(sell_qty.keys())}")
-
-            for symbol in set(list(buy_qty.keys()) + list(sell_qty.keys())):
-                net_qty = buy_qty.get(symbol, 0) - sell_qty.get(symbol, 0)
-                if net_qty <= 0:
-                    self.logger.info(f"[체결이력] 순수량 0 이하로 스킵: {symbol} net_qty={net_qty}")
-                    continue
-                avg_price = buy_amount.get(symbol, 0.0) / buy_qty.get(symbol, 1) if buy_qty.get(symbol, 0) > 0 else 0.0
+                avg_price = float(item.get("avg_price", item.get("executed_price", 0.0)) or 0.0)
                 result[symbol] = {
-                    "name": names.get(symbol, f"해외_{symbol}"),
-                    "qty": net_qty,
+                    "name": item.get("name", f"해외_{symbol}"),
+                    "qty": qty,
                     "avg_price": round(avg_price, 2),
-                    "current_price": self.current_prices.get(symbol, 0.0),
-                    "pnl_rate": 0.0
+                    "current_price": item.get("current_price", self.current_prices.get(symbol, 0.0)),
+                    "pnl_rate": item.get("pnl_rate", 0.0)
                 }
-                self.logger.info(f"[체결이력] 최종 계산: {symbol} net_qty={net_qty}, avg_price={round(avg_price, 2)}")
+                self.logger.info(f"[체결기준] 최종 계산: {symbol} qty={qty}, avg_price={round(avg_price, 2)}")
 
             if result:
                 summary_str = ", ".join([f"{s}({d['qty']}주)" for s, d in result.items()])
-                self.logger.info(f"📊 체결 이력 기반 보유 종목 계산 완료: {summary_str}")
+                self.logger.info(f"📊 체결기준 잔고(TTTT1006R) 기반 보유 종목 계산 완료: {summary_str}")
             else:
-                self.logger.warning("[체결이력] 체결 이력이 있지만 계산 결과가 없습니다. (모든 종목이 매도되었거나, 상태/타입 필터링 문제일 수 있음)")
+                self.logger.warning("[체결기준] 체결기준 잔고가 있지만 계산 결과가 없습니다. (모든 종목이 매도되었거나, 필터링 문제일 수 있음)")
         except Exception as e:
-            self.logger.warning(f"체결 이력 기반 보유 종목 계산 실패: {e}")
+            self.logger.warning(f"체결기준 잔고 기반 보유 종목 계산 실패: {e}")
         return result
 
 
@@ -316,10 +307,19 @@ class TraderBot:
                     # NOTE: TTTS3035R/JTTT3001R 대신 TTTT1006R(체결기준 현물 잔고)을 사용하여
                     #       체결수량/체결단가가 정확히 반영된 데이터를 Google Sheets에 기록한다.
                     today_str = time.strftime("%Y%m%d")
+                    # JSON 상태 파일의 start_date를 시작일로 사용
                     default_start = (datetime.date.today() - datetime.timedelta(days=30)).strftime("%Y%m%d")
+                    start_date = default_start
+                    for sym in self.infinite_stocks:
+                        st = self.infinite_state_mgr.get_symbol_state(sym)
+                        sd = st.get("start_date", "")
+                        sym_start_date = sd.replace("-", "") if (sd and sd.replace("-", "").isdigit()) else ""
+                        if sym_start_date and sym_start_date.isdigit():
+                            start_date = min(sym_start_date, default_start)  # 더 과거(작은 값)를 선택
+                            break
                     exec_balance = self.api.get_overseas_execution_balance(
                         symbol="",
-                        start_date=default_start,
+                        start_date=start_date,
                         end_date=today_str,
                         cblc_dvsn="02"  # 체결(02) 기준으로 조회
                     )
