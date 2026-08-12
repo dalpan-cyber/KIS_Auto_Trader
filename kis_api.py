@@ -944,16 +944,21 @@ class KISApiClient:
             night_dates = [start_date]  # 파싱 실패 시 시작일만 시도
 
         for ord_date in night_dates:
+            # TQQQ는 NASDAQ 상장 종목이므로 OVRS_EXCG_CD를 NASD로 지정
+            # (빈 값으로 두면 API가 거래소를 특정하지 못해 일부 레코드가 누락될 수 있음)
+            ovrs_excg = "NASD" if symbol.upper() == "TQQQ" else ""
+            # NOTE: KIS API JTTT3001R의 시작일 파라미터명은 ORD_SSRT_DT(더블 S)이다.
+            #       ORD_STRT_DT로 보내면 API가 인식하지 못해 페이지네이션이 제대로 동작하지 않을 수 있다.
             params_night = {
                 "CANO": self.cano,
                 "ACNT_PRDT_CD": self.acnt_prdt_cd,
                 "PDNO": symbol.upper() if symbol else "",
                 "ORD_DT": ord_date,
-                "ORD_STRT_DT": ord_date,
+                "ORD_SSRT_DT": ord_date,
                 "ORD_END_DT": ord_date,
                 "SLL_BUY_DVSN": "00",
                 "CCLD_NCCS_DVSN": "00",
-                "OVRS_EXCG_CD": "",
+                "OVRS_EXCG_CD": ovrs_excg,
                 "SORT_SQN": "DS",
                 "ORD_GNO_BRNO": "",
                 "ODNO": "",
@@ -968,6 +973,8 @@ class KISApiClient:
                 for _ in range(5):
                     params_night["CTX_AREA_FK200"] = ctx_fk
                     params_night["CTX_AREA_NK200"] = ctx_nk
+                    # 디버깅: 실제 전송되는 요청 파라미터 로깅
+                    logger.info(f"[체결이력] 야간원장(JTTT3001R) 요청 파라미터 (date={ord_date}, page={_ + 1}): {json.dumps(params_night, ensure_ascii=False)}")
                     self._rate_limit()
                     res = requests.get(url, headers=headers_night, params=params_night, timeout=10)
                     data = res.json()
@@ -1038,6 +1045,16 @@ class KISApiClient:
 
                         # 페이지 중복 감지: 이전 페이지와 동일한 레코드만 있으면 페이지네이션이 진행되지 않는 것
                         if prev_page_keys and current_page_keys.issubset(prev_page_keys):
+                            # ctx_fk가 비어있지 않은데도 동일 레코드가 반복되면, 파라미터명이 잘못되었을 수 있다.
+                            # ORD_SSRT_DT 대신 ORD_STRT_DT로 재시도해본다.
+                            if _ == 1 and "ORD_SSRT_DT" in params_night:
+                                logger.warning(f"[체결이력] 야간원장(JTTT3001R) 페이지 중복 감지 (date={ord_date}, page={_ + 1}): ORD_STRT_DT로 재시도")
+                                params_night.pop("ORD_SSRT_DT", None)
+                                params_night["ORD_STRT_DT"] = ord_date
+                                ctx_fk = ""
+                                ctx_nk = ""
+                                prev_page_keys = set()
+                                continue
                             logger.warning(f"[체결이력] 야간원장(JTTT3001R) 페이지 중복 감지 (date={ord_date}, page={_ + 1}): 이전 페이지와 동일한 레코드만 반환됨. 페이지네이션 중단")
                             break
                         prev_page_keys = current_page_keys
@@ -1055,19 +1072,24 @@ class KISApiClient:
 
         # 2. 주간 원장 체결/주문 이력 조회 (TTTS3035R / VTTS3035R) - 일반(01) + 연장(02) 서버 모두 조회
         # NOTE: TTTS3035R도 날짜 범위 제한이 있을 수 있으므로, 각 날짜별로 순회하여 누락을 방지한다.
+        # NOTE: KIS API TTTS3035R 파라미터명은 SVR_DVS_CD / CCLN_DVS_CD / ORD_GDS_DVS_CD 이며,
+        #       값은 0(전체)/1(체결)/2(미체결) 형식이다. (기존 SVR_DVSN_CD/CCNL_DVSN/ORD_GDS_DVSN은 잘못된 이름)
         tr_id_day = "VTTS3035R" if self.mock else "TTTS3035R"
         headers_day = self._get_headers(tr_id_day)
         for svr_dvsn in ["01", "02"]:
             for ord_date in night_dates:
+                # NOTE: TTTS3035R도 ORD_SSRT_DT(더블 S)를 사용한다.
+                #       OVRS_EXCG_CD를 NASD로 지정하여 NASDAQ 종목(TQQQ)을 정확히 조회한다.
                 params_day = {
                     "CANO": self.cano,
                     "ACNT_PRDT_CD": self.acnt_prdt_cd,
                     "PDNO": symbol.upper() if symbol else "",
-                    "ORD_STRT_DT": ord_date,
+                    "ORD_SSRT_DT": ord_date,
                     "ORD_END_DT": ord_date,
-                    "SVR_DVSN_CD": svr_dvsn,
-                    "CCNL_DVSN": "00",
-                    "ORD_GDS_DVSN": "00",
+                    "SVR_DVS_CD": svr_dvsn,
+                    "CCNL_DVS_CD": "0",
+                    "ORD_GDS_DVS_CD": "0",
+                    "OVRS_EXCG_CD": ovrs_excg,
                     "CTX_AREA_FK200": "",
                     "CTX_AREA_NK200": ""
                 }
@@ -1079,6 +1101,8 @@ class KISApiClient:
                     for _ in range(5):
                         params_day["CTX_AREA_FK200"] = ctx_fk
                         params_day["CTX_AREA_NK200"] = ctx_nk
+                        # 디버깅: 실제 전송되는 요청 파라미터 로깅
+                        logger.info(f"[체결이력] 주간원장(TTTS3035R) 요청 파라미터 (SVR_DVS_CD={svr_dvsn}, date={ord_date}, page={_ + 1}): {json.dumps(params_day, ensure_ascii=False)}")
                         self._rate_limit()
                         res = requests.get(url, headers=headers_day, params=params_day, timeout=10)
                         data = res.json()
@@ -1086,9 +1110,9 @@ class KISApiClient:
                         if res.status_code == 200 and data.get("rt_cd") == "0":
                             output = data.get("output", []) or data.get("output1", [])
                             if not output:
-                                logger.info(f"[체결이력] 주간원장(TTTS3035R) 조회 결과 없음 (SVR_DVSN_CD={svr_dvsn}, date={ord_date}, page={_ + 1})")
+                                logger.info(f"[체결이력] 주간원장(TTTS3035R) 조회 결과 없음 (SVR_DVS_CD={svr_dvsn}, date={ord_date}, page={_ + 1})")
                                 break
-                            logger.info(f"[체결이력] 주간원장(TTTS3035R) 조회 성공 (SVR_DVSN_CD={svr_dvsn}, date={ord_date}, page={_ + 1}, 건수={len(output)})")
+                            logger.info(f"[체결이력] 주간원장(TTTS3035R) 조회 성공 (SVR_DVS_CD={svr_dvsn}, date={ord_date}, page={_ + 1}, 건수={len(output)})")
                             logger.info(f"[체결이력] 주간원장(TTTS3035R) page={_ + 1} ctx_fk={ctx_fk!r}, ctx_nk={ctx_nk!r}")
 
                             current_page_keys = set()
@@ -1144,7 +1168,17 @@ class KISApiClient:
 
                             # 페이지 중복 감지: 이전 페이지와 동일한 레코드만 있으면 페이지네이션이 진행되지 않는 것
                             if prev_page_keys and current_page_keys.issubset(prev_page_keys):
-                                logger.warning(f"[체결이력] 주간원장(TTTS3035R) 페이지 중복 감지 (SVR_DVSN_CD={svr_dvsn}, date={ord_date}, page={_ + 1}): 이전 페이지와 동일한 레코드만 반환됨. 페이지네이션 중단")
+                                # ctx_fk가 비어있지 않은데도 동일 레코드가 반복되면, 파라미터명이 잘못되었을 수 있다.
+                                # ORD_SSRT_DT 대신 ORD_STRT_DT로 재시도해본다.
+                                if _ == 1 and "ORD_SSRT_DT" in params_day:
+                                    logger.warning(f"[체결이력] 주간원장(TTTS3035R) 페이지 중복 감지 (SVR_DVS_CD={svr_dvsn}, date={ord_date}, page={_ + 1}): ORD_STRT_DT로 재시도")
+                                    params_day.pop("ORD_SSRT_DT", None)
+                                    params_day["ORD_STRT_DT"] = ord_date
+                                    ctx_fk = ""
+                                    ctx_nk = ""
+                                    prev_page_keys = set()
+                                    continue
+                                logger.warning(f"[체결이력] 주간원장(TTTS3035R) 페이지 중복 감지 (SVR_DVS_CD={svr_dvsn}, date={ord_date}, page={_ + 1}): 이전 페이지와 동일한 레코드만 반환됨. 페이지네이션 중단")
                                 break
                             prev_page_keys = current_page_keys
 
@@ -1160,10 +1194,10 @@ class KISApiClient:
                                 self.token_issued_at = 0
                                 if self.get_access_token():
                                     return self.get_overseas_execution_history(symbol=symbol, start_date=start_date, end_date=end_date)
-                            logger.warning(f"[체결이력] 주간원장(TTTS3035R) API 오류 (SVR_DVSN_CD={svr_dvsn}, date={ord_date}, rt_cd={data.get('rt_cd')}, msg={msg1})")
+                            logger.warning(f"[체결이력] 주간원장(TTTS3035R) API 오류 (SVR_DVS_CD={svr_dvsn}, date={ord_date}, rt_cd={data.get('rt_cd')}, msg={msg1})")
                             break
                 except Exception as e:
-                    logger.warning(f"[체결이력] 주간원장(TTTS3035R) 조회 예외 (SVR_DVSN_CD={svr_dvsn}, date={ord_date}): {e}")
+                    logger.warning(f"[체결이력] 주간원장(TTTS3035R) 조회 예외 (SVR_DVS_CD={svr_dvsn}, date={ord_date}): {e}")
                     continue
 
         logger.info(f"[체결이력] 최종 결과 (통합): {len(results)}건 (symbol={symbol or '전체'}, 기간={start_date}~{end_date})")
