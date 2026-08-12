@@ -918,11 +918,9 @@ class KISApiClient:
 
         url = f"{self.url_base}/uapi/overseas-stock/v1/trading/inquire-ccnl"
         results = []
-        # NOTE: 주문번호(odno)만으로 중복 판단하면, 동일 주문번호의 부분체결/야간+주간 중복 레코드가 누락될 수 있음.
-        # 주문번호 + 구분 + 주문수량 + 체결수량 + 주문시각을 조합한 복합 키로 중복을 판별한다.
-        seen_keys = set()
+        # NOTE: 중복 레코드도 모두 표시하기 위해 중복 스킵(dedup)을 수행하지 않는다.
+        #       (동일 주문번호의 부분체결/야간+주간 중복 레코드도 모두 테이블에 표시)
         total_fetched = 0
-        total_skipped_dup = 0
         total_skipped_symbol = 0
 
         # 1. 야간 원장 체결/주문 이력 조회 (JTTT3001R / VJTT3001R) - 미국주식 야간/LOC 주문 포함
@@ -1007,18 +1005,10 @@ class KISApiClient:
                             logger.info(f"[체결이력] 야간원장 종목 필터 스킵: symbol={item_symbol}, order_no={order_no}, order_time={order_time}")
                             continue
 
-                        # 복합 키 기반 중복 판별
-                        # ord_tmd(초 단위 포함) + 원주문번호 + 주문지점 + 체결금액 + 요청금액 + 체결조건까지 포함하여
-                        # 동일 주문번호의 부분체결/다중 레코드가 서로 다른 키를 갖도록 한다.
+                        # 페이지 중복 감지용 키 (중복 스킵은 하지 않고 페이지네이션 판단에만 사용)
                         dedup_key = f"{order_no}|{order_type}|{qty}|{exec_qty}|{ord_tmd_raw}|{orgn_odno}|{ord_gno_brno}|{ccld_amt}|{rqst_amt}|{ccld_cndt_name}"
                         current_page_keys.add(dedup_key)
                         logger.info(f"[체결이력] 야간원장 page={_ + 1} 레코드: key={dedup_key}, symbol={item_symbol}, status={status}, odno={order_no}, qty={qty}, exec_qty={exec_qty}, time={order_time}, ord_tmd={ord_tmd_raw}, orgn_odno={orgn_odno}")
-
-                        if dedup_key in seen_keys:
-                            total_skipped_dup += 1
-                            logger.info(f"[체결이력] 야간원장 중복 스킵: key={dedup_key}, symbol={item_symbol}, status={status}")
-                            continue
-                        seen_keys.add(dedup_key)
 
                         results.append({
                             "order_no": order_no,
@@ -1029,7 +1019,29 @@ class KISApiClient:
                             "executed_qty": exec_qty,
                             "executed_price": exec_price,
                             "status": status,
-                            "order_time": order_time
+                            "order_time": order_time,
+                            "ord_dt": str(item.get("ord_dt", "")).strip(),
+                            "ord_tmd": ord_tmd_raw,
+                            "ord_gno_brno": ord_gno_brno,
+                            "orgn_odno": orgn_odno,
+                            "prdt_name": str(item.get("prdt_name", "")).strip(),
+                            "sll_buy_dvsn_cd": str(item.get("sll_buy_dvsn_cd", "")).strip(),
+                            "rvse_cncl_dvsn": str(item.get("rvse_cncl_dvsn", "")).strip(),
+                            "rvse_cncl_dvsn_name": str(item.get("rvse_cncl_dvsn_name", "")).strip(),
+                            "ft_ccld_amt3": str(item.get("ft_ccld_amt3", "")).strip(),
+                            "nccs_qty": str(item.get("nccs_qty", "")).strip(),
+                            "rjct_rson": str(item.get("rjct_rson", "")).strip(),
+                            "rjct_rson_name": str(item.get("rjct_rson_name", "")).strip(),
+                            "tr_mket_name": str(item.get("tr_mket_name", "")).strip(),
+                            "tr_natn_name": str(item.get("tr_natn_name", "")).strip(),
+                            "ovrs_excg_cd": str(item.get("ovrs_excg_cd", "")).strip(),
+                            "tr_crcy_cd": str(item.get("tr_crcy_cd", "")).strip(),
+                            "dmst_ord_dt": str(item.get("dmst_ord_dt", "")).strip(),
+                            "thco_ord_tmd": str(item.get("thco_ord_tmd", "")).strip(),
+                            "loan_type_cd": str(item.get("loan_type_cd", "")).strip(),
+                            "loan_dt": str(item.get("loan_dt", "")).strip(),
+                            "mdia_dvsn_name": str(item.get("mdia_dvsn_name", "")).strip(),
+                            "usa_amk_exts_rqst_yn": str(item.get("usa_amk_exts_rqst_yn", "")).strip()
                         })
 
                     # 페이지 중복 감지: 이전 페이지와 동일한 레코드만 있으면 페이지네이션이 진행되지 않는 것
@@ -1119,18 +1131,10 @@ class KISApiClient:
                                 logger.info(f"[체결이력] 주간원장 종목 필터 스킵: symbol={item_symbol}, order_no={order_no}, order_time={order_time}")
                                 continue
 
-                            # 복합 키 기반 중복 판별
-                            # ord_tmd(초 단위 포함) + 원주문번호 + 주문지점 + 체결금액 + 요청금액 + 체결조건까지 포함하여
-                            # 동일 주문번호의 부분체결/다중 레코드가 서로 다른 키를 갖도록 한다.
+                            # 페이지 중복 감지용 키 (중복 스킵은 하지 않고 페이지네이션 판단에만 사용)
                             dedup_key = f"{order_no}|{order_type}|{qty}|{exec_qty}|{ord_tmd_raw}|{orgn_odno}|{ord_gno_brno}|{ccld_amt}|{rqst_amt}|{ccld_cndt_name}"
                             current_page_keys.add(dedup_key)
                             logger.info(f"[체결이력] 주간원장 page={_ + 1} 레코드: key={dedup_key}, symbol={item_symbol}, status={status}, odno={order_no}, qty={qty}, exec_qty={exec_qty}, time={order_time}, ord_tmd={ord_tmd_raw}, orgn_odno={orgn_odno}")
-
-                            if dedup_key in seen_keys:
-                                total_skipped_dup += 1
-                                logger.info(f"[체결이력] 주간원장 중복 스킵: key={dedup_key}, symbol={item_symbol}, status={status}")
-                                continue
-                            seen_keys.add(dedup_key)
 
                             results.append({
                                 "order_no": order_no,
@@ -1141,7 +1145,29 @@ class KISApiClient:
                                 "executed_qty": exec_qty,
                                 "executed_price": exec_price,
                                 "status": status,
-                                "order_time": order_time
+                                "order_time": order_time,
+                                "ord_dt": str(item.get("ord_dt", "")).strip(),
+                                "ord_tmd": ord_tmd_raw,
+                                "ord_gno_brno": ord_gno_brno,
+                                "orgn_odno": orgn_odno,
+                                "prdt_name": str(item.get("prdt_name", "")).strip(),
+                                "sll_buy_dvsn_cd": str(item.get("sll_buy_dvsn_cd", "")).strip(),
+                                "rvse_cncl_dvsn": str(item.get("rvse_cncl_dvsn", "")).strip(),
+                                "rvse_cncl_dvsn_name": str(item.get("rvse_cncl_dvsn_name", "")).strip(),
+                                "ft_ccld_amt3": str(item.get("ft_ccld_amt3", "")).strip(),
+                                "nccs_qty": str(item.get("nccs_qty", "")).strip(),
+                                "rjct_rson": str(item.get("rjct_rson", "")).strip(),
+                                "rjct_rson_name": str(item.get("rjct_rson_name", "")).strip(),
+                                "tr_mket_name": str(item.get("tr_mket_name", "")).strip(),
+                                "tr_natn_name": str(item.get("tr_natn_name", "")).strip(),
+                                "ovrs_excg_cd": str(item.get("ovrs_excg_cd", "")).strip(),
+                                "tr_crcy_cd": str(item.get("tr_crcy_cd", "")).strip(),
+                                "dmst_ord_dt": str(item.get("dmst_ord_dt", "")).strip(),
+                                "thco_ord_tmd": str(item.get("thco_ord_tmd", "")).strip(),
+                                "loan_type_cd": str(item.get("loan_type_cd", "")).strip(),
+                                "loan_dt": str(item.get("loan_dt", "")).strip(),
+                                "mdia_dvsn_name": str(item.get("mdia_dvsn_name", "")).strip(),
+                                "usa_amk_exts_rqst_yn": str(item.get("usa_amk_exts_rqst_yn", "")).strip()
                             })
 
                         # 페이지 중복 감지: 이전 페이지와 동일한 레코드만 있으면 페이지네이션이 진행되지 않는 것
@@ -1169,7 +1195,7 @@ class KISApiClient:
                 continue
 
         logger.info(f"[체결이력] 최종 결과 (통합): {len(results)}건 (symbol={symbol or '전체'}, 기간={start_date}~{end_date})")
-        logger.info(f"[체결이력] 진단: 총 조회={total_fetched}건, 종목필터 스킵={total_skipped_symbol}건, 중복 스킵={total_skipped_dup}건, 최종={len(results)}건")
+        logger.info(f"[체결이력] 진단: 총 조회={total_fetched}건, 종목필터 스킵={total_skipped_symbol}건, 중복 스킵=0건(중복 포함 표시), 최종={len(results)}건")
         for r in results:
             logger.info(f"  → {r.get('order_time', '')} | {r.get('symbol', '')} | {r.get('order_type', '')} | "
                         f"주문수량={r.get('qty', 0)} | 체결수량={r.get('executed_qty', 0)} | "

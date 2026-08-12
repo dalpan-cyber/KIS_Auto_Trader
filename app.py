@@ -622,16 +622,40 @@ def render_stock_detail(symbol: str, bot: TraderBot):
             disp_exec_price = f"${h_exec_price:.2f}" if h_exec_qty > 0 else "-"
             disp_exec_amt = f"${h_exec_qty * h_exec_price:,.2f}" if h_exec_qty > 0 else "-"
 
+            # API 응답의 추가 필드 (없으면 "-" 표시)
+            def _disp(v):
+                v = str(v or "").strip()
+                return v if v else "-"
+
             h_rows.append({
                 "일시": h.get("order_time", "-"),
                 "구분": h_type,
                 "주문수량": f"{h_qty:,}주",
                 "체결수량": f"{h_exec_qty:,}주",
+                "미체결수량": _disp(h.get("nccs_qty")),
                 "주문단가 ($)": disp_ord_price,
                 "체결단가 ($)": disp_exec_price,
                 "총 체결금액 ($)": disp_exec_amt,
                 "상태": status,
-                "주문번호": h.get("order_no", "-")
+                "주문번호": h.get("order_no", "-"),
+                "원주문번호": _disp(h.get("orgn_odno")),
+                "주문지점": _disp(h.get("ord_gno_brno")),
+                "주문일자": _disp(h.get("ord_dt")),
+                "주문시각": _disp(h.get("ord_tmd")),
+                "상품명": _disp(h.get("prdt_name")),
+                "매도/매수코드": _disp(h.get("sll_buy_dvsn_cd")),
+                "정정/취소구분": _disp(h.get("rvse_cncl_dvsn_name")),
+                "거절사유": _disp(h.get("rjct_rson_name")),
+                "거래시장": _disp(h.get("tr_mket_name")),
+                "거래국가": _disp(h.get("tr_natn_name")),
+                "거래소": _disp(h.get("ovrs_excg_cd")),
+                "통화": _disp(h.get("tr_crcy_cd")),
+                "국내주문일자": _disp(h.get("dmst_ord_dt")),
+                "당사주문시각": _disp(h.get("thco_ord_tmd")),
+                "대출유형": _disp(h.get("loan_type_cd")),
+                "대출일자": _disp(h.get("loan_dt")),
+                "매체구분": _disp(h.get("mdia_dvsn_name")),
+                "장외연장요청": _disp(h.get("usa_amk_exts_rqst_yn"))
             })
         st.dataframe(pd.DataFrame(h_rows), width="stretch", hide_index=True)
     else:
