@@ -4,6 +4,7 @@ KIS Open API, 매매 전략, 리스크 관리자를 통합하여 실시간 자�
 """
 import time
 import logging
+import datetime
 import pandas as pd
 from typing import Dict, List, Any, Optional, Tuple
 
@@ -180,8 +181,14 @@ class TraderBot:
                 st = self.infinite_state_mgr.get_symbol_state(sym)
                 sd = st.get("start_date", "")
                 sym_start_date = sd.replace("-", "") if (sd and sd.replace("-", "").isdigit()) else ""
+                # NOTE: 상태의 start_date가 없거나 오늘 날짜면, 최소 30일 전부터 조회하여 과거 이력 누락을 방지한다.
+                default_start = (datetime.date.today() - datetime.timedelta(days=30)).strftime("%Y%m%d")
+                if sym_start_date and sym_start_date.isdigit():
+                    sym_start_date = min(sym_start_date, default_start)  # 더 과거(작은 값)를 선택
+                else:
+                    sym_start_date = default_start
                 sym_history = self.api.get_overseas_execution_history(symbol=sym, start_date=sym_start_date)
-                self.logger.info(f"[체결이력] {sym} 조회 결과 (start_date={sym_start_date or '오늘'}): {len(sym_history)}건")
+                self.logger.info(f"[체결이력] {sym} 조회 결과 (start_date={sym_start_date}): {len(sym_history)}건")
                 history.extend(sym_history)
             self.logger.info(f"[체결이력] 체결 이력 조회 결과: {len(history)}건")
             if not history:
@@ -274,8 +281,16 @@ class TraderBot:
                         st = self.infinite_state_mgr.get_symbol_state(sym)
                         sd = st.get("start_date", "")
                         sym_start_date = sd.replace("-", "") if (sd and sd.replace("-", "").isdigit()) else ""
+                        # NOTE: 상태의 start_date가 없거나 오늘 날짜면, 최소 30일 전부터 조회하여 과거 이력 누락을 방지한다.
+                        default_start = (datetime.date.today() - datetime.timedelta(days=30)).strftime("%Y%m%d")
+                        if sym_start_date and sym_start_date.isdigit():
+                            sym_start_date = min(sym_start_date, default_start)  # 더 과거(작은 값)를 선택
+                        else:
+                            sym_start_date = default_start
                         sym_history = self.api.get_overseas_execution_history(symbol=sym, start_date=sym_start_date)
+                        self.logger.info(f"[체결이력] {sym} 조회 결과 (start_date={sym_start_date}): {len(sym_history)}건")
                         history.extend(sym_history)
+                    self.logger.info(f"[체결이력] Google Sheets 동기화 대상 총 {len(history)}건")
                     gss.sync_execution_history(history)
                     self.logger.info("📊 Google Sheet 'Holdings'/'ExecutionHistory' 동기화 완료 (KIS API 실계좌)")
                 except Exception as e:

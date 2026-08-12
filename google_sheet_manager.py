@@ -332,6 +332,8 @@ class GoogleSheetManager:
             now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
             # 1. 기존 시트 데이터 키 수집 (중복 방지)
+            # NOTE: 주문번호+티커+일시만으로는 동일 주문번호의 부분체결/다중 레코드가 누락될 수 있으므로,
+            # 구분(주문타입) + 주문수량 + 체결수량까지 포함한 복합 키를 사용한다.
             existing_keys = set()
             try:
                 records = self.history_worksheet.get_all_records()
@@ -339,25 +341,33 @@ class GoogleSheetManager:
                     ord_no = str(rec.get("주문번호", "")).strip()
                     ord_time = str(rec.get("일시", "")).strip()
                     ticker = str(rec.get("티커", "")).strip().upper()
+                    order_type = str(rec.get("구분", "")).strip()
+                    ord_qty = str(rec.get("주문수량", "")).strip()
+                    exec_qty = str(rec.get("체결수량", "")).strip()
                     if ord_no or ord_time:
-                        existing_keys.add(f"{ord_no}_{ticker}_{ord_time}")
-            except Exception:
-                pass
+                        existing_keys.add(f"{ord_no}|{ticker}|{ord_time}|{order_type}|{ord_qty}|{exec_qty}")
+                logger.info(f"[ExecutionHistory] 기존 시트 레코드 {len(records)}건, 기존 복합키 {len(existing_keys)}개 수집")
+            except Exception as e:
+                logger.warning(f"[ExecutionHistory] 기존 시트 레코드 수집 실패: {e}")
 
             # 2. 신규 이력 추가
             new_rows = []
+            skipped_existing = 0
             for h in history:
                 ord_no = str(h.get("order_no", "")).strip()
                 ord_time = str(h.get("order_time", "")).strip()
                 ticker = str(h.get("symbol", "")).strip().upper()
-                dedup_key = f"{ord_no}_{ticker}_{ord_time}"
+                order_type = str(h.get("order_type", "-")).strip()
+                qty = int(h.get("qty", 0) or 0)
+                exec_qty = int(h.get("executed_qty", 0) or 0)
+                dedup_key = f"{ord_no}|{ticker}|{ord_time}|{order_type}|{qty}|{exec_qty}"
 
                 if dedup_key in existing_keys:
+                    skipped_existing += 1
+                    logger.info(f"[ExecutionHistory] 기존 키로 스킵: {dedup_key}")
                     continue
 
                 existing_keys.add(dedup_key)
-                qty = int(h.get("qty", 0) or 0)
-                exec_qty = int(h.get("executed_qty", 0) or 0)
                 price = float(h.get("price", 0.0) or 0.0)
                 exec_price = float(h.get("executed_price", 0.0) or 0.0)
                 total_amt = exec_qty * exec_price if exec_qty > 0 else (qty * price)
@@ -378,7 +388,9 @@ class GoogleSheetManager:
 
             if new_rows:
                 self.history_worksheet.append_rows(new_rows)
-                logger.info(f"📊 Google Sheet 'ExecutionHistory'에 신규 이력 {len(new_rows)}건 누적 동기화 성공")
+                logger.info(f"📊 Google Sheet 'ExecutionHistory'에 신규 이력 {len(new_rows)}건 누적 동기화 성공 (총 {len(history)}건 중 기존키 스킵 {skipped_existing}건)")
+            else:
+                logger.info(f"[ExecutionHistory] 신규 추가 없음 (총 {len(history)}건 중 기존키 스킵 {skipped_existing}건, 모두 기존 데이터와 중복)")
         except Exception as e:
             if "429" in str(e) or "Quota exceeded" in str(e):
                 logger.debug("Google Sheet ExecutionHistory API 호출 할당량 초과 (다음 턴 재시도)")

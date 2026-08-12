@@ -918,7 +918,12 @@ class KISApiClient:
 
         url = f"{self.url_base}/uapi/overseas-stock/v1/trading/inquire-ccnl"
         results = []
-        seen_order_nos = set()
+        # NOTE: 주문번호(odno)만으로 중복 판단하면, 동일 주문번호의 부분체결/야간+주간 중복 레코드가 누락될 수 있음.
+        # 주문번호 + 구분 + 주문수량 + 체결수량 + 주문시각을 조합한 복합 키로 중복을 판별한다.
+        seen_keys = set()
+        total_fetched = 0
+        total_skipped_dup = 0
+        total_skipped_symbol = 0
 
         # 1. 야간 원장 체결/주문 이력 조회 (JTTT3001R / VJTT3001R) - 미국주식 야간/LOC 주문 포함
         # NOTE: JTTT3001R의 ORD_DT는 단일 날짜 기준으로 동작하므로, 조회 범위의 각 날짜별로 순회하여 누락을 방지한다.
@@ -972,29 +977,44 @@ class KISApiClient:
                             logger.info(f"[체결이력] 야간원장(JTTT3001R) 조회 결과 없음 (date={ord_date}, page={_ + 1})")
                             break
                         logger.info(f"[체결이력] 야간원장(JTTT3001R) 조회 성공 (date={ord_date}, page={_ + 1}, 건수={len(output)})")
+                        # 디버깅: 실제 API 응답 필드 확인
+                        if _ == 0:
+                            logger.info(f"[체결이력] 야간원장(JTTT3001R) 응답 필드: {list(output[0].keys()) if output else 'N/A'}")
+                            logger.info(f"[체결이력] 야간원장(JTTT3001R) 응답 원본: {output[0] if output else 'N/A'}")
                         for item in output:
+                            total_fetched += 1
                             order_no = item.get("odno", "")
-                            if order_no and order_no in seen_order_nos:
-                                continue
                             item_symbol = item.get("pdno", "").strip().upper()
-                            if symbol and item_symbol != symbol.upper():
-                                continue
-                            if order_no:
-                                seen_order_nos.add(order_no)
-
+                            order_type = item.get("sll_buy_dvsn_cd_name", "")
+                            qty = int(item.get("ft_ord_qty", 0) or 0)
                             exec_qty = int(item.get("ft_ccld_qty", item.get("ft_ccnl_qty", 0)) or 0)
                             exec_price = float(item.get("ft_ccld_unpr3", item.get("ft_ccnl_unpr3", 0.0)) or 0.0)
+                            order_time = (item.get("ord_dt", "") + " " + item.get("ord_tmd", "")).strip()
+
+                            # 종목 필터
+                            if symbol and item_symbol != symbol.upper():
+                                total_skipped_symbol += 1
+                                logger.info(f"[체결이력] 야간원장 종목 필터 스킵: symbol={item_symbol}, order_no={order_no}, order_time={order_time}")
+                                continue
+
+                            # 복합 키 기반 중복 판별 (주문번호 + 구분 + 주문수량 + 체결수량 + 주문시각)
+                            dedup_key = f"{order_no}|{order_type}|{qty}|{exec_qty}|{order_time}"
+                            if dedup_key in seen_keys:
+                                total_skipped_dup += 1
+                                logger.info(f"[체결이력] 야간원장 중복 스킵: key={dedup_key}, symbol={item_symbol}, status={item.get('prcs_stat_name', '')}")
+                                continue
+                            seen_keys.add(dedup_key)
 
                             results.append({
                                 "order_no": order_no,
                                 "symbol": item_symbol,
-                                "order_type": item.get("sll_buy_dvsn_cd_name", ""),
-                                "qty": int(item.get("ft_ord_qty", 0) or 0),
+                                "order_type": order_type,
+                                "qty": qty,
                                 "price": float(item.get("ft_ord_unpr3", 0.0) or 0.0),
                                 "executed_qty": exec_qty,
                                 "executed_price": exec_price,
                                 "status": item.get("prcs_stat_name", ""),
-                                "order_time": (item.get("ord_dt", "") + " " + item.get("ord_tmd", "")).strip()
+                                "order_time": order_time
                             })
                         ctx_fk = (data.get("ctx_area_fk200", "") or "").strip()
                         ctx_nk = (data.get("ctx_area_nk200", "") or "").strip()
@@ -1043,28 +1063,39 @@ class KISApiClient:
                                 break
                             logger.info(f"[체결이력] 주간원장(TTTS3035R) 조회 성공 (SVR_DVSN_CD={svr_dvsn}, date={ord_date}, page={_ + 1}, 건수={len(output)})")
                             for item in output:
+                                total_fetched += 1
                                 order_no = item.get("odno", "")
-                                if order_no and order_no in seen_order_nos:
-                                    continue
                                 item_symbol = item.get("pdno", "").strip().upper()
-                                if symbol and item_symbol != symbol.upper():
-                                    continue
-                                if order_no:
-                                    seen_order_nos.add(order_no)
-
+                                order_type = item.get("sll_buy_dvsn_cd_name", "")
+                                qty = int(item.get("ft_ord_qty", 0) or 0)
                                 exec_qty = int(item.get("ft_ccnl_qty", item.get("ft_ccld_qty", 0)) or 0)
                                 exec_price = float(item.get("ft_ccnl_unpr3", item.get("ft_ccld_unpr3", 0.0)) or 0.0)
+                                order_time = (item.get("ord_dt", "") + " " + item.get("ord_tmd", "")).strip()
+
+                                # 종목 필터
+                                if symbol and item_symbol != symbol.upper():
+                                    total_skipped_symbol += 1
+                                    logger.info(f"[체결이력] 주간원장 종목 필터 스킵: symbol={item_symbol}, order_no={order_no}, order_time={order_time}")
+                                    continue
+
+                                # 복합 키 기반 중복 판별 (주문번호 + 구분 + 주문수량 + 체결수량 + 주문시각)
+                                dedup_key = f"{order_no}|{order_type}|{qty}|{exec_qty}|{order_time}"
+                                if dedup_key in seen_keys:
+                                    total_skipped_dup += 1
+                                    logger.info(f"[체결이력] 주간원장 중복 스킵: key={dedup_key}, symbol={item_symbol}, status={item.get('prcs_stat_name', '')}")
+                                    continue
+                                seen_keys.add(dedup_key)
 
                                 results.append({
                                     "order_no": order_no,
                                     "symbol": item_symbol,
-                                    "order_type": item.get("sll_buy_dvsn_cd_name", ""),
-                                    "qty": int(item.get("ft_ord_qty", 0) or 0),
+                                    "order_type": order_type,
+                                    "qty": qty,
                                     "price": float(item.get("ft_ord_unpr3", 0.0) or 0.0),
                                     "executed_qty": exec_qty,
                                     "executed_price": exec_price,
                                     "status": item.get("prcs_stat_name", ""),
-                                    "order_time": (item.get("ord_dt", "") + " " + item.get("ord_tmd", "")).strip()
+                                    "order_time": order_time
                                 })
                             ctx_fk = (data.get("ctx_area_fk200", "") or "").strip()
                             ctx_nk = (data.get("ctx_area_nk200", "") or "").strip()
@@ -1085,6 +1116,7 @@ class KISApiClient:
                     continue
 
         logger.info(f"[체결이력] 최종 결과 (통합): {len(results)}건 (symbol={symbol or '전체'}, 기간={start_date}~{end_date})")
+        logger.info(f"[체결이력] 진단: 총 조회={total_fetched}건, 종목필터 스킵={total_skipped_symbol}건, 중복 스킵={total_skipped_dup}건, 최종={len(results)}건")
         for r in results:
             logger.info(f"  → {r.get('order_time', '')} | {r.get('symbol', '')} | {r.get('order_type', '')} | "
                         f"주문수량={r.get('qty', 0)} | 체결수량={r.get('executed_qty', 0)} | "

@@ -488,10 +488,18 @@ def render_stock_detail(symbol: str, bot: TraderBot):
     today_dt = datetime.date.today()
     hist_start = st_data.get("start_date", "")
     clean_sd = hist_start.replace("-", "") if hist_start else ""
-    query_start_fmt = clean_sd if (clean_sd and clean_sd.isdigit()) else (today_dt - datetime.timedelta(days=30)).strftime("%Y%m%d")
+    # NOTE: 상태의 start_date가 없거나 오늘 날짜면, 최소 30일 전부터 조회하여 과거 이력 누락을 방지한다.
+    default_start = (today_dt - datetime.timedelta(days=30)).strftime("%Y%m%d")
+    if clean_sd and clean_sd.isdigit():
+        query_start_fmt = min(clean_sd, default_start)  # 더 과거(작은 값)를 선택
+    else:
+        query_start_fmt = default_start
+    logger.info(f"[대시보드] 체결이력 조회 기간 결정: state_start={hist_start or '없음'}, query_start={query_start_fmt}, end={today_dt.strftime('%Y%m%d')}")
 
     end_date_fmt = today_dt.strftime("%Y%m%d")
+    logger.info(f"[대시보드] 체결이력 조회 시작: symbol={symbol}, start_date={query_start_fmt}, end_date={end_date_fmt}")
     history_api = bot.api.get_overseas_execution_history(symbol=symbol, start_date=query_start_fmt, end_date=end_date_fmt)
+    logger.info(f"[대시보드] 체결이력 조회 완료: {len(history_api)}건 (symbol={symbol})")
 
     # KIS API 단일 소스로 매매 이력 구성 (Google Sheets 병합 제거 - 동기화 불일치 방지)
     history = list(history_api)
@@ -531,15 +539,29 @@ def render_stock_detail(symbol: str, bot: TraderBot):
                 h_type = h.get("order_type", "")
                 h_qty = h.get("executed_qty", 0) or h.get("qty", 0)
                 h_price = h.get("executed_price", 0.0) or h.get("price", 0.0)
+                h_status = h.get("status", "")
+
+                # 실패/미체결 상태는 별도 마커로 표시
+                is_failed = ("실패" in h_status or "미체결" in h_status or "취소" in h_status)
 
                 if "매수" in h_type:
-                    buy_dates.append(h_date)
-                    buy_prices.append(h_price)
-                    buy_texts.append(f"🟢 매수 주문/체결: {h_qty}주 @ ${h_price:.2f} ({h.get('status', '')})")
+                    if is_failed:
+                        fail_dates.append(h_date)
+                        fail_prices.append(h_price)
+                        fail_texts.append(f"❌ 매수 실패: {h_qty}주 @ ${h_price:.2f} ({h_status})")
+                    else:
+                        buy_dates.append(h_date)
+                        buy_prices.append(h_price)
+                        buy_texts.append(f"🟢 매수 주문/체결: {h_qty}주 @ ${h_price:.2f} ({h_status})")
                 elif "매도" in h_type:
-                    sell_dates.append(h_date)
-                    sell_prices.append(h_price)
-                    sell_texts.append(f"🎉 익절 매도: {h_qty}주 @ ${h_price:.2f} ({h.get('status', '')})")
+                    if is_failed:
+                        fail_dates.append(h_date)
+                        fail_prices.append(h_price)
+                        fail_texts.append(f"❌ 매도 실패: {h_qty}주 @ ${h_price:.2f} ({h_status})")
+                    else:
+                        sell_dates.append(h_date)
+                        sell_prices.append(h_price)
+                        sell_texts.append(f"🎉 익절 매도: {h_qty}주 @ ${h_price:.2f} ({h_status})")
 
             if buy_dates:
                 fig.add_trace(go.Scatter(
