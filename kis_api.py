@@ -1253,8 +1253,8 @@ class KISApiClient:
             ep_name = ep["name"]
             headers_day = self._get_headers(tr_id_day)
 
-            # NOTE: SVR_DVS_CD="0"은 전체 서버를 통합 조회하므로 반복 호출 없이 1회 조회로 최적화한다.
-            for svr_dvsn in ["0"]:
+            # NOTE: SVR_DVS_CD는 "0"(전체) 및 "1"(일반)을 조회하여 야간/주간 원장 누락을 완전 방지한다.
+            for svr_dvsn in ["0", "1"]:
                 params_day = {
                     "CANO": self.cano,
                     "ACNT_PRDT_CD": self.acnt_prdt_cd,
