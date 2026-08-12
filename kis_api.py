@@ -114,7 +114,7 @@ class KISApiClient:
         try:
             self._rate_limit()
             res = requests.post(url, headers=headers, json=body, timeout=10)
-            data = res.json()
+            data = self._safe_json_response(res, context="AccessToken발급")
 
             if res.status_code == 200 and "access_token" in data:
                 self.access_token = data["access_token"]
@@ -155,6 +155,65 @@ class KISApiClient:
         if hashkey:
             headers["hashkey"] = hashkey
         return headers
+    def _safe_json_response(self, res: requests.Response, context: str = "") -> Dict[str, Any]:
+        """
+        API 응답을 안전하게 JSON으로 파싱한다.
+        - HTTP 상태 코드가 200이 아니거나, 응답 본문이 비어있거나, JSON이 아닌 경우
+          (HTML 에러 페이지, 게이트웨이 오류 등) JSONDecodeError가 발생하지 않도록 처리한다.
+        - 파싱 실패 시 {"rt_cd": "1", "msg1": "...", "msg_cd": "..."} 형태의 오류 dict를 반환한다.
+        """
+        try:
+            if res.status_code != 200:
+                body_preview = res.text[:300] if res.text else "(empty body)"
+                logger.warning(f"[{context}] HTTP {res.status_code} 응답 (JSON 아님 가능): {body_preview}")
+                return {
+                    "rt_cd": "1",
+                    "msg1": f"HTTP {res.status_code} 응답",
+                    "msg_cd": f"HTTP_{res.status_code}",
+                    "_http_status": res.status_code,
+                    "_raw_body": res.text[:500]
+                }
+
+            if not res.text or not res.text.strip():
+                logger.warning(f"[{context}] 빈 응답 본문 (HTTP {res.status_code})")
+                return {
+                    "rt_cd": "1",
+                    "msg1": "빈 응답 본문",
+                    "msg_cd": "EMPTY_BODY",
+                    "_http_status": res.status_code,
+                    "_raw_body": ""
+                }
+
+            data = res.json()
+            if not isinstance(data, dict):
+                logger.warning(f"[{context}] JSON 응답이 dict가 아님: {type(data).__name__}")
+                return {
+                    "rt_cd": "1",
+                    "msg1": f"JSON 응답 형식 오류: {type(data).__name__}",
+                    "msg_cd": "INVALID_JSON_TYPE",
+                    "_http_status": res.status_code,
+                    "_raw_body": res.text[:500]
+                }
+            return data
+        except json.JSONDecodeError as e:
+            body_preview = res.text[:300] if res.text else "(empty body)"
+            logger.error(f"[{context}] JSON 파싱 실패: {e} | HTTP {res.status_code} | body={body_preview}")
+            return {
+                "rt_cd": "1",
+                "msg1": f"JSON 파싱 실패: {e}",
+                "msg_cd": "JSON_DECODE_ERROR",
+                "_http_status": res.status_code,
+                "_raw_body": res.text[:500]
+            }
+        except Exception as e:
+            logger.error(f"[{context}] 응답 파싱 중 예외 발생: {e}")
+            return {
+                "rt_cd": "1",
+                "msg1": f"응답 파싱 예외: {e}",
+                "msg_cd": "PARSE_EXCEPTION",
+                "_http_status": getattr(res, "status_code", 0),
+                "_raw_body": getattr(res, "text", "")[:500]
+            }
 
     def get_hashkey(self, body: Dict[str, Any]) -> Optional[str]:
         """
@@ -169,7 +228,7 @@ class KISApiClient:
         try:
             res = requests.post(url, headers=headers, data=json.dumps(body), timeout=10)
             if res.status_code == 200:
-                data = res.json()
+                data = self._safe_json_response(res, context="Hashkey발급")
                 return data.get("HASH")
             else:
                 logger.warning(f"Hashkey 발급 실패: status={res.status_code}, response={res.text}")
@@ -218,7 +277,7 @@ class KISApiClient:
         try:
             self._rate_limit()
             res = requests.get(url, headers=headers, params=params, timeout=10)
-            data = res.json()
+            data = self._safe_json_response(res, context=f"국내시세[{stock_code}]")
 
             if res.status_code == 200 and data.get("rt_cd") == "0":
                 output = data.get("output", {})
@@ -276,7 +335,7 @@ class KISApiClient:
         try:
             self._rate_limit()
             res = requests.get(url, headers=headers, params=params, timeout=10)
-            data = res.json()
+            data = self._safe_json_response(res, context=f"국내일봉[{stock_code}]")
 
             if res.status_code == 200 and data.get("rt_cd") == "0":
                 results = []
@@ -352,7 +411,7 @@ class KISApiClient:
         try:
             self._rate_limit()
             res = requests.get(url, headers=headers, params=params, timeout=10)
-            data = res.json()
+            data = self._safe_json_response(res, context="국내계좌잔고")
 
             if res.status_code == 200 and data.get("rt_cd") == "0":
                 output1 = data.get("output1", [])
@@ -474,7 +533,7 @@ class KISApiClient:
         try:
             self._rate_limit()
             res = requests.post(url, headers=headers, data=json.dumps(body), timeout=10)
-            data = res.json()
+            data = self._safe_json_response(res, context=f"국내주문[{stock_code}]")
 
             if res.status_code == 200 and data.get("rt_cd") == "0":
                 output = data.get("output", {})
@@ -531,7 +590,7 @@ class KISApiClient:
             try:
                 self._rate_limit()
                 res = requests.get(url, headers=headers, params=params, timeout=10)
-                data = res.json()
+                data = self._safe_json_response(res, context=f"해외시세[{symbol_upper}]")
 
                 if res.status_code == 200 and data.get("rt_cd") == "0":
                     output = data.get("output", {})
@@ -592,7 +651,7 @@ class KISApiClient:
             try:
                 self._rate_limit()
                 res = requests.get(url, headers=headers, params=params, timeout=10)
-                data = res.json()
+                data = self._safe_json_response(res, context=f"해외일봉[{symbol_upper}]")
 
                 logger.info(f"[{symbol_upper}] 일봉 차트 [{ex}] HTTP {res.status_code} | rt_cd={data.get('rt_cd')} | msg1={data.get('msg1')}")
 
@@ -652,7 +711,7 @@ class KISApiClient:
         try:
             self._rate_limit()
             res = requests.get(url, headers=headers, params=params, timeout=10)
-            data = res.json()
+            data = self._safe_json_response(res, context="해외계좌잔고")
 
             if res.status_code == 200 and data.get("rt_cd") == "0":
                 output = data.get("output", {})
@@ -728,7 +787,7 @@ class KISApiClient:
 
                     self._rate_limit()
                     res = requests.get(url, headers=headers, params=params, timeout=10)
-                    data = res.json()
+                    data = self._safe_json_response(res, context=f"해외잔고[{exch}]")
 
                     logger.info(f"[해외잔고] [{exch}] HTTP {res.status_code} | rt_cd={data.get('rt_cd')} | msg1={data.get('msg1')}")
 
@@ -884,7 +943,7 @@ class KISApiClient:
 
                     self._rate_limit()
                     res = requests.get(url, headers=headers, params=params, timeout=10)
-                    data = res.json()
+                    data = self._safe_json_response(res, context=f"해외체결잔고[{exch}]")
 
                     logger.info(f"[해외체결잔고] [{exch}] HTTP {res.status_code} | rt_cd={data.get('rt_cd')} | msg1={data.get('msg1')}")
 
@@ -1043,7 +1102,7 @@ class KISApiClient:
         try:
             self._rate_limit()
             res = requests.post(url, headers=headers, data=json.dumps(body), timeout=10)
-            data = res.json()
+            data = self._safe_json_response(res, context=f"해외주문[{symbol_upper}]")
 
             if res.status_code == 200 and data.get("rt_cd") == "0":
                 logger.info(f"★ [{symbol_upper}] 해외주식 {'매수' if buy else '매도'} 주문 성공! (주문번호: {data.get('output', {}).get('ODNO')})")
@@ -1195,7 +1254,7 @@ class KISApiClient:
                     params_day["CTX_AREA_NK200"] = ctx_nk
                     self._rate_limit()
                     res = requests.get(url, headers=headers_day, params=params_day, timeout=10)
-                    data = res.json()
+                    data = self._safe_json_response(res, context=f"체결이력[{svr_dvsn}]")
 
                     if res.status_code == 200 and data.get("rt_cd") == "0":
                         output = data.get("output", []) or data.get("output1", [])
