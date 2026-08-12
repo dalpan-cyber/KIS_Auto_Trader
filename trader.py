@@ -159,7 +159,7 @@ class TraderBot:
                 else:
                     self.logger.warning("[계좌잔고] 체결 이력 기반 Fallback도 결과가 없습니다. (체결 이력이 없거나, 날짜 범위가 잘못되었을 수 있음)")
 
-            # 체결기준 현물 잔고(TTTC1006R)를 추가 Fallback으로 사용
+            # 체결기준 현물 잔고(TTTS3012R)를 추가 Fallback으로 사용
             # - 기존 잔고 API(TTTS3012R)와 체결 이력 기반 계산이 모두 실패/빈 결과일 때,
             #   체결기준 잔고 API로 실제 체결된 수량/단가를 조회하여 보유 종목을 보정한다.
             overseas_holdings_count = sum(1 for c in new_holdings if self.api.is_overseas_symbol(c))
@@ -185,7 +185,7 @@ class TraderBot:
                     if exec_balance_res.get("success"):
                         exec_items = exec_balance_res.get("holdings", [])
                         if exec_items:
-                            self.logger.info(f"📊 체결기준 잔고(TTTC1006R)에서 보유 종목 {len(exec_items)}개 조회 성공")
+                            self.logger.info(f"📊 체결기준 잔고(TTTS3012R)에서 보유 종목 {len(exec_items)}개 조회 성공")
                             for item in exec_items:
                                 code = item["code"]
                                 new_holdings[code] = {
@@ -196,11 +196,11 @@ class TraderBot:
                                     "pnl_rate": item.get("pnl_rate", 0.0)
                                 }
                         else:
-                            self.logger.warning("[계좌잔고] 체결기준 잔고(TTTC1006R)도 보유 종목이 0개입니다.")
+                            self.logger.warning("[계좌잔고] 체결기준 잔고(TTTS3012R)도 보유 종목이 0개입니다.")
                     else:
-                        self.logger.warning(f"[계좌잔고] 체결기준 잔고(TTTC1006R) 조회 실패: {exec_balance_res.get('msg', 'Unknown')}")
+                        self.logger.warning(f"[계좌잔고] 체결기준 잔고(TTTS3012R) 조회 실패: {exec_balance_res.get('msg', 'Unknown')}")
                 except Exception as e:
-                    self.logger.warning(f"[계좌잔고] 체결기준 잔고(TTTC1006R) 조회 예외: {e}")
+                    self.logger.warning(f"[계좌잔고] 체결기준 잔고(TTTS3012R) 조회 예외: {e}")
 
             self.holdings = new_holdings
 
@@ -212,14 +212,14 @@ class TraderBot:
             self.logger.error(f"계좌 잔고 조회 실패: {res.get('msg')}")
     def _calculate_holdings_from_history(self) -> Dict[str, Dict[str, Any]]:
         """
-        해외주식 체결기준 잔고(TTTC1006R)에서 보유 수량/평단가를 계산 (잔고 API가 빈 결과일 때 Fallback)
-        - TTTC1006R(체결기준 현물 잔고)을 사용하여 체결수량/체결단가가 정확히 반영된 데이터를 조회
+        해외주식 체결기준 잔고(TTTS3012R)에서 보유 수량/평단가를 계산 (잔고 API가 빈 결과일 때 Fallback)
+        - TTTS3012R(해외주식 잔고)을 사용하여 체결수량/체결단가가 정확히 반영된 데이터를 조회
         - JTTT3001R(야간원장)은 한국 시간 낮에 데이터가 매칭되지 않아 사용하지 않음
         - TTTS3035R(주간원장)을 사용하지 않음
         """
         result: Dict[str, Dict[str, Any]] = {}
         try:
-            self.logger.info(f"[체결기준] 체결기준 잔고(TTTC1006R) 조회 시작: infinite_stocks={self.infinite_stocks}")
+            self.logger.info(f"[체결기준] 체결기준 잔고(TTTS3012R) 조회 시작: infinite_stocks={self.infinite_stocks}")
 
             # 상태 파일의 start_date를 시작일로 사용 (JSON의 start_date 값)
             today_str = time.strftime("%Y%m%d")
@@ -243,11 +243,11 @@ class TraderBot:
                 cblc_dvsn="02"  # 체결(02) 기준으로 조회
             )
             if not exec_balance_res.get("success"):
-                self.logger.warning(f"[체결기준] TTTC1006R 조회 실패: {exec_balance_res.get('msg', 'Unknown')}")
+                self.logger.warning(f"[체결기준] TTTS3012R 조회 실패: {exec_balance_res.get('msg', 'Unknown')}")
                 return result
 
             exec_items = exec_balance_res.get("holdings", [])
-            self.logger.info(f"[체결기준] TTTC1006R 조회 결과: {len(exec_items)}개 종목")
+            self.logger.info(f"[체결기준] TTTS3012R 조회 결과: {len(exec_items)}개 종목")
             if not exec_items:
                 self.logger.warning("[체결기준] 체결기준 잔고가 비어 있습니다. (조회 기간 내 체결 내역이 없거나, API 오류일 수 있음)")
                 return result
@@ -278,7 +278,7 @@ class TraderBot:
 
             if result:
                 summary_str = ", ".join([f"{s}({d['qty']}주)" for s, d in result.items()])
-                self.logger.info(f"📊 체결기준 잔고(TTTC1006R) 기반 보유 종목 계산 완료: {summary_str}")
+                self.logger.info(f"📊 체결기준 잔고(TTTS3012R) 기반 보유 종목 계산 완료: {summary_str}")
             else:
                 self.logger.warning("[체결기준] 체결기준 잔고가 있지만 계산 결과가 없습니다. (모든 종목이 매도되었거나, 필터링 문제일 수 있음)")
         except Exception as e:
@@ -291,8 +291,8 @@ class TraderBot:
         실시간 계좌 보유 종목 수량/평단가를 갱신하고 Google Sheets에 동기화
         - 보유 수량/평단가는 KIS API가 Source of Truth이므로 JSON에는 기록하지 않음
         - Google Sheets 'Holdings' 워크시트에 주식평가 금액 동기화
-        - Google Sheets 'ExecutionHistory' 워크시트에 체결/실패 이력 동기화 (TTTC1006R 체결기준)
-        - Google Sheets 'ExecutionBalance' 워크시트에 체결기준 현물 잔고 동기화 (TTTC1006R)
+        - Google Sheets 'ExecutionHistory' 워크시트에 체결/실패 이력 동기화 (TTTS3012R 체결기준)
+        - Google Sheets 'ExecutionBalance' 워크시트에 체결기준 현물 잔고 동기화 (TTTS3012R)
         """
         self.fetch_account_balance()
         self.logger.info("🔄 실계좌 보유 종목 수량/평단가를 API에서 갱신 완료 (JSON에는 전략 상태만 기록)")
@@ -304,8 +304,8 @@ class TraderBot:
                 try:
                     gss.sync_holdings(self.holdings, self.current_prices)
 
-                    # 1. 체결/실패 이력 동기화 (TTTC1006R/VTTC1006R 체결기준)
-                    # NOTE: TTTS3035R/JTTT3001R 대신 TTTC1006R(체결기준 현물 잔고)을 사용하여
+                    # 1. 체결/실패 이력 동기화 (TTTS3012R/VTTS3012R 체결기준)
+                    # NOTE: TTTS3035R/JTTT3001R 대신 TTTS3012R(해외주식 잔고)을 사용하여
                     #       체결수량/체결단가가 정확히 반영된 데이터를 Google Sheets에 기록한다.
                     #       (JTTT3001R은 한국 시간 낮에 데이터가 매칭되지 않아 사용하지 않음)
                     today_str = time.strftime("%Y%m%d")
@@ -327,14 +327,14 @@ class TraderBot:
                     )
                     if exec_balance.get("success"):
                         exec_holdings = exec_balance.get("holdings", [])
-                        self.logger.info(f"[체결기준] TTTC1006R 조회 성공: {len(exec_holdings)}개 종목")
+                        self.logger.info(f"[체결기준] TTTS3012R 조회 성공: {len(exec_holdings)}개 종목")
                         # ExecutionHistory 워크시트에 체결기준 데이터 동기화
                         gss.sync_execution_history(exec_holdings)
                         # ExecutionBalance 워크시트에도 동일 데이터 동기화
                         gss.sync_execution_balance(exec_holdings)
                         self.logger.info(f"📊 Google Sheet 'ExecutionHistory'/'ExecutionBalance' 동기화 완료 (체결기준 {len(exec_holdings)}개 종목)")
                     else:
-                        self.logger.warning(f"[체결기준] TTTC1006R 조회 실패: {exec_balance.get('msg', 'Unknown')}")
+                        self.logger.warning(f"[체결기준] TTTS3012R 조회 실패: {exec_balance.get('msg', 'Unknown')}")
 
                     self.logger.info("📊 Google Sheet 'Holdings'/'ExecutionHistory'/'ExecutionBalance' 동기화 완료 (KIS API 실계좌)")
                 except Exception as e:
