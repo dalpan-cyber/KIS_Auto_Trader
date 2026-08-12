@@ -20,6 +20,8 @@ from kis_api import KISApiClient
 from trader import TraderBot
 from strategy import Signal, StrategyFactory
 
+logger = logging.getLogger("Dashboard")
+
 
 # -----------------------------------------------------------------------------
 # 1. 페이지 기본 설정 및 디자인 테마 CSS
@@ -497,7 +499,10 @@ def render_stock_detail(symbol: str, bot: TraderBot):
 
     # 신규 KIS API 이력을 구글 시트에 백업용으로만 누적 동기화 (테이블 표시에는 사용하지 않음)
     if history_api and hasattr(bot, "infinite_state_mgr") and bot.infinite_state_mgr and bot.infinite_state_mgr.gss_mgr:
+        logger.info(f"[대시보드] KIS API 체결이력 {len(history_api)}건을 Google Sheets 'ExecutionHistory'에 백업 동기화 시도")
         bot.infinite_state_mgr.gss_mgr.sync_execution_history(history_api)
+    else:
+        logger.info(f"[대시보드] Google Sheets 백업 동기화 생략 (history={len(history_api)}건, gss_mgr={'있음' if hasattr(bot, 'infinite_state_mgr') and bot.infinite_state_mgr and bot.infinite_state_mgr.gss_mgr else '없음'})")
 
     if PLOTLY_AVAILABLE and chart_data:
         df_chart = pd.DataFrame(chart_data)

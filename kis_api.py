@@ -921,141 +921,172 @@ class KISApiClient:
         seen_order_nos = set()
 
         # 1. 야간 원장 체결/주문 이력 조회 (JTTT3001R / VJTT3001R) - 미국주식 야간/LOC 주문 포함
+        # NOTE: JTTT3001R의 ORD_DT는 단일 날짜 기준으로 동작하므로, 조회 범위의 각 날짜별로 순회하여 누락을 방지한다.
         tr_id_night = "VJTT3001R" if self.mock else "JTTT3001R"
         headers_night = self._get_headers(tr_id_night)
-        params_night = {
-            "CANO": self.cano,
-            "ACNT_PRDT_CD": self.acnt_prdt_cd,
-            "PDNO": symbol.upper() if symbol else "%",
-            "ORD_DT": end_date,
-            "ORD_STRT_DT": start_date,
-            "ORD_END_DT": end_date,
-            "SLL_BUY_DVSN": "00",
-            "CCLD_NCCS_DVSN": "00",
-            "OVRS_EXCG_CD": "%",
-            "SORT_SQN": "DS",
-            "ORD_GNO_BRNO": "",
-            "ODNO": "",
-            "CTX_AREA_FK200": "",
-            "CTX_AREA_NK200": ""
-        }
 
+        # start_date~end_date 사이의 모든 날짜를 계산 (KST 기준 일자별 순회)
+        night_dates = []
         try:
-            ctx_fk = ""
-            ctx_nk = ""
-            for _ in range(5):
-                params_night["CTX_AREA_FK200"] = ctx_fk
-                params_night["CTX_AREA_NK200"] = ctx_nk
-                self._rate_limit()
-                res = requests.get(url, headers=headers_night, params=params_night, timeout=10)
-                data = res.json()
+            from datetime import datetime as dt, timedelta as td
+            d_start = dt.strptime(start_date, "%Y%m%d").date()
+            d_end = dt.strptime(end_date, "%Y%m%d").date()
+            d = d_start
+            while d <= d_end:
+                night_dates.append(d.strftime("%Y%m%d"))
+                d += td(days=1)
+        except Exception:
+            night_dates = [start_date]  # 파싱 실패 시 시작일만 시도
 
-                if res.status_code == 200 and data.get("rt_cd") == "0":
-                    output = data.get("output", []) or data.get("output1", [])
-                    if not output:
+        for ord_date in night_dates:
+            params_night = {
+                "CANO": self.cano,
+                "ACNT_PRDT_CD": self.acnt_prdt_cd,
+                "PDNO": symbol.upper() if symbol else "",
+                "ORD_DT": ord_date,
+                "ORD_STRT_DT": ord_date,
+                "ORD_END_DT": ord_date,
+                "SLL_BUY_DVSN": "00",
+                "CCLD_NCCS_DVSN": "00",
+                "OVRS_EXCG_CD": "",
+                "SORT_SQN": "DS",
+                "ORD_GNO_BRNO": "",
+                "ODNO": "",
+                "CTX_AREA_FK200": "",
+                "CTX_AREA_NK200": ""
+            }
+
+            try:
+                ctx_fk = ""
+                ctx_nk = ""
+                for _ in range(5):
+                    params_night["CTX_AREA_FK200"] = ctx_fk
+                    params_night["CTX_AREA_NK200"] = ctx_nk
+                    self._rate_limit()
+                    res = requests.get(url, headers=headers_night, params=params_night, timeout=10)
+                    data = res.json()
+
+                    if res.status_code == 200 and data.get("rt_cd") == "0":
+                        output = data.get("output", []) or data.get("output1", [])
+                        if not output:
+                            logger.info(f"[체결이력] 야간원장(JTTT3001R) 조회 결과 없음 (date={ord_date}, page={_ + 1})")
+                            break
+                        logger.info(f"[체결이력] 야간원장(JTTT3001R) 조회 성공 (date={ord_date}, page={_ + 1}, 건수={len(output)})")
+                        for item in output:
+                            order_no = item.get("odno", "")
+                            if order_no and order_no in seen_order_nos:
+                                continue
+                            item_symbol = item.get("pdno", "").strip().upper()
+                            if symbol and item_symbol != symbol.upper():
+                                continue
+                            if order_no:
+                                seen_order_nos.add(order_no)
+
+                            exec_qty = int(item.get("ft_ccld_qty", item.get("ft_ccnl_qty", 0)) or 0)
+                            exec_price = float(item.get("ft_ccld_unpr3", item.get("ft_ccnl_unpr3", 0.0)) or 0.0)
+
+                            results.append({
+                                "order_no": order_no,
+                                "symbol": item_symbol,
+                                "order_type": item.get("sll_buy_dvsn_cd_name", ""),
+                                "qty": int(item.get("ft_ord_qty", 0) or 0),
+                                "price": float(item.get("ft_ord_unpr3", 0.0) or 0.0),
+                                "executed_qty": exec_qty,
+                                "executed_price": exec_price,
+                                "status": item.get("prcs_stat_name", ""),
+                                "order_time": (item.get("ord_dt", "") + " " + item.get("ord_tmd", "")).strip()
+                            })
+                        ctx_fk = (data.get("ctx_area_fk200", "") or "").strip()
+                        ctx_nk = (data.get("ctx_area_nk200", "") or "").strip()
+                        if not ctx_fk and not ctx_nk:
+                            break
+                    else:
+                        logger.warning(f"[체결이력] 야간원장(JTTT3001R) API 오류 (date={ord_date}, rt_cd={data.get('rt_cd')}, msg={data.get('msg1', '')})")
                         break
-                    for item in output:
-                        order_no = item.get("odno", "")
-                        if order_no and order_no in seen_order_nos:
-                            continue
-                        item_symbol = item.get("pdno", "").strip().upper()
-                        if symbol and item_symbol != symbol.upper():
-                            continue
-                        if order_no:
-                            seen_order_nos.add(order_no)
+            except Exception as e:
+                logger.warning(f"[체결이력] 야간원장(JTTT3001R) 조회 예외 (date={ord_date}): {e}")
+                continue
 
-                        exec_qty = int(item.get("ft_ccld_qty", item.get("ft_ccnl_qty", 0)) or 0)
-                        exec_price = float(item.get("ft_ccld_unpr3", item.get("ft_ccnl_unpr3", 0.0)) or 0.0)
-
-                        results.append({
-                            "order_no": order_no,
-                            "symbol": item_symbol,
-                            "order_type": item.get("sll_buy_dvsn_cd_name", ""),
-                            "qty": int(item.get("ft_ord_qty", 0) or 0),
-                            "price": float(item.get("ft_ord_unpr3", 0.0) or 0.0),
-                            "executed_qty": exec_qty,
-                            "executed_price": exec_price,
-                            "status": item.get("prcs_stat_name", ""),
-                            "order_time": (item.get("ord_dt", "") + " " + item.get("ord_tmd", "")).strip()
-                        })
-                    ctx_fk = (data.get("ctx_area_fk200", "") or "").strip()
-                    ctx_nk = (data.get("ctx_area_nk200", "") or "").strip()
-                    if not ctx_fk and not ctx_nk:
-                        break
-                else:
-                    break
-        except Exception as e:
-            logger.warning(f"[체결이력] 야간원장(JTTT3001R) 조회 예외: {e}")
-
-        # 2. 주간 원장 체결/주문 이력 조회 (TTTS3035R / VTTS3035R)
+        # 2. 주간 원장 체결/주문 이력 조회 (TTTS3035R / VTTS3035R) - 일반(01) + 연장(02) 서버 모두 조회
+        # NOTE: TTTS3035R도 날짜 범위 제한이 있을 수 있으므로, 각 날짜별로 순회하여 누락을 방지한다.
         tr_id_day = "VTTS3035R" if self.mock else "TTTS3035R"
         headers_day = self._get_headers(tr_id_day)
-        params_day = {
-            "CANO": self.cano,
-            "ACNT_PRDT_CD": self.acnt_prdt_cd,
-            "PDNO": symbol.upper() if symbol else "",
-            "ORD_STRT_DT": start_date,
-            "ORD_END_DT": end_date,
-            "SVR_DVSN_CD": "01",
-            "CCNL_DVSN": "00",
-            "ORD_GDS_DVSN": "00",
-            "CTX_AREA_FK200": "",
-            "CTX_AREA_NK200": ""
-        }
+        for svr_dvsn in ["01", "02"]:
+            for ord_date in night_dates:
+                params_day = {
+                    "CANO": self.cano,
+                    "ACNT_PRDT_CD": self.acnt_prdt_cd,
+                    "PDNO": symbol.upper() if symbol else "",
+                    "ORD_STRT_DT": ord_date,
+                    "ORD_END_DT": ord_date,
+                    "SVR_DVSN_CD": svr_dvsn,
+                    "CCNL_DVSN": "00",
+                    "ORD_GDS_DVSN": "00",
+                    "CTX_AREA_FK200": "",
+                    "CTX_AREA_NK200": ""
+                }
 
-        try:
-            ctx_fk = ""
-            ctx_nk = ""
-            for _ in range(5):
-                params_day["CTX_AREA_FK200"] = ctx_fk
-                params_day["CTX_AREA_NK200"] = ctx_nk
-                self._rate_limit()
-                res = requests.get(url, headers=headers_day, params=params_day, timeout=10)
-                data = res.json()
+                try:
+                    ctx_fk = ""
+                    ctx_nk = ""
+                    for _ in range(5):
+                        params_day["CTX_AREA_FK200"] = ctx_fk
+                        params_day["CTX_AREA_NK200"] = ctx_nk
+                        self._rate_limit()
+                        res = requests.get(url, headers=headers_day, params=params_day, timeout=10)
+                        data = res.json()
 
-                if res.status_code == 200 and data.get("rt_cd") == "0":
-                    output = data.get("output", []) or data.get("output1", [])
-                    if not output:
-                        break
-                    for item in output:
-                        order_no = item.get("odno", "")
-                        if order_no and order_no in seen_order_nos:
-                            continue
-                        item_symbol = item.get("pdno", "").strip().upper()
-                        if symbol and item_symbol != symbol.upper():
-                            continue
-                        if order_no:
-                            seen_order_nos.add(order_no)
+                        if res.status_code == 200 and data.get("rt_cd") == "0":
+                            output = data.get("output", []) or data.get("output1", [])
+                            if not output:
+                                logger.info(f"[체결이력] 주간원장(TTTS3035R) 조회 결과 없음 (SVR_DVSN_CD={svr_dvsn}, date={ord_date}, page={_ + 1})")
+                                break
+                            logger.info(f"[체결이력] 주간원장(TTTS3035R) 조회 성공 (SVR_DVSN_CD={svr_dvsn}, date={ord_date}, page={_ + 1}, 건수={len(output)})")
+                            for item in output:
+                                order_no = item.get("odno", "")
+                                if order_no and order_no in seen_order_nos:
+                                    continue
+                                item_symbol = item.get("pdno", "").strip().upper()
+                                if symbol and item_symbol != symbol.upper():
+                                    continue
+                                if order_no:
+                                    seen_order_nos.add(order_no)
 
-                        exec_qty = int(item.get("ft_ccnl_qty", item.get("ft_ccld_qty", 0)) or 0)
-                        exec_price = float(item.get("ft_ccnl_unpr3", item.get("ft_ccld_unpr3", 0.0)) or 0.0)
+                                exec_qty = int(item.get("ft_ccnl_qty", item.get("ft_ccld_qty", 0)) or 0)
+                                exec_price = float(item.get("ft_ccnl_unpr3", item.get("ft_ccld_unpr3", 0.0)) or 0.0)
 
-                        results.append({
-                            "order_no": order_no,
-                            "symbol": item_symbol,
-                            "order_type": item.get("sll_buy_dvsn_cd_name", ""),
-                            "qty": int(item.get("ft_ord_qty", 0) or 0),
-                            "price": float(item.get("ft_ord_unpr3", 0.0) or 0.0),
-                            "executed_qty": exec_qty,
-                            "executed_price": exec_price,
-                            "status": item.get("prcs_stat_name", ""),
-                            "order_time": (item.get("ord_dt", "") + " " + item.get("ord_tmd", "")).strip()
-                        })
-                    ctx_fk = (data.get("ctx_area_fk200", "") or "").strip()
-                    ctx_nk = (data.get("ctx_area_nk200", "") or "").strip()
-                    if not ctx_fk and not ctx_nk:
-                        break
-                else:
-                    msg1 = data.get("msg1", "")
-                    if "만료된" in msg1 or data.get("msg_cd") == "EGW00123":
-                        logger.warning("Token 만료 감지: 해외 체결내역 재조회 시도...")
-                        self.access_token = None
-                        self.token_issued_at = 0
-                        if self.get_access_token():
-                            return self.get_overseas_execution_history(symbol=symbol, start_date=start_date, end_date=end_date)
-                    break
-        except Exception as e:
-            logger.warning(f"[체결이력] 주간원장(TTTS3035R) 조회 예외: {e}")
+                                results.append({
+                                    "order_no": order_no,
+                                    "symbol": item_symbol,
+                                    "order_type": item.get("sll_buy_dvsn_cd_name", ""),
+                                    "qty": int(item.get("ft_ord_qty", 0) or 0),
+                                    "price": float(item.get("ft_ord_unpr3", 0.0) or 0.0),
+                                    "executed_qty": exec_qty,
+                                    "executed_price": exec_price,
+                                    "status": item.get("prcs_stat_name", ""),
+                                    "order_time": (item.get("ord_dt", "") + " " + item.get("ord_tmd", "")).strip()
+                                })
+                            ctx_fk = (data.get("ctx_area_fk200", "") or "").strip()
+                            ctx_nk = (data.get("ctx_area_nk200", "") or "").strip()
+                            if not ctx_fk and not ctx_nk:
+                                break
+                        else:
+                            msg1 = data.get("msg1", "")
+                            if "만료된" in msg1 or data.get("msg_cd") == "EGW00123":
+                                logger.warning("Token 만료 감지: 해외 체결내역 재조회 시도...")
+                                self.access_token = None
+                                self.token_issued_at = 0
+                                if self.get_access_token():
+                                    return self.get_overseas_execution_history(symbol=symbol, start_date=start_date, end_date=end_date)
+                            logger.warning(f"[체결이력] 주간원장(TTTS3035R) API 오류 (SVR_DVSN_CD={svr_dvsn}, date={ord_date}, rt_cd={data.get('rt_cd')}, msg={msg1})")
+                            break
+                except Exception as e:
+                    logger.warning(f"[체결이력] 주간원장(TTTS3035R) 조회 예외 (SVR_DVSN_CD={svr_dvsn}, date={ord_date}): {e}")
+                    continue
 
-        logger.info(f"[체결이력] 최종 결과 (통합): {len(results)}건 (symbol={symbol or '전체'})")
+        logger.info(f"[체결이력] 최종 결과 (통합): {len(results)}건 (symbol={symbol or '전체'}, 기간={start_date}~{end_date})")
+        for r in results:
+            logger.info(f"  → {r.get('order_time', '')} | {r.get('symbol', '')} | {r.get('order_type', '')} | "
+                        f"주문수량={r.get('qty', 0)} | 체결수량={r.get('executed_qty', 0)} | "
+                        f"체결가={r.get('executed_price', 0)} | 상태={r.get('status', '')} | 주문번호={r.get('order_no', '')}")
         return results
