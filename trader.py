@@ -214,7 +214,8 @@ class TraderBot:
         """
         해외주식 체결기준 잔고(TTTT1006R)에서 보유 수량/평단가를 계산 (잔고 API가 빈 결과일 때 Fallback)
         - TTTT1006R(체결기준 현물 잔고)을 사용하여 체결수량/체결단가가 정확히 반영된 데이터를 조회
-        - JTTT3001R(야간원장)/TTTS3035R(주간원장)을 사용하지 않음
+        - JTTT3001R(야간원장)은 한국 시간 낮에 데이터가 매칭되지 않아 사용하지 않음
+        - TTTS3035R(주간원장)을 사용하지 않음
         """
         result: Dict[str, Dict[str, Any]] = {}
         try:
@@ -306,6 +307,7 @@ class TraderBot:
                     # 1. 체결/실패 이력 동기화 (TTTT1006R/VTTT1006R 체결기준)
                     # NOTE: TTTS3035R/JTTT3001R 대신 TTTT1006R(체결기준 현물 잔고)을 사용하여
                     #       체결수량/체결단가가 정확히 반영된 데이터를 Google Sheets에 기록한다.
+                    #       (JTTT3001R은 한국 시간 낮에 데이터가 매칭되지 않아 사용하지 않음)
                     today_str = time.strftime("%Y%m%d")
                     # JSON 상태 파일의 start_date를 시작일로 사용
                     default_start = (datetime.date.today() - datetime.timedelta(days=30)).strftime("%Y%m%d")
