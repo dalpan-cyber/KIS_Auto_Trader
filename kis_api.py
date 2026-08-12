@@ -947,14 +947,14 @@ class KISApiClient:
             # TQQQ는 NASDAQ 상장 종목이므로 OVRS_EXCG_CD를 NASD로 지정
             # (빈 값으로 두면 API가 거래소를 특정하지 못해 일부 레코드가 누락될 수 있음)
             ovrs_excg = "NASD" if symbol.upper() == "TQQQ" else ""
-            # NOTE: KIS API JTTT3001R의 시작일 파라미터명은 ORD_SSRT_DT(더블 S)이다.
-            #       ORD_STRT_DT로 보내면 API가 인식하지 못해 페이지네이션이 제대로 동작하지 않을 수 있다.
+            # NOTE: KIS API JTTT3001R의 시작일 파라미터명은 ORD_STRT_DT(싱글 S)이다.
+            #       (ORD_SSRT_DT로 보내면 API가 INPUT_FIELD_NAME 오류를 반환한다)
             params_night = {
                 "CANO": self.cano,
                 "ACNT_PRDT_CD": self.acnt_prdt_cd,
                 "PDNO": symbol.upper() if symbol else "",
                 "ORD_DT": ord_date,
-                "ORD_SSRT_DT": ord_date,
+                "ORD_STRT_DT": ord_date,
                 "ORD_END_DT": ord_date,
                 "SLL_BUY_DVSN": "00",
                 "CCLD_NCCS_DVSN": "00",
@@ -1046,11 +1046,11 @@ class KISApiClient:
                         # 페이지 중복 감지: 이전 페이지와 동일한 레코드만 있으면 페이지네이션이 진행되지 않는 것
                         if prev_page_keys and current_page_keys.issubset(prev_page_keys):
                             # ctx_fk가 비어있지 않은데도 동일 레코드가 반복되면, 파라미터명이 잘못되었을 수 있다.
-                            # ORD_SSRT_DT 대신 ORD_STRT_DT로 재시도해본다.
-                            if _ == 1 and "ORD_SSRT_DT" in params_night:
-                                logger.warning(f"[체결이력] 야간원장(JTTT3001R) 페이지 중복 감지 (date={ord_date}, page={_ + 1}): ORD_STRT_DT로 재시도")
-                                params_night.pop("ORD_SSRT_DT", None)
-                                params_night["ORD_STRT_DT"] = ord_date
+                            # ORD_STRT_DT 대신 ORD_SSRT_DT로 재시도해본다.
+                            if _ == 1 and "ORD_STRT_DT" in params_night:
+                                logger.warning(f"[체결이력] 야간원장(JTTT3001R) 페이지 중복 감지 (date={ord_date}, page={_ + 1}): ORD_SSRT_DT로 재시도")
+                                params_night.pop("ORD_STRT_DT", None)
+                                params_night["ORD_SSRT_DT"] = ord_date
                                 ctx_fk = ""
                                 ctx_nk = ""
                                 prev_page_keys = set()
@@ -1078,13 +1078,13 @@ class KISApiClient:
         headers_day = self._get_headers(tr_id_day)
         for svr_dvsn in ["01", "02"]:
             for ord_date in night_dates:
-                # NOTE: TTTS3035R도 ORD_SSRT_DT(더블 S)를 사용한다.
+                # NOTE: TTTS3035R도 ORD_STRT_DT(싱글 S)를 사용한다.
                 #       OVRS_EXCG_CD를 NASD로 지정하여 NASDAQ 종목(TQQQ)을 정확히 조회한다.
                 params_day = {
                     "CANO": self.cano,
                     "ACNT_PRDT_CD": self.acnt_prdt_cd,
                     "PDNO": symbol.upper() if symbol else "",
-                    "ORD_SSRT_DT": ord_date,
+                    "ORD_STRT_DT": ord_date,
                     "ORD_END_DT": ord_date,
                     "SVR_DVS_CD": svr_dvsn,
                     "CCNL_DVS_CD": "0",
@@ -1169,11 +1169,11 @@ class KISApiClient:
                             # 페이지 중복 감지: 이전 페이지와 동일한 레코드만 있으면 페이지네이션이 진행되지 않는 것
                             if prev_page_keys and current_page_keys.issubset(prev_page_keys):
                                 # ctx_fk가 비어있지 않은데도 동일 레코드가 반복되면, 파라미터명이 잘못되었을 수 있다.
-                                # ORD_SSRT_DT 대신 ORD_STRT_DT로 재시도해본다.
-                                if _ == 1 and "ORD_SSRT_DT" in params_day:
-                                    logger.warning(f"[체결이력] 주간원장(TTTS3035R) 페이지 중복 감지 (SVR_DVS_CD={svr_dvsn}, date={ord_date}, page={_ + 1}): ORD_STRT_DT로 재시도")
-                                    params_day.pop("ORD_SSRT_DT", None)
-                                    params_day["ORD_STRT_DT"] = ord_date
+                                # ORD_STRT_DT 대신 ORD_SSRT_DT로 재시도해본다.
+                                if _ == 1 and "ORD_STRT_DT" in params_day:
+                                    logger.warning(f"[체결이력] 주간원장(TTTS3035R) 페이지 중복 감지 (SVR_DVS_CD={svr_dvsn}, date={ord_date}, page={_ + 1}): ORD_SSRT_DT로 재시도")
+                                    params_day.pop("ORD_STRT_DT", None)
+                                    params_day["ORD_SSRT_DT"] = ord_date
                                     ctx_fk = ""
                                     ctx_nk = ""
                                     prev_page_keys = set()
