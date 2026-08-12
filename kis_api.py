@@ -907,7 +907,7 @@ class KISApiClient:
             end_date = time.strftime("%Y%m%d")
 
         tr_id = "VTTT1006R" if self.mock else "TTTT1006R"
-        url = f"{self.url_base}/uapi/overseas-order/v1/trading/inquire-ccnl"
+        url = f"{self.url_base}/uapi/overseas-stock/v1/trading/inquire-ccnl"
         headers = self._get_headers(tr_id)
         logger.info(f"[해외체결잔고] API 호출 시작: tr_id={tr_id}, url={url}, mock={self.mock}, 기간={start_date}~{end_date}")
 
@@ -1138,7 +1138,7 @@ class KISApiClient:
         if not end_date:
             end_date = time.strftime("%Y%m%d")
 
-        url = f"{self.url_base}/uapi/overseas-order/v1/trading/inquire-ccnl"
+        url = f"{self.url_base}/uapi/overseas-stock/v1/trading/inquire-ccnl"
         results = []
         # NOTE: 페이지네이션 중복(연속 페이지에서 동일 레코드 반복)은 스킵하되,
         #       실제 중복(야간+주간 원장에 동일 주문이 존재)은 모두 표시한다.
@@ -1227,6 +1227,7 @@ class KISApiClient:
         # NOTE: KIS API TTTS3035R의 SVR_DVS_CD 값은 0(전체)/1(일반)/2(연장) 형식이다.
         #       "01"/"02"로 보내면 API가 레코드를 반환하지 않는다.
         tr_id_day = "VTTS3035R" if self.mock else "TTTS3035R"
+        url_day = f"{self.url_base}/uapi/overseas-stock/v1/trading/inquire-daily-ccld"
         headers_day = self._get_headers(tr_id_day)
         for svr_dvsn in ["1", "2"]:
             # NOTE: TTTS3035R도 ORD_STRT_DT(싱글 S)를 사용한다.
@@ -1253,7 +1254,7 @@ class KISApiClient:
                     params_day["CTX_AREA_FK200"] = ctx_fk
                     params_day["CTX_AREA_NK200"] = ctx_nk
                     self._rate_limit()
-                    res = requests.get(url, headers=headers_day, params=params_day, timeout=10)
+                    res = requests.get(url_day, headers=headers_day, params=params_day, timeout=10)
                     data = self._safe_json_response(res, context=f"체결이력[{svr_dvsn}]")
 
                     if res.status_code == 200 and data.get("rt_cd") == "0":
