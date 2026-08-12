@@ -964,6 +964,7 @@ class KISApiClient:
             try:
                 ctx_fk = ""
                 ctx_nk = ""
+                prev_page_keys = set()  # 이전 페이지에서 본 레코드 키 (페이지 중복 감지용)
                 for _ in range(5):
                     params_night["CTX_AREA_FK200"] = ctx_fk
                     params_night["CTX_AREA_NK200"] = ctx_nk
@@ -981,6 +982,10 @@ class KISApiClient:
                         if _ == 0:
                             logger.info(f"[체결이력] 야간원장(JTTT3001R) 응답 필드: {list(output[0].keys()) if output else 'N/A'}")
                             logger.info(f"[체결이력] 야간원장(JTTT3001R) 응답 원본: {output[0] if output else 'N/A'}")
+                        # 페이지별 ctx 토큰 로깅
+                        logger.info(f"[체결이력] 야간원장(JTTT3001R) page={_ + 1} ctx_fk={ctx_fk!r}, ctx_nk={ctx_nk!r}")
+
+                        current_page_keys = set()
                         for item in output:
                             total_fetched += 1
                             order_no = item.get("odno", "")
@@ -989,7 +994,16 @@ class KISApiClient:
                             qty = int(item.get("ft_ord_qty", 0) or 0)
                             exec_qty = int(item.get("ft_ccld_qty", item.get("ft_ccnl_qty", 0)) or 0)
                             exec_price = float(item.get("ft_ccld_unpr3", item.get("ft_ccnl_unpr3", 0.0)) or 0.0)
-                            order_time = (item.get("ord_dt", "") + " " + item.get("ord_tmd", "")).strip()
+                            ord_dt_raw = str(item.get("ord_dt", "")).strip()
+                            ord_tmd_raw = str(item.get("ord_tmd", "")).strip()
+                            order_time = (ord_dt_raw + " " + ord_tmd_raw).strip()
+                            status = item.get("prcs_stat_name", "")
+                            # 추가 고유 필드 (API 응답에서 사용 가능한 필드)
+                            orgn_odno = str(item.get("orgn_odno", "")).strip()
+                            ord_gno_brno = str(item.get("ord_gno_brno", "")).strip()
+                            ccld_amt = str(item.get("ccld_amt", "")).strip()
+                            rqst_amt = str(item.get("rqst_amt", "")).strip()
+                            ccld_cndt_name = str(item.get("ccld_cndt_name", "")).strip()
 
                             # 종목 필터
                             if symbol and item_symbol != symbol.upper():
@@ -997,11 +1011,16 @@ class KISApiClient:
                                 logger.info(f"[체결이력] 야간원장 종목 필터 스킵: symbol={item_symbol}, order_no={order_no}, order_time={order_time}")
                                 continue
 
-                            # 복합 키 기반 중복 판별 (주문번호 + 구분 + 주문수량 + 체결수량 + 주문시각)
-                            dedup_key = f"{order_no}|{order_type}|{qty}|{exec_qty}|{order_time}"
+                            # 복합 키 기반 중복 판별
+                            # ord_tmd(초 단위 포함) + 원주문번호 + 주문지점 + 체결금액 + 요청금액 + 체결조건까지 포함하여
+                            # 동일 주문번호의 부분체결/다중 레코드가 서로 다른 키를 갖도록 한다.
+                            dedup_key = f"{order_no}|{order_type}|{qty}|{exec_qty}|{ord_tmd_raw}|{orgn_odno}|{ord_gno_brno}|{ccld_amt}|{rqst_amt}|{ccld_cndt_name}"
+                            current_page_keys.add(dedup_key)
+                            logger.info(f"[체결이력] 야간원장 page={_ + 1} 레코드: key={dedup_key}, symbol={item_symbol}, status={status}, odno={order_no}, qty={qty}, exec_qty={exec_qty}, time={order_time}, ord_tmd={ord_tmd_raw}, orgn_odno={orgn_odno}")
+
                             if dedup_key in seen_keys:
                                 total_skipped_dup += 1
-                                logger.info(f"[체결이력] 야간원장 중복 스킵: key={dedup_key}, symbol={item_symbol}, status={item.get('prcs_stat_name', '')}")
+                                logger.info(f"[체결이력] 야간원장 중복 스킵: key={dedup_key}, symbol={item_symbol}, status={status}")
                                 continue
                             seen_keys.add(dedup_key)
 
@@ -1013,9 +1032,16 @@ class KISApiClient:
                                 "price": float(item.get("ft_ord_unpr3", 0.0) or 0.0),
                                 "executed_qty": exec_qty,
                                 "executed_price": exec_price,
-                                "status": item.get("prcs_stat_name", ""),
+                                "status": status,
                                 "order_time": order_time
                             })
+
+                        # 페이지 중복 감지: 이전 페이지와 동일한 레코드만 있으면 페이지네이션이 진행되지 않는 것
+                        if prev_page_keys and current_page_keys.issubset(prev_page_keys):
+                            logger.warning(f"[체결이력] 야간원장(JTTT3001R) 페이지 중복 감지 (date={ord_date}, page={_ + 1}): 이전 페이지와 동일한 레코드만 반환됨. 페이지네이션 중단")
+                            break
+                        prev_page_keys = current_page_keys
+
                         ctx_fk = (data.get("ctx_area_fk200", "") or "").strip()
                         ctx_nk = (data.get("ctx_area_nk200", "") or "").strip()
                         if not ctx_fk and not ctx_nk:
@@ -1049,6 +1075,7 @@ class KISApiClient:
                 try:
                     ctx_fk = ""
                     ctx_nk = ""
+                    prev_page_keys = set()  # 이전 페이지에서 본 레코드 키 (페이지 중복 감지용)
                     for _ in range(5):
                         params_day["CTX_AREA_FK200"] = ctx_fk
                         params_day["CTX_AREA_NK200"] = ctx_nk
@@ -1062,6 +1089,9 @@ class KISApiClient:
                                 logger.info(f"[체결이력] 주간원장(TTTS3035R) 조회 결과 없음 (SVR_DVSN_CD={svr_dvsn}, date={ord_date}, page={_ + 1})")
                                 break
                             logger.info(f"[체결이력] 주간원장(TTTS3035R) 조회 성공 (SVR_DVSN_CD={svr_dvsn}, date={ord_date}, page={_ + 1}, 건수={len(output)})")
+                            logger.info(f"[체결이력] 주간원장(TTTS3035R) page={_ + 1} ctx_fk={ctx_fk!r}, ctx_nk={ctx_nk!r}")
+
+                            current_page_keys = set()
                             for item in output:
                                 total_fetched += 1
                                 order_no = item.get("odno", "")
@@ -1070,7 +1100,16 @@ class KISApiClient:
                                 qty = int(item.get("ft_ord_qty", 0) or 0)
                                 exec_qty = int(item.get("ft_ccnl_qty", item.get("ft_ccld_qty", 0)) or 0)
                                 exec_price = float(item.get("ft_ccnl_unpr3", item.get("ft_ccld_unpr3", 0.0)) or 0.0)
-                                order_time = (item.get("ord_dt", "") + " " + item.get("ord_tmd", "")).strip()
+                                ord_dt_raw = str(item.get("ord_dt", "")).strip()
+                                ord_tmd_raw = str(item.get("ord_tmd", "")).strip()
+                                order_time = (ord_dt_raw + " " + ord_tmd_raw).strip()
+                                status = item.get("prcs_stat_name", "")
+                                # 추가 고유 필드 (API 응답에서 사용 가능한 필드)
+                                orgn_odno = str(item.get("orgn_odno", "")).strip()
+                                ord_gno_brno = str(item.get("ord_gno_brno", "")).strip()
+                                ccld_amt = str(item.get("ccld_amt", "")).strip()
+                                rqst_amt = str(item.get("rqst_amt", "")).strip()
+                                ccld_cndt_name = str(item.get("ccld_cndt_name", "")).strip()
 
                                 # 종목 필터
                                 if symbol and item_symbol != symbol.upper():
@@ -1078,11 +1117,16 @@ class KISApiClient:
                                     logger.info(f"[체결이력] 주간원장 종목 필터 스킵: symbol={item_symbol}, order_no={order_no}, order_time={order_time}")
                                     continue
 
-                                # 복합 키 기반 중복 판별 (주문번호 + 구분 + 주문수량 + 체결수량 + 주문시각)
-                                dedup_key = f"{order_no}|{order_type}|{qty}|{exec_qty}|{order_time}"
+                                # 복합 키 기반 중복 판별
+                                # ord_tmd(초 단위 포함) + 원주문번호 + 주문지점 + 체결금액 + 요청금액 + 체결조건까지 포함하여
+                                # 동일 주문번호의 부분체결/다중 레코드가 서로 다른 키를 갖도록 한다.
+                                dedup_key = f"{order_no}|{order_type}|{qty}|{exec_qty}|{ord_tmd_raw}|{orgn_odno}|{ord_gno_brno}|{ccld_amt}|{rqst_amt}|{ccld_cndt_name}"
+                                current_page_keys.add(dedup_key)
+                                logger.info(f"[체결이력] 주간원장 page={_ + 1} 레코드: key={dedup_key}, symbol={item_symbol}, status={status}, odno={order_no}, qty={qty}, exec_qty={exec_qty}, time={order_time}, ord_tmd={ord_tmd_raw}, orgn_odno={orgn_odno}")
+
                                 if dedup_key in seen_keys:
                                     total_skipped_dup += 1
-                                    logger.info(f"[체결이력] 주간원장 중복 스킵: key={dedup_key}, symbol={item_symbol}, status={item.get('prcs_stat_name', '')}")
+                                    logger.info(f"[체결이력] 주간원장 중복 스킵: key={dedup_key}, symbol={item_symbol}, status={status}")
                                     continue
                                 seen_keys.add(dedup_key)
 
@@ -1094,9 +1138,16 @@ class KISApiClient:
                                     "price": float(item.get("ft_ord_unpr3", 0.0) or 0.0),
                                     "executed_qty": exec_qty,
                                     "executed_price": exec_price,
-                                    "status": item.get("prcs_stat_name", ""),
+                                    "status": status,
                                     "order_time": order_time
                                 })
+
+                            # 페이지 중복 감지: 이전 페이지와 동일한 레코드만 있으면 페이지네이션이 진행되지 않는 것
+                            if prev_page_keys and current_page_keys.issubset(prev_page_keys):
+                                logger.warning(f"[체결이력] 주간원장(TTTS3035R) 페이지 중복 감지 (SVR_DVSN_CD={svr_dvsn}, date={ord_date}, page={_ + 1}): 이전 페이지와 동일한 레코드만 반환됨. 페이지네이션 중단")
+                                break
+                            prev_page_keys = current_page_keys
+
                             ctx_fk = (data.get("ctx_area_fk200", "") or "").strip()
                             ctx_nk = (data.get("ctx_area_nk200", "") or "").strip()
                             if not ctx_fk and not ctx_nk:

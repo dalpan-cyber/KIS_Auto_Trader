@@ -293,27 +293,61 @@ class GoogleSheetManager:
 
         history = []
         try:
-            records = self.history_worksheet.get_all_records()
-            for rec in records:
-                rec_sym = str(rec.get("티커", "")).strip().upper()
+            # NOTE: get_all_records()는 헤더 중복/빈 값이 있으면 실패하므로, get_all_values()로 원시 데이터를 읽는다.
+            all_values = self.history_worksheet.get_all_values()
+            if len(all_values) <= 1:
+                return history
+
+            header = all_values[0]
+            col_idx = {}
+            for i, h in enumerate(header):
+                h_clean = str(h).strip()
+                if h_clean and h_clean not in col_idx:
+                    col_idx[h_clean] = i
+
+            idx_time = col_idx.get("일시", -1)
+            idx_ticker = col_idx.get("티커", -1)
+            idx_type = col_idx.get("구분", -1)
+            idx_ord_qty = col_idx.get("주문수량", col_idx.get("수량", -1))
+            idx_exec_qty = col_idx.get("체결수량", col_idx.get("수량", -1))
+            idx_ord_price = col_idx.get("주문단가($)", col_idx.get("단가($)", -1))
+            idx_exec_price = col_idx.get("체결단가($)", col_idx.get("단가($)", -1))
+            idx_status = col_idx.get("상태", -1)
+            idx_ord_no = col_idx.get("주문번호", -1)
+
+            for row in all_values[1:]:
+                if not row or all(not str(c).strip() for c in row):
+                    continue
+
+                def _get(idx):
+                    return str(row[idx]).strip() if idx >= 0 and idx < len(row) else ""
+
+                rec_sym = _get(idx_ticker).upper()
                 if symbol and rec_sym != symbol.upper():
                     continue
 
-                ord_qty = int(rec.get("주문수량", rec.get("수량", 0)) or 0)
-                exec_qty = int(rec.get("체결수량", rec.get("수량", 0)) or 0)
-                ord_price = float(rec.get("주문단가($)", rec.get("단가($)", 0.0)) or 0.0)
-                exec_price = float(rec.get("체결단가($)", rec.get("단가($)", 0.0)) or 0.0)
+                def _to_int(s):
+                    try:
+                        return int(float(s.replace(",", ""))) if s else 0
+                    except (ValueError, AttributeError):
+                        return 0
+
+                def _to_float(s):
+                    try:
+                        return float(s.replace(",", "").replace("$", "")) if s else 0.0
+                    except (ValueError, AttributeError):
+                        return 0.0
 
                 history.append({
-                    "order_time": str(rec.get("일시", "-")).strip(),
+                    "order_time": _get(idx_time) or "-",
                     "symbol": rec_sym,
-                    "order_type": str(rec.get("구분", "-")).strip(),
-                    "qty": ord_qty,
-                    "executed_qty": exec_qty,
-                    "price": ord_price,
-                    "executed_price": exec_price,
-                    "status": str(rec.get("상태", "-")).strip(),
-                    "order_no": str(rec.get("주문번호", "-")).strip()
+                    "order_type": _get(idx_type) or "-",
+                    "qty": _to_int(_get(idx_ord_qty)),
+                    "executed_qty": _to_int(_get(idx_exec_qty)),
+                    "price": _to_float(_get(idx_ord_price)),
+                    "executed_price": _to_float(_get(idx_exec_price)),
+                    "status": _get(idx_status) or "-",
+                    "order_no": _get(idx_ord_no) or "-"
                 })
         except Exception as e:
             logger.warning(f"Google Sheet ExecutionHistory 읽기 실패: {e}")
@@ -334,19 +368,44 @@ class GoogleSheetManager:
             # 1. 기존 시트 데이터 키 수집 (중복 방지)
             # NOTE: 주문번호+티커+일시만으로는 동일 주문번호의 부분체결/다중 레코드가 누락될 수 있으므로,
             # 구분(주문타입) + 주문수량 + 체결수량까지 포함한 복합 키를 사용한다.
+            # NOTE: get_all_records()는 헤더 중복/빈 값이 있으면 실패하므로, get_all_values()로 원시 데이터를 읽는다.
             existing_keys = set()
             try:
-                records = self.history_worksheet.get_all_records()
-                for rec in records:
-                    ord_no = str(rec.get("주문번호", "")).strip()
-                    ord_time = str(rec.get("일시", "")).strip()
-                    ticker = str(rec.get("티커", "")).strip().upper()
-                    order_type = str(rec.get("구분", "")).strip()
-                    ord_qty = str(rec.get("주문수량", "")).strip()
-                    exec_qty = str(rec.get("체결수량", "")).strip()
-                    if ord_no or ord_time:
-                        existing_keys.add(f"{ord_no}|{ticker}|{ord_time}|{order_type}|{ord_qty}|{exec_qty}")
-                logger.info(f"[ExecutionHistory] 기존 시트 레코드 {len(records)}건, 기존 복합키 {len(existing_keys)}개 수집")
+                all_values = self.history_worksheet.get_all_values()
+                if len(all_values) > 1:
+                    header = all_values[0]
+                    # 헤더 인덱스 매핑 (컬럼명 → 인덱스)
+                    col_idx = {}
+                    for i, h in enumerate(header):
+                        h_clean = str(h).strip()
+                        if h_clean and h_clean not in col_idx:
+                            col_idx[h_clean] = i
+                    # 필수 컬럼 인덱스
+                    idx_ord_no = col_idx.get("주문번호", -1)
+                    idx_time = col_idx.get("일시", -1)
+                    idx_ticker = col_idx.get("티커", -1)
+                    idx_type = col_idx.get("구분", -1)
+                    idx_ord_qty = col_idx.get("주문수량", -1)
+                    idx_exec_qty = col_idx.get("체결수량", -1)
+                    idx_ord_price = col_idx.get("주문단가($)", -1)
+                    idx_exec_price = col_idx.get("체결단가($)", -1)
+
+                    for row in all_values[1:]:
+                        if not row or all(not str(c).strip() for c in row):
+                            continue
+                        ord_no = str(row[idx_ord_no]).strip() if idx_ord_no >= 0 and idx_ord_no < len(row) else ""
+                        ord_time = str(row[idx_time]).strip() if idx_time >= 0 and idx_time < len(row) else ""
+                        ticker = str(row[idx_ticker]).strip().upper() if idx_ticker >= 0 and idx_ticker < len(row) else ""
+                        order_type = str(row[idx_type]).strip() if idx_type >= 0 and idx_type < len(row) else ""
+                        ord_qty = str(row[idx_ord_qty]).strip() if idx_ord_qty >= 0 and idx_ord_qty < len(row) else ""
+                        exec_qty = str(row[idx_exec_qty]).strip() if idx_exec_qty >= 0 and idx_exec_qty < len(row) else ""
+                        ord_price = str(row[idx_ord_price]).strip() if idx_ord_price >= 0 and idx_ord_price < len(row) else ""
+                        exec_price = str(row[idx_exec_price]).strip() if idx_exec_price >= 0 and idx_exec_price < len(row) else ""
+                        if ord_no or ord_time:
+                            existing_keys.add(f"{ord_no}|{ticker}|{ord_time}|{order_type}|{ord_qty}|{exec_qty}|{ord_price}|{exec_price}")
+                    logger.info(f"[ExecutionHistory] 기존 시트 데이터 행 {len(all_values) - 1}건, 기존 복합키 {len(existing_keys)}개 수집")
+                else:
+                    logger.info("[ExecutionHistory] 기존 시트에 데이터 없음 (헤더만 있거나 빈 시트)")
             except Exception as e:
                 logger.warning(f"[ExecutionHistory] 기존 시트 레코드 수집 실패: {e}")
 
@@ -360,7 +419,9 @@ class GoogleSheetManager:
                 order_type = str(h.get("order_type", "-")).strip()
                 qty = int(h.get("qty", 0) or 0)
                 exec_qty = int(h.get("executed_qty", 0) or 0)
-                dedup_key = f"{ord_no}|{ticker}|{ord_time}|{order_type}|{qty}|{exec_qty}"
+                price = float(h.get("price", 0.0) or 0.0)
+                exec_price = float(h.get("executed_price", 0.0) or 0.0)
+                dedup_key = f"{ord_no}|{ticker}|{ord_time}|{order_type}|{qty}|{exec_qty}|{price}|{exec_price}"
 
                 if dedup_key in existing_keys:
                     skipped_existing += 1
@@ -368,8 +429,6 @@ class GoogleSheetManager:
                     continue
 
                 existing_keys.add(dedup_key)
-                price = float(h.get("price", 0.0) or 0.0)
-                exec_price = float(h.get("executed_price", 0.0) or 0.0)
                 total_amt = exec_qty * exec_price if exec_qty > 0 else (qty * price)
 
                 new_rows.append([
