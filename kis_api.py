@@ -1172,7 +1172,7 @@ class KISApiClient:
             "OVRS_EXCG_CD": ovrs_excg,
             "PDNO": symbol.upper() if symbol else "",
             "SLL_BUY_DVSN_CD": "00",
-            "LOAN_DVSN_CD": "00",
+            "LOAN_DVSN_CD": "",
             "CTX_AREA_FK100": "",
             "CTX_AREA_NK100": ""
         }
