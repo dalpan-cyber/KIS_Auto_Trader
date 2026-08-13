@@ -1129,9 +1129,9 @@ class KISApiClient:
     ) -> List[Dict[str, Any]]:
         """
         해외주식 체결/미체결 이력 조회
-        - 체결기준 현물 잔고 (TTTS3012R / VTTS3012R), 기간별거래 (TTTS3011R / VTTS3011R) 교차 조회 후 통합
+        - 체결기준 현물 잔고 (TTTS3012R / VTTS3012R), 기간별거래 (CTOS4001R / VCTS4001R) 교차 조회 후 통합
         - NOTE: 야간 원장(JTTT3001R)은 한국 시간 낮에 데이터가 매칭되지 않아 TTTS3012R(체결기준)로 대체
-        - NOTE: TTTS3011R(기간별거래)로 주문/체결 이력을 조회하며,
+        - NOTE: CTOS4001R(기간별거래)로 주문/체결 이력을 조회하며,
                 주문번호(odno) 기준으로 중복을 제거한다.
         """
         self._ensure_token()
@@ -1224,66 +1224,80 @@ class KISApiClient:
         # NOTE: OVRS_EXCG_CD를 "NAS"로 설정하여 나스닥 거래소의 해외주식 주문체결 이력을 조회한다.
         ovrs_excg = "NAS"
 
-        # 2. 해외주식 주문/체결 이력 조회 (TTTS3011R 기간별거래)
+        # 2. 해외주식 주문/체결 이력 조회 (CTOS4001R 기간별거래)
         # NOTE: 야간원장(JTTT3001R)은 한국 시간 낮에 데이터가 매칭되지 않아 제거,
         #       TTTS3035R(주간원장)은 현재 주(week) 데이터만 반환하므로 제거,
-        #       TTTS3011R(기간별거래)만 사용하여 기간 전체 이력을 조회한다.
-        tr_id_day = "VTTS3011R" if self.mock else "TTTS3011R"
+        #       CTOS4001R(기간별거래)만 사용하여 기간 전체 이력을 조회한다.
+        tr_id_day = "VCTS4001R" if self.mock else "CTOS4001R"
         url_day = f"{self.url_base}/uapi/overseas-stock/v1/trading/inquire-period-trans"
-        ep_name = "기간별거래(TTTS3011R)"
+        ep_name = "기간별거래(CTOS4001R)"
         headers_day = self._get_headers(tr_id_day)
         logger.info(f"[체결이력] {ep_name} API 호출 시작: tr_id={tr_id_day}, url={url_day}")
 
-        # NOTE: SVR_DVS_CD는 "0"(전체)만 조회한다.
+        # NOTE: CTOS4001R 요청 파라미터 (등록일자 기준 조회)
+        #       - ERLM_STRT_DT/ERLM_END_DT: 등록시작/종료일자
+        #       - LOAN_DVSN_CD: 대출구분코드 (00: 전체)
+        #       - SLL_BUY_DVSN_CD: 매도매수구분코드 (00: 전체)
         params_day = {
             "CANO": self.cano,
             "ACNT_PRDT_CD": self.acnt_prdt_cd,
-            "PDNO": symbol.upper() if symbol else "",
-            "ORD_STRT_DT": start_date,
-            "ORD_END_DT": end_date,
-            "SVR_DVS_CD": "0",
-            "CCNL_DVS_CD": "00",
-            "CCLD_NCCS_DVSN": "0",
-            "SLL_BUY_DVSN": "00",
-            "SLL_BUY_DVSN_CD": "00",
-            "ORD_GDS_DVS_CD": "0",
+            "ERLM_STRT_DT": start_date,
+            "ERLM_END_DT": end_date,
             "OVRS_EXCG_CD": ovrs_excg,
-            "CTX_AREA_FK200": "",
-            "CTX_AREA_NK200": ""
+            "PDNO": symbol.upper() if symbol else "",
+            "SLL_BUY_DVSN_CD": "00",
+            "LOAN_DVSN_CD": "00",
+            "CTX_AREA_FK100": "",
+            "CTX_AREA_NK100": ""
         }
 
         try:
             ctx_fk = ""
             ctx_nk = ""
             for _ in range(5):
-                params_day["CTX_AREA_FK200"] = ctx_fk
-                params_day["CTX_AREA_NK200"] = ctx_nk
+                params_day["CTX_AREA_FK100"] = ctx_fk
+                params_day["CTX_AREA_NK100"] = ctx_nk
                 time.sleep(0.05)
                 res = requests.get(url_day, headers=headers_day, params=params_day, timeout=8)
                 data = self._safe_json_response(res, context=f"체결이력[{ep_name}]")
 
                 if res.status_code == 200 and data.get("rt_cd") == "0":
-                    output = data.get("output", []) or data.get("output1", []) or data.get("output2", [])
+                    output = data.get("output1", []) or data.get("output", [])
                     if not output:
                         break
                     logger.info(f"[체결이력] {ep_name} 조회 성공 (건수={len(output)}, page={_ + 1})")
 
                     for item in output:
                         total_fetched += 1
+                        # CTOS4001R 응답 필드 매핑
+                        # - trad_dt: 매매일자
+                        # - sttl_dt: 결제일자
+                        # - sll_buy_dvsn_cd: 매도매수구분코드
+                        # - sll_buy_dvsn_name: 매도매수구분명
+                        # - pdno: 상품번호
+                        # - ovrs_item_name: 해외종목명
+                        # - ccld_qty: 체결수량
+                        # - ft_ccld_unpr2: FT체결단가2
+                        # - ovrs_stck_ccld_unpr: 해외주식체결단가
+                        # - tr_frcr_amt2: 거래외화금액2
+                        # - tr_amt: 거래금액
+                        # - crcy_cd: 통화코드
+                        # - loan_dvsn_cd: 대출구분코드
+                        # - loan_dvsn_name: 대출구분명
                         order_no = str(item.get("odno", item.get("ord_no", ""))).strip()
                         item_symbol = str(item.get("pdno", item.get("symb", item.get("symbol", "")))).strip().upper()
-                        sll_buy_cd = str(item.get("sll_buy_dvsn_cd", item.get("sll_buy_dvsn", ""))).strip()
-                        order_type = str(item.get("sll_buy_dvsn_cd_name", item.get("sll_buy_dvsn_name", item.get("sll_buy_name", "")))).strip()
+                        sll_buy_cd = str(item.get("sll_buy_dvsn_cd", "")).strip()
+                        order_type = str(item.get("sll_buy_dvsn_name", "")).strip()
                         if not order_type or order_type == "-":
                             if sll_buy_cd in ("01", "1"):
                                 order_type = "매도"
                             elif sll_buy_cd in ("02", "2"):
                                 order_type = "매수"
-                        qty = int(item.get("ft_ord_qty", item.get("ord_qty", item.get("qty", 0))) or 0)
-                        exec_qty = int(item.get("ft_ccnl_qty", item.get("ft_ccld_qty", item.get("ccld_qty", item.get("exec_qty", 0)))) or 0)
-                        exec_price = float(item.get("ft_ccnl_unpr3", item.get("ft_ccld_unpr3", item.get("ccld_unpr", item.get("exec_price", 0.0)))) or 0.0)
-                        ord_price = float(item.get("ft_ord_unpr3", item.get("ord_unpr", item.get("price", 0.0))) or 0.0)
-                        ord_dt_raw = str(item.get("ord_dt", item.get("order_dt", ""))).strip()
+                        qty = int(item.get("ccld_qty", item.get("ft_ccld_qty", item.get("qty", 0))) or 0)
+                        exec_qty = int(item.get("ccld_qty", item.get("ft_ccld_qty", item.get("exec_qty", 0))) or 0)
+                        exec_price = float(item.get("ovrs_stck_ccld_unpr", item.get("ft_ccld_unpr2", item.get("exec_price", 0.0))) or 0.0)
+                        ord_price = float(item.get("ovrs_stck_ccld_unpr", item.get("ft_ccld_unpr2", item.get("price", 0.0))) or 0.0)
+                        ord_dt_raw = str(item.get("trad_dt", item.get("ord_dt", item.get("order_dt", "")))).strip()
                         ord_tmd_raw = str(item.get("ord_tmd", item.get("order_tmd", ""))).strip()
                         order_time = (ord_dt_raw + " " + ord_tmd_raw).strip()
                         status = str(item.get("prcs_stat_name", item.get("stat_name", item.get("status", "")))).strip()
@@ -1308,28 +1322,28 @@ class KISApiClient:
                             "ord_tmd": ord_tmd_raw,
                             "ord_gno_brno": ord_gno_brno,
                             "orgn_odno": orgn_odno,
-                            "prdt_name": str(item.get("prdt_name", "")).strip(),
+                            "prdt_name": str(item.get("ovrs_item_name", item.get("prdt_name", ""))).strip(),
                             "sll_buy_dvsn_cd": str(item.get("sll_buy_dvsn_cd", "")).strip(),
                             "rvse_cncl_dvsn": str(item.get("rvse_cncl_dvsn", "")).strip(),
                             "rvse_cncl_dvsn_name": str(item.get("rvse_cncl_dvsn_name", "")).strip(),
-                            "ft_ccld_amt3": str(item.get("ft_ccld_amt3", "")).strip(),
+                            "ft_ccld_amt3": str(item.get("tr_amt", item.get("ft_ccld_amt3", ""))).strip(),
                             "nccs_qty": str(item.get("nccs_qty", "")).strip(),
                             "rjct_rson": str(item.get("rjct_rson", "")).strip(),
                             "rjct_rson_name": str(item.get("rjct_rson_name", "")).strip(),
                             "tr_mket_name": str(item.get("tr_mket_name", "")).strip(),
                             "tr_natn_name": str(item.get("tr_natn_name", "")).strip(),
                             "ovrs_excg_cd": str(item.get("ovrs_excg_cd", "")).strip(),
-                            "tr_crcy_cd": str(item.get("tr_crcy_cd", "")).strip(),
+                            "tr_crcy_cd": str(item.get("crcy_cd", item.get("tr_crcy_cd", ""))).strip(),
                             "dmst_ord_dt": str(item.get("dmst_ord_dt", "")).strip(),
                             "thco_ord_tmd": str(item.get("thco_ord_tmd", "")).strip(),
-                            "loan_type_cd": str(item.get("loan_type_cd", "")).strip(),
+                            "loan_type_cd": str(item.get("loan_dvsn_cd", item.get("loan_type_cd", ""))).strip(),
                             "loan_dt": str(item.get("loan_dt", "")).strip(),
                             "mdia_dvsn_name": str(item.get("mdia_dvsn_name", "")).strip(),
                             "usa_amk_exts_rqst_yn": str(item.get("usa_amk_exts_rqst_yn", "")).strip()
                         })
 
-                    ctx_fk = (data.get("ctx_area_fk200", "") or "").strip()
-                    ctx_nk = (data.get("ctx_area_nk200", "") or "").strip()
+                    ctx_fk = (data.get("ctx_area_fk100", "") or "").strip()
+                    ctx_nk = (data.get("ctx_area_nk100", "") or "").strip()
                     if not ctx_fk and not ctx_nk:
                         break
                 else:
