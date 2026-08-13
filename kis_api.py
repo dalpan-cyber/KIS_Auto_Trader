@@ -1128,11 +1128,11 @@ class KISApiClient:
         end_date: str = ""
     ) -> List[Dict[str, Any]]:
         """
-        해외주식 체결/미체결 이력 조회
-        - 체결기준 현물 잔고 (TTTS3012R / VTTS3012R), 기간별거래 (CTOS4001R / VCTS4001R) 교차 조회 후 통합
-        - NOTE: 야간 원장(JTTT3001R)은 한국 시간 낮에 데이터가 매칭되지 않아 TTTS3012R(체결기준)로 대체
-        - NOTE: CTOS4001R(기간별거래)로 주문/체결 이력을 조회하며,
-                주문번호(odno) 기준으로 중복을 제거한다.
+        해외주식 체결/미체결 이력 조회 (CTOS4001R 기간별거래)
+        - CTOS4001R(기간별거래)로 주문/체결 이력을 조회하며, 주문번호(odno) 기준으로 중복을 제거한다.
+        - NOTE: 야간원장(JTTT3001R)은 한국 시간 낮에 데이터가 매칭되지 않아 제거,
+                TTTS3035R(주간원장)은 현재 주(week) 데이터만 반환하므로 제거,
+                CTOS4001R(기간별거래)만 사용하여 기간 전체 이력을 조회한다.
         """
         self._ensure_token()
         if not self.access_token or not self.cano:
@@ -1143,91 +1143,14 @@ class KISApiClient:
         if not end_date:
             end_date = time.strftime("%Y%m%d")
 
-        url = f"{self.url_base}/uapi/overseas-stock/v1/trading/inquire-ccnl"
         results = []
-        # NOTE: 페이지네이션 중복(연속 페이지에서 동일 레코드 반복)은 스킵하되,
-        #       실제 중복(야간+주간 원장에 동일 주문이 존재)은 모두 표시한다.
         total_fetched = 0
         total_skipped_symbol = 0
-
-        # 1. 체결기준 현물 잔고 조회 (TTTS3012R / VTTS3012R) - 미국주식 야간/LOC 주문 포함
-        # NOTE: 야간 원장(JTTT3001R)은 한국 시간 낮에 데이터가 매칭되지 않아,
-        #       TTTS3012R(해외주식 잔고)로 대체하여 체결수량/체결단가가 정확히 반영된 데이터를 조회한다.
-        # NOTE: TTTS3012R은 get_overseas_execution_balance()에서 구현되어 있으며,
-        #       NAS/NYS/AMS 거래소를 순회하며 체결기준 보유 종목을 통합 조회한다.
-        exec_balance_res = self.get_overseas_execution_balance(
-            symbol=symbol,
-            start_date=start_date,
-            end_date=end_date,
-            cblc_dvsn="00"  # 전체(체결+미체결) 기준으로 조회
-        )
-        if exec_balance_res.get("success"):
-            exec_items = exec_balance_res.get("holdings", [])
-            logger.info(f"[체결이력] 체결기준 잔고(TTTS3012R) 조회 성공: {len(exec_items)}개 종목 (기간={start_date}~{end_date})")
-            for item in exec_items:
-                total_fetched += 1
-                item_symbol = item.get("code", "").strip().upper()
-                if not item_symbol:
-                    continue
-
-                # 종목 필터
-                if symbol and item_symbol != symbol.upper():
-                    total_skipped_symbol += 1
-                    logger.debug(f"[체결이력] 체결기준 잔고 종목 필터 스킵: symbol={item_symbol}")
-                    continue
-
-                qty = int(item.get("qty", item.get("executed_qty", 0)) or 0)
-                exec_qty = int(item.get("executed_qty", 0) or 0)
-                unexec_qty = int(item.get("unexecuted_qty", 0) or 0)
-                exec_price = float(item.get("executed_price", item.get("avg_price", 0.0)) or 0.0)
-                avg_price = float(item.get("avg_price", 0.0) or 0.0)
-
-                now_dt_str = time.strftime("%Y%m%d")
-                now_full_str = time.strftime("%Y-%m-%d %H:%M:%S")
-                results.append({
-                    "order_no": f"BAL_{item_symbol}",
-                    "symbol": item_symbol,
-                    "order_type": "체결잔고",
-                    "qty": qty,
-                    "price": avg_price,
-                    "executed_qty": exec_qty,
-                    "executed_price": exec_price,
-                    "status": "체결" if exec_qty > 0 else "미체결",
-                    "order_time": now_full_str,
-                    "ord_dt": now_dt_str,
-                    "ord_tmd": time.strftime("%H%M%S"),
-                    "ord_gno_brno": "",
-                    "orgn_odno": "",
-                    "prdt_name": item.get("name", f"해외_{item_symbol}"),
-                    "sll_buy_dvsn_cd": "",
-                    "rvse_cncl_dvsn": "",
-                    "rvse_cncl_dvsn_name": "",
-                    "ft_ccld_amt3": "",
-                    "nccs_qty": str(unexec_qty),
-                    "rjct_rson": "",
-                    "rjct_rson_name": "",
-                    "tr_mket_name": "",
-                    "tr_natn_name": "",
-                    "ovrs_excg_cd": "",
-                    "tr_crcy_cd": "USD",
-                    "dmst_ord_dt": "",
-                    "thco_ord_tmd": "",
-                    "loan_type_cd": "",
-                    "loan_dt": "",
-                    "mdia_dvsn_name": "",
-                    "usa_amk_exts_rqst_yn": ""
-                })
-                logger.debug(f"[체결이력] 체결기준 잔고(TTTS3012R) 레코드: symbol={item_symbol}, qty={qty}, exec_qty={exec_qty}, unexec_qty={unexec_qty}, exec_price={exec_price}, avg_price={avg_price}")
-        else:
-            logger.warning(f"[체결이력] 체결기준 잔고(TTTS3012R) 조회 실패: {exec_balance_res.get('msg', 'Unknown')}")
 
         # NOTE: OVRS_EXCG_CD를 "NAS"로 설정하여 나스닥 거래소의 해외주식 주문체결 이력을 조회한다.
         ovrs_excg = "NAS"
 
-        # 2. 해외주식 주문/체결 이력 조회 (CTOS4001R 기간별거래)
-        # NOTE: 야간원장(JTTT3001R)은 한국 시간 낮에 데이터가 매칭되지 않아 제거,
-        #       TTTS3035R(주간원장)은 현재 주(week) 데이터만 반환하므로 제거,
-        #       CTOS4001R(기간별거래)만 사용하여 기간 전체 이력을 조회한다.
+        # 해외주식 주문/체결 이력 조회 (CTOS4001R 기간별거래)
         tr_id_day = "VCTS4001R" if self.mock else "CTOS4001R"
         url_day = f"{self.url_base}/uapi/overseas-stock/v1/trading/inquire-period-trans"
         ep_name = "기간별거래(CTOS4001R)"
@@ -1261,11 +1184,20 @@ class KISApiClient:
                 res = requests.get(url_day, headers=headers_day, params=params_day, timeout=8)
                 data = self._safe_json_response(res, context=f"체결이력[{ep_name}]")
 
+                # DEBUG: CTOS4001R 전체 응답 원문 로그 (디버깅용)
+                logger.debug(f"[체결이력] {ep_name} page={_+1} HTTP {res.status_code} | rt_cd={data.get('rt_cd')} | msg_cd={data.get('msg_cd')} | msg1={data.get('msg1')} | raw={json.dumps(data, ensure_ascii=False)[:3000]}")
+
                 if res.status_code == 200 and data.get("rt_cd") == "0":
                     output = data.get("output1", []) or data.get("output", [])
                     if not output:
+                        logger.warning(f"[체결이력] {ep_name} page={_+1} output이 비어있음 (rt_cd=0, output1/output 없음)")
                         break
                     logger.info(f"[체결이력] {ep_name} 조회 성공 (건수={len(output)}, page={_ + 1})")
+
+                    # DEBUG: CTOS4001R 응답 원문 로그 (디버깅용)
+                    logger.debug(f"[체결이력] {ep_name} page={_+1} output1 raw: {json.dumps(output, ensure_ascii=False)[:2000]}")
+                    logger.debug(f"[체결이력] {ep_name} page={_+1} output2 raw: {json.dumps(data.get('output2', {}), ensure_ascii=False)[:1000]}")
+                    logger.debug(f"[체결이력] {ep_name} page={_+1} ctx_area_fk100={ctx_fk} ctx_area_nk100={ctx_nk}")
 
                     for item in output:
                         total_fetched += 1
@@ -1342,6 +1274,9 @@ class KISApiClient:
                             "usa_amk_exts_rqst_yn": str(item.get("usa_amk_exts_rqst_yn", "")).strip()
                         })
 
+                        # DEBUG: 파싱된 레코드 로그 (디버깅용)
+                        logger.debug(f"[체결이력] {ep_name} 파싱 레코드: order_no={order_no}, symbol={item_symbol}, order_type={order_type}, qty={qty}, exec_qty={exec_qty}, exec_price={exec_price}, ord_price={ord_price}, trad_dt={ord_dt_raw}, status={status}")
+
                     ctx_fk = (data.get("ctx_area_fk100", "") or "").strip()
                     ctx_nk = (data.get("ctx_area_nk100", "") or "").strip()
                     if not ctx_fk and not ctx_nk:
@@ -1373,7 +1308,7 @@ class KISApiClient:
             deduped_results.append(r)
         results = deduped_results
 
-        logger.info(f"[체결이력] 최종 결과 (통합): {len(results)}건 (symbol={symbol or '전체'}, 기간={start_date}~{end_date})")
+        logger.info(f"[체결이력] 최종 결과: {len(results)}건 (symbol={symbol or '전체'}, 기간={start_date}~{end_date})")
         logger.info(f"[체결이력] 진단: 총 조회={total_fetched}건, 종목필터 스킵={total_skipped_symbol}건, 중복 제거={total_fetched - len(results)}건, 최종={len(results)}건")
         for r in results:
             logger.info(f"  → {r.get('order_time', '')} | {r.get('symbol', '')} | {r.get('order_type', '')} | "
