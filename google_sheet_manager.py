@@ -46,6 +46,7 @@ class GoogleSheetManager:
         self.holdings_worksheet: Optional[Any] = None
         self.history_worksheet: Optional[Any] = None
         self.exec_balance_worksheet: Optional[Any] = None
+        self.completed_worksheet: Optional[Any] = None
         self.is_connected = False
 
         if self.enabled and GSPREAD_AVAILABLE:
@@ -145,13 +146,13 @@ class GoogleSheetManager:
                 headers = ["일시", "티커", "구분", "주문수량", "체결수량", "주문단가($)", "체결단가($)", "총금액($)", "상태", "주문번호", "최종갱신시각"]
                 self.history_worksheet.append_row(headers)
 
-            # 'ExecutionBalance' 워크시트 준비 (체결기준 현물 잔고 - TTTS3012R)
+            # 'CompletedTrades' 워크시트 준비 (무한매수 전량 매도 완료 일지)
             try:
-                self.exec_balance_worksheet = self.spreadsheet.worksheet("ExecutionBalance")
+                self.completed_worksheet = self.spreadsheet.worksheet("CompletedTrades")
             except Exception:
-                self.exec_balance_worksheet = self.spreadsheet.add_worksheet(title="ExecutionBalance", rows="100", cols="12")
-                headers = ["티커", "종목명", "보유수량", "체결수량", "미체결수량", "평단가($)", "체결단가($)", "현재가($)", "수익률(%)", "최종갱신시각"]
-                self.exec_balance_worksheet.append_row(headers)
+                self.completed_worksheet = self.spreadsheet.add_worksheet(title="CompletedTrades", rows="500", cols="14")
+                headers = ["완료일시", "티커", "시작일자", "매도일자", "완료회차", "매도수량", "매수평단가($)", "매도단가($)", "총매수금액($)", "총매도금액($)", "실현손익($)", "수익률(%)", "상태"]
+                self.completed_worksheet.append_row(headers)
 
             self.is_connected = True
             logger.info(f"🟢 Google Sheets 연동 성공! (서비스 계정: {sa_email} | 시트: {self.spreadsheet.title})")
@@ -548,3 +549,61 @@ class GoogleSheetManager:
                 logger.debug("Google Sheet ExecutionHistory API 호출 할당량 초과 (다음 턴 재시도)")
             else:
                 logger.warning(f"Google Sheet ExecutionHistory 동기화 예외: {e}")
+
+    def record_completed_cycle(
+        self,
+        symbol: str,
+        start_date: str,
+        end_date: str,
+        completed_round: float,
+        qty: int,
+        avg_price: float,
+        sell_price: float,
+        status: str = "COMPLETED"
+    ):
+        """
+        무한매수 전량 익절 매도 완료 시, 완료된 차수의 최종 실현 손익 및 주요 정보를 'CompletedTrades' 워크시트에 기록
+        """
+        if not self.is_connected:
+            return
+
+        try:
+            # CompletedTrades 워크시트 확보 시도
+            if not self.completed_worksheet and self.spreadsheet:
+                try:
+                    self.completed_worksheet = self.spreadsheet.worksheet("CompletedTrades")
+                except Exception:
+                    self.completed_worksheet = self.spreadsheet.add_worksheet(title="CompletedTrades", rows="500", cols="14")
+                    headers = ["완료일시", "티커", "시작일자", "매도일자", "완료회차", "매도수량", "매수평단가($)", "매도단가($)", "총매수금액($)", "총매도금액($)", "실현손익($)", "수익률(%)", "상태"]
+                    self.completed_worksheet.append_row(headers)
+
+            if not self.completed_worksheet:
+                return
+
+            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            total_buy_amt = qty * avg_price if qty > 0 and avg_price > 0 else 0.0
+            total_sell_amt = qty * sell_price if qty > 0 and sell_price > 0 else 0.0
+            pnl = total_sell_amt - total_buy_amt
+            roi_pct = (pnl / total_buy_amt * 100) if total_buy_amt > 0 else 0.0
+
+            row = [
+                now_str,
+                symbol.upper(),
+                start_date or "-",
+                end_date or datetime.date.today().strftime("%Y-%m-%d"),
+                completed_round,
+                qty,
+                round(avg_price, 2),
+                round(sell_price, 2),
+                round(total_buy_amt, 2),
+                round(total_sell_amt, 2),
+                round(pnl, 2),
+                round(roi_pct, 2),
+                status
+            ]
+
+            self.completed_worksheet.append_row(row)
+            logger.info(f"📊 Google Sheet 'CompletedTrades'에 [{symbol}] 무한매수 완료 일지 기록 성공 (실현손익: ${pnl:.2f}, 수익률: {roi_pct:.2f}%)")
+        except Exception as e:
+            logger.warning(f"Google Sheet CompletedTrades 기록 예외: {e}")
+

@@ -147,9 +147,35 @@ class InfiniteStateManager:
         state["status"] = "BUYING"
         self.save_state()
 
-    def complete_round(self, symbol: str):
-        """전량 익절 매도 시 회차 리셋 및 상태 COMPLETED"""
+    def complete_round(
+        self,
+        symbol: str,
+        avg_price: float = 0.0,
+        sell_price: float = 0.0,
+        qty: int = 0
+    ):
+        """전량 익절 매도 시 회차 리셋 및 상태 COMPLETED, Google Sheets 완료 일지 기록"""
         state = self.get_symbol_state(symbol)
+        completed_round = state.get("current_round", 0.0)
+        start_date = state.get("start_date", "")
+        end_date = datetime.now().strftime("%Y-%m-%d")
+
+        # Google Sheets 매매 완료 일지 기록
+        if hasattr(self, "gss_mgr") and self.gss_mgr:
+            try:
+                self.gss_mgr.record_completed_cycle(
+                    symbol=symbol,
+                    start_date=start_date,
+                    end_date=end_date,
+                    completed_round=completed_round,
+                    qty=qty,
+                    avg_price=avg_price,
+                    sell_price=sell_price,
+                    status="COMPLETED"
+                )
+            except Exception as e:
+                logger.warning(f"구글 시트 완료 일지 기록 중 예외: {e}")
+
         state["current_round"] = 0
         state["status"] = "COMPLETED"
         self.save_state()

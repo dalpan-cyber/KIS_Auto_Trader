@@ -434,8 +434,9 @@ class TraderBot:
                     # 매수 주문 접수/체결 시 진행 회차 증가 (전략 상태만 JSON/구글 시트에 기록)
                     self.infinite_state_mgr.advance_round(symbol, round_inc=round_inc)
                 else:
-                    # 전량 익절 매도 시 회차 리셋
-                    self.infinite_state_mgr.complete_round(symbol)
+                    # 전량 익절 매도 시 회차 리셋 및 구글 시트 완료 일지 기록
+                    actual_avg_p = float(self.holdings.get(symbol, {}).get("avg_price", price))
+                    self.infinite_state_mgr.complete_round(symbol, avg_price=actual_avg_p, sell_price=price, qty=qty)
                 self.risk_mgr.reset_error()
                 self.logger.info(f"🎉 [{symbol}] 해외주식 무한매수 {prop['action_kr']} 주문 성공!")
                 self.fetch_account_balance()
@@ -580,8 +581,8 @@ class TraderBot:
                                 # 매수 주문 접수/체결 시 진행 회차 증가 (전략 상태만 JSON/구글 시트에 기록)
                                 self.infinite_state_mgr.advance_round(symbol, round_inc=round_inc)
                             else:
-                                # 전량 익절 매도 시 회차 리셋
-                                self.infinite_state_mgr.complete_round(symbol)
+                                # 전량 익절 매도 시 회차 리셋 및 구글 시트 완료 일지 기록
+                                self.infinite_state_mgr.complete_round(symbol, avg_price=actual_avg_p, sell_price=price, qty=qty)
                                 self.logger.info(
                                     f"🎉 [{symbol}] 해외주식 익절 매도 주문 접수 성공! "
                                     f"(매도수량: {qty}주, 목표가: ${price:.2f}, 예상총액: ${total_ord_amt:,.2f})"

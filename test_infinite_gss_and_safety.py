@@ -54,11 +54,14 @@ class TestInfiniteGSSAndSafety(unittest.TestCase):
         st = mgr.get_symbol_state("TQQQ")
         self.assertEqual(st["current_round"], 1.0)
 
-        # 4. 익절 매도 시 회차 리셋 및 COMPLETED
-        mgr.complete_round("TQQQ")
+        # 4. 익절 매도 시 회차 리셋 및 COMPLETED, 구글 시트 완료일지 연동 검증
+        mock_gss = MagicMock()
+        mgr.gss_mgr = mock_gss
+        mgr.complete_round("TQQQ", avg_price=50.0, sell_price=55.0, qty=10)
         st = mgr.get_symbol_state("TQQQ")
         self.assertEqual(st["current_round"], 0)
         self.assertEqual(st["status"], "COMPLETED")
+        mock_gss.record_completed_cycle.assert_called_once()
 
     def test_trader_full_sell_qty_reconciliation(self):
         """+10% 전량 익절 매도 시 계좌 수량과 제안 수량이 다를 때 계좌 수량으로 자동 수정되는 안전 로직 검증"""
