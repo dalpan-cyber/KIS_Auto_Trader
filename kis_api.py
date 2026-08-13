@@ -1131,6 +1131,7 @@ class KISApiClient:
         해외주식 체결/미체결 이력 조회
         - 체결기준 현물 잔고 (TTTS3012R / VTTS3012R) 및 주간 원장 (TTTS3035R / VTTS3035R) 교차 조회 후 통합
         - NOTE: 야간 원장(JTTT3001R)은 한국 시간 낮에 데이터가 매칭되지 않아 TTTS3012R(체결기준)로 대체
+        - NOTE: TTTS3011R(일별/기간별거래)은 TTTS3035R(주간원장)과 데이터가 중복되어 제거함 (API 호출 최소화)
         """
         self._ensure_token()
         if not self.access_token or not self.cano:
@@ -1222,28 +1223,14 @@ class KISApiClient:
         # NOTE: OVRS_EXCG_CD를 빈 값("")으로 설정하여 거래소 구분 없이 계좌의 전체 해외주식 주문체결 이력을 조회한다.
         ovrs_excg = ""
 
-        # 2. 해외주식 주문/체결 이력 다중 엔드포인트 교차 조회 (TTTS3035R, JTTT3001R, TTTS3011R)
-        # NOTE: 주간원장(TTTS3035R), 야간원장(JTTT3001R), 체결내역(TTTS3011R)을 모두 교차 조회하여 파라미터 규격 차이로 인한 누락을 방지한다.
+        # 2. 해외주식 주문/체결 이력 조회 (TTTS3035R 주간원장)
+        # NOTE: 야간원장(JTTT3001R)은 한국 시간 낮에 데이터가 매칭되지 않아 제거,
+        #       TTTS3011R(일별/기간별거래)은 TTTS3035R(주간원장)과 데이터가 중복되어 제거 (API 호출 최소화)
         endpoints = [
             {
                 "tr_id": "VTTS3035R" if self.mock else "TTTS3035R",
                 "url": f"{self.url_base}/uapi/overseas-stock/v1/trading/inquire-ccnl",
                 "name": "주간원장(TTTS3035R)"
-            },
-            {
-                "tr_id": "VJTT3001R" if self.mock else "JTTT3001R",
-                "url": f"{self.url_base}/uapi/overseas-stock/v1/trading/inquire-ccnl",
-                "name": "야간원장(JTTT3001R)"
-            },
-            {
-                "tr_id": "VTTS3011R" if self.mock else "TTTS3011R",
-                "url": f"{self.url_base}/uapi/overseas-stock/v1/trading/inquire-daily-trans",
-                "name": "일별거래(TTTS3011R)"
-            },
-            {
-                "tr_id": "VTTS3011R" if self.mock else "TTTS3011R",
-                "url": f"{self.url_base}/uapi/overseas-stock/v1/trading/inquire-period-trans",
-                "name": "기간별거래(TTTS3011R)"
             }
         ]
 
