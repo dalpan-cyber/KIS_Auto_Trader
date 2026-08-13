@@ -1129,10 +1129,11 @@ class KISApiClient:
     ) -> List[Dict[str, Any]]:
         """
         해외주식 체결/미체결 이력 조회
-        - 체결기준 현물 잔고 (TTTS3012R / VTTS3012R) 및 기간별거래 (TTTS3011R / VTTS3011R) 교차 조회 후 통합
+        - 체결기준 현물 잔고 (TTTS3012R / VTTS3012R), 주간 원장 (TTTS3035R / VTTS3035R),
+          기간별거래 (TTTS3011R / VTTS3011R) 교차 조회 후 통합
         - NOTE: 야간 원장(JTTT3001R)은 한국 시간 낮에 데이터가 매칭되지 않아 TTTS3012R(체결기준)로 대체
         - NOTE: TTTS3035R(주간원장)은 현재 주(week) 데이터만 반환하므로,
-                전체 기간 조회가 가능한 TTTS3011R(기간별거래)로 대체 (API 호출 최소화)
+                주 경계를 넘는 이력은 TTTS3011R(기간별거래)로 보완 조회한다.
         """
         self._ensure_token()
         if not self.access_token or not self.cano:
@@ -1224,11 +1225,17 @@ class KISApiClient:
         # NOTE: OVRS_EXCG_CD를 빈 값("")으로 설정하여 거래소 구분 없이 계좌의 전체 해외주식 주문체결 이력을 조회한다.
         ovrs_excg = ""
 
-        # 2. 해외주식 주문/체결 이력 조회 (TTTS3011R 기간별거래)
+        # 2. 해외주식 주문/체결 이력 조회 (TTTS3035R 주간원장 + TTTS3011R 기간별거래)
         # NOTE: 야간원장(JTTT3001R)은 한국 시간 낮에 데이터가 매칭되지 않아 제거,
-        #       TTTS3035R(주간원장)은 현재 주(week) 데이터만 반환하므로,
-        #       전체 기간 조회가 가능한 TTTS3011R(기간별거래)로 대체 (API 호출 최소화)
+        #       TTTS3011R(일별거래)은 기간 조회와 중복되어 제거 (API 호출 최소화)
+        # NOTE: TTTS3035R(주간원장)은 현재 주(week) 데이터만 반환하므로,
+        #       주 경계를 넘는 이력은 TTTS3011R(기간별거래)로 보완 조회한다.
         endpoints = [
+            {
+                "tr_id": "VTTS3035R" if self.mock else "TTTS3035R",
+                "url": f"{self.url_base}/uapi/overseas-stock/v1/trading/inquire-ccnl",
+                "name": "주간원장(TTTS3035R)"
+            },
             {
                 "tr_id": "VTTS3011R" if self.mock else "TTTS3011R",
                 "url": f"{self.url_base}/uapi/overseas-stock/v1/trading/inquire-period-trans",
@@ -1241,6 +1248,7 @@ class KISApiClient:
             url_day = ep["url"]
             ep_name = ep["name"]
             headers_day = self._get_headers(tr_id_day)
+            logger.info(f"[체결이력] {ep_name} API 호출 시작: tr_id={tr_id_day}, url={url_day}")
 
             # NOTE: SVR_DVS_CD는 "0"(전체) 및 "1"(일반)을 조회하여 야간/주간 원장 누락을 완전 방지한다.
             for svr_dvsn in ["0", "1"]:
@@ -1352,6 +1360,8 @@ class KISApiClient:
                                 break
                         else:
                             msg1 = data.get("msg1", "")
+                            msg_cd = data.get("msg_cd", "")
+                            logger.warning(f"[체결이력] {ep_name} API 오류: rt_cd={data.get('rt_cd')}, msg_cd={msg_cd}, msg1={msg1}")
                             if "만료된" in msg1 or data.get("msg_cd") == "EGW00123":
                                 logger.warning("Token 만료 감지: 해외 체결내역 재조회 시도...")
                                 self.access_token = None
