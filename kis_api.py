@@ -1221,8 +1221,8 @@ class KISApiClient:
         else:
             logger.warning(f"[체결이력] 체결기준 잔고(TTTS3012R) 조회 실패: {exec_balance_res.get('msg', 'Unknown')}")
 
-        # NOTE: OVRS_EXCG_CD를 "NASD"로 설정하여 나스닥 거래소의 해외주식 주문체결 이력을 조회한다.
-        ovrs_excg = "NASD"
+        # NOTE: OVRS_EXCG_CD를 "NAS"로 설정하여 나스닥 거래소의 해외주식 주문체결 이력을 조회한다.
+        ovrs_excg = "NAS"
 
         # 2. 해외주식 주문/체결 이력 조회 (TTTS3011R 기간별거래)
         # NOTE: 야간원장(JTTT3001R)은 한국 시간 낮에 데이터가 매칭되지 않아 제거,
@@ -1243,7 +1243,7 @@ class KISApiClient:
             "ORD_END_DT": end_date,
             "SVR_DVS_CD": "0",
             "CCNL_DVS_CD": "00",
-            "CCLD_NCCS_DVSN": "00",
+            "CCLD_NCCS_DVSN": "0",
             "SLL_BUY_DVSN": "00",
             "SLL_BUY_DVSN_CD": "00",
             "ORD_GDS_DVS_CD": "0",
