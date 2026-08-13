@@ -1129,11 +1129,10 @@ class KISApiClient:
     ) -> List[Dict[str, Any]]:
         """
         해외주식 체결/미체결 이력 조회
-        - 체결기준 현물 잔고 (TTTS3012R / VTTS3012R), 주간 원장 (TTTS3035R / VTTS3035R),
-          기간별거래 (TTTS3011R / VTTS3011R) 교차 조회 후 통합
+        - 체결기준 현물 잔고 (TTTS3012R / VTTS3012R), 기간별거래 (TTTS3011R / VTTS3011R) 교차 조회 후 통합
         - NOTE: 야간 원장(JTTT3001R)은 한국 시간 낮에 데이터가 매칭되지 않아 TTTS3012R(체결기준)로 대체
-        - NOTE: TTTS3035R(주간원장)은 현재 주(week) 데이터만 반환하므로,
-                주 경계를 넘는 이력은 TTTS3011R(기간별거래)로 보완 조회한다.
+        - NOTE: TTTS3011R(기간별거래)로 주문/체결 이력을 조회하며,
+                주문번호(odno) 기준으로 중복을 제거한다.
         """
         self._ensure_token()
         if not self.access_token or not self.cano:
@@ -1222,159 +1221,146 @@ class KISApiClient:
         else:
             logger.warning(f"[체결이력] 체결기준 잔고(TTTS3012R) 조회 실패: {exec_balance_res.get('msg', 'Unknown')}")
 
-        # NOTE: OVRS_EXCG_CD를 빈 값("")으로 설정하여 거래소 구분 없이 계좌의 전체 해외주식 주문체결 이력을 조회한다.
-        ovrs_excg = ""
+        # NOTE: OVRS_EXCG_CD를 "NASD"로 설정하여 나스닥 거래소의 해외주식 주문체결 이력을 조회한다.
+        ovrs_excg = "NASD"
 
-        # 2. 해외주식 주문/체결 이력 조회 (TTTS3035R 주간원장 + TTTS3011R 기간별거래)
+        # 2. 해외주식 주문/체결 이력 조회 (TTTS3011R 기간별거래)
         # NOTE: 야간원장(JTTT3001R)은 한국 시간 낮에 데이터가 매칭되지 않아 제거,
-        #       TTTS3011R(일별거래)은 기간 조회와 중복되어 제거 (API 호출 최소화)
-        # NOTE: TTTS3035R(주간원장)은 현재 주(week) 데이터만 반환하므로,
-        #       주 경계를 넘는 이력은 TTTS3011R(기간별거래)로 보완 조회한다.
-        endpoints = [
-            {
-                "tr_id": "VTTS3035R" if self.mock else "TTTS3035R",
-                "url": f"{self.url_base}/uapi/overseas-stock/v1/trading/inquire-ccnl",
-                "name": "주간원장(TTTS3035R)"
-            },
-            {
-                "tr_id": "VTTS3011R" if self.mock else "TTTS3011R",
-                "url": f"{self.url_base}/uapi/overseas-stock/v1/trading/inquire-period-trans",
-                "name": "기간별거래(TTTS3011R)"
-            }
-        ]
+        #       TTTS3035R(주간원장)은 현재 주(week) 데이터만 반환하므로 제거,
+        #       TTTS3011R(기간별거래)만 사용하여 기간 전체 이력을 조회한다.
+        tr_id_day = "VTTS3011R" if self.mock else "TTTS3011R"
+        url_day = f"{self.url_base}/uapi/overseas-stock/v1/trading/inquire-period-trans"
+        ep_name = "기간별거래(TTTS3011R)"
+        headers_day = self._get_headers(tr_id_day)
+        logger.info(f"[체결이력] {ep_name} API 호출 시작: tr_id={tr_id_day}, url={url_day}")
 
-        for ep in endpoints:
-            tr_id_day = ep["tr_id"]
-            url_day = ep["url"]
-            ep_name = ep["name"]
-            headers_day = self._get_headers(tr_id_day)
-            logger.info(f"[체결이력] {ep_name} API 호출 시작: tr_id={tr_id_day}, url={url_day}")
+        # NOTE: SVR_DVS_CD는 "0"(전체)만 조회한다.
+        params_day = {
+            "CANO": self.cano,
+            "ACNT_PRDT_CD": self.acnt_prdt_cd,
+            "PDNO": symbol.upper() if symbol else "",
+            "ORD_STRT_DT": start_date,
+            "ORD_END_DT": end_date,
+            "SVR_DVS_CD": "0",
+            "CCNL_DVS_CD": "00",
+            "CCLD_NCCS_DVSN": "00",
+            "SLL_BUY_DVSN": "00",
+            "SLL_BUY_DVSN_CD": "00",
+            "ORD_GDS_DVS_CD": "0",
+            "OVRS_EXCG_CD": ovrs_excg,
+            "CTX_AREA_FK200": "",
+            "CTX_AREA_NK200": ""
+        }
 
-            # NOTE: SVR_DVS_CD는 "0"(전체) 및 "1"(일반)을 조회하여 야간/주간 원장 누락을 완전 방지한다.
-            for svr_dvsn in ["0", "1"]:
-                params_day = {
-                    "CANO": self.cano,
-                    "ACNT_PRDT_CD": self.acnt_prdt_cd,
-                    "PDNO": symbol.upper() if symbol else "",
-                    "ORD_STRT_DT": start_date,
-                    "ORD_END_DT": end_date,
-                    "SVR_DVS_CD": svr_dvsn,
-                    "CCNL_DVS_CD": "00",
-                    "CCLD_NCCS_DVSN": "00",
-                    "SLL_BUY_DVSN": "00",
-                    "SLL_BUY_DVSN_CD": "00",
-                    "ORD_GDS_DVS_CD": "0",
-                    "OVRS_EXCG_CD": ovrs_excg,
-                    "CTX_AREA_FK200": "",
-                    "CTX_AREA_NK200": ""
-                }
+        try:
+            ctx_fk = ""
+            ctx_nk = ""
+            for _ in range(5):
+                params_day["CTX_AREA_FK200"] = ctx_fk
+                params_day["CTX_AREA_NK200"] = ctx_nk
+                time.sleep(0.05)
+                res = requests.get(url_day, headers=headers_day, params=params_day, timeout=8)
+                data = self._safe_json_response(res, context=f"체결이력[{ep_name}]")
 
-                try:
-                    ctx_fk = ""
-                    ctx_nk = ""
-                    prev_page_keys = set()
-                    for _ in range(5):
-                        params_day["CTX_AREA_FK200"] = ctx_fk
-                        params_day["CTX_AREA_NK200"] = ctx_nk
-                        time.sleep(0.05)
-                        res = requests.get(url_day, headers=headers_day, params=params_day, timeout=8)
-                        data = self._safe_json_response(res, context=f"체결이력[{ep_name}]")
+                if res.status_code == 200 and data.get("rt_cd") == "0":
+                    output = data.get("output", []) or data.get("output1", []) or data.get("output2", [])
+                    if not output:
+                        break
+                    logger.info(f"[체결이력] {ep_name} 조회 성공 (건수={len(output)}, page={_ + 1})")
 
-                        if res.status_code == 200 and data.get("rt_cd") == "0":
-                            output = data.get("output", []) or data.get("output1", []) or data.get("output2", [])
-                            if not output:
-                                break
-                            logger.info(f"[체결이력] {ep_name} 조회 성공 (건수={len(output)}, page={_ + 1})")
+                    for item in output:
+                        total_fetched += 1
+                        order_no = str(item.get("odno", item.get("ord_no", ""))).strip()
+                        item_symbol = str(item.get("pdno", item.get("symb", item.get("symbol", "")))).strip().upper()
+                        sll_buy_cd = str(item.get("sll_buy_dvsn_cd", item.get("sll_buy_dvsn", ""))).strip()
+                        order_type = str(item.get("sll_buy_dvsn_cd_name", item.get("sll_buy_dvsn_name", item.get("sll_buy_name", "")))).strip()
+                        if not order_type or order_type == "-":
+                            if sll_buy_cd in ("01", "1"):
+                                order_type = "매도"
+                            elif sll_buy_cd in ("02", "2"):
+                                order_type = "매수"
+                        qty = int(item.get("ft_ord_qty", item.get("ord_qty", item.get("qty", 0))) or 0)
+                        exec_qty = int(item.get("ft_ccnl_qty", item.get("ft_ccld_qty", item.get("ccld_qty", item.get("exec_qty", 0)))) or 0)
+                        exec_price = float(item.get("ft_ccnl_unpr3", item.get("ft_ccld_unpr3", item.get("ccld_unpr", item.get("exec_price", 0.0)))) or 0.0)
+                        ord_price = float(item.get("ft_ord_unpr3", item.get("ord_unpr", item.get("price", 0.0))) or 0.0)
+                        ord_dt_raw = str(item.get("ord_dt", item.get("order_dt", ""))).strip()
+                        ord_tmd_raw = str(item.get("ord_tmd", item.get("order_tmd", ""))).strip()
+                        order_time = (ord_dt_raw + " " + ord_tmd_raw).strip()
+                        status = str(item.get("prcs_stat_name", item.get("stat_name", item.get("status", "")))).strip()
+                        orgn_odno = str(item.get("orgn_odno", "")).strip()
+                        ord_gno_brno = str(item.get("ord_gno_brno", "")).strip()
 
-                            current_page_keys = set()
-                            for item in output:
-                                total_fetched += 1
-                                order_no = str(item.get("odno", item.get("ord_no", ""))).strip()
-                                item_symbol = str(item.get("pdno", item.get("symb", item.get("symbol", "")))).strip().upper()
-                                sll_buy_cd = str(item.get("sll_buy_dvsn_cd", item.get("sll_buy_dvsn", ""))).strip()
-                                order_type = str(item.get("sll_buy_dvsn_cd_name", item.get("sll_buy_dvsn_name", item.get("sll_buy_name", "")))).strip()
-                                if not order_type or order_type == "-":
-                                    if sll_buy_cd in ("01", "1"):
-                                        order_type = "매도"
-                                    elif sll_buy_cd in ("02", "2"):
-                                        order_type = "매수"
-                                qty = int(item.get("ft_ord_qty", item.get("ord_qty", item.get("qty", 0))) or 0)
-                                exec_qty = int(item.get("ft_ccnl_qty", item.get("ft_ccld_qty", item.get("ccld_qty", item.get("exec_qty", 0)))) or 0)
-                                exec_price = float(item.get("ft_ccnl_unpr3", item.get("ft_ccld_unpr3", item.get("ccld_unpr", item.get("exec_price", 0.0)))) or 0.0)
-                                ord_price = float(item.get("ft_ord_unpr3", item.get("ord_unpr", item.get("price", 0.0))) or 0.0)
-                                ord_dt_raw = str(item.get("ord_dt", item.get("order_dt", ""))).strip()
-                                ord_tmd_raw = str(item.get("ord_tmd", item.get("order_tmd", ""))).strip()
-                                order_time = (ord_dt_raw + " " + ord_tmd_raw).strip()
-                                status = str(item.get("prcs_stat_name", item.get("stat_name", item.get("status", "")))).strip()
-                                orgn_odno = str(item.get("orgn_odno", "")).strip()
-                                ord_gno_brno = str(item.get("ord_gno_brno", "")).strip()
+                        if symbol and item_symbol and item_symbol != symbol.upper():
+                            total_skipped_symbol += 1
+                            continue
 
-                                if symbol and item_symbol and item_symbol != symbol.upper():
-                                    total_skipped_symbol += 1
-                                    continue
+                        results.append({
+                            "order_no": order_no,
+                            "symbol": item_symbol,
+                            "order_type": order_type,
+                            "qty": qty,
+                            "price": ord_price,
+                            "executed_qty": exec_qty,
+                            "executed_price": exec_price,
+                            "status": status,
+                            "order_time": order_time,
+                            "ord_dt": ord_dt_raw,
+                            "ord_tmd": ord_tmd_raw,
+                            "ord_gno_brno": ord_gno_brno,
+                            "orgn_odno": orgn_odno,
+                            "prdt_name": str(item.get("prdt_name", "")).strip(),
+                            "sll_buy_dvsn_cd": str(item.get("sll_buy_dvsn_cd", "")).strip(),
+                            "rvse_cncl_dvsn": str(item.get("rvse_cncl_dvsn", "")).strip(),
+                            "rvse_cncl_dvsn_name": str(item.get("rvse_cncl_dvsn_name", "")).strip(),
+                            "ft_ccld_amt3": str(item.get("ft_ccld_amt3", "")).strip(),
+                            "nccs_qty": str(item.get("nccs_qty", "")).strip(),
+                            "rjct_rson": str(item.get("rjct_rson", "")).strip(),
+                            "rjct_rson_name": str(item.get("rjct_rson_name", "")).strip(),
+                            "tr_mket_name": str(item.get("tr_mket_name", "")).strip(),
+                            "tr_natn_name": str(item.get("tr_natn_name", "")).strip(),
+                            "ovrs_excg_cd": str(item.get("ovrs_excg_cd", "")).strip(),
+                            "tr_crcy_cd": str(item.get("tr_crcy_cd", "")).strip(),
+                            "dmst_ord_dt": str(item.get("dmst_ord_dt", "")).strip(),
+                            "thco_ord_tmd": str(item.get("thco_ord_tmd", "")).strip(),
+                            "loan_type_cd": str(item.get("loan_type_cd", "")).strip(),
+                            "loan_dt": str(item.get("loan_dt", "")).strip(),
+                            "mdia_dvsn_name": str(item.get("mdia_dvsn_name", "")).strip(),
+                            "usa_amk_exts_rqst_yn": str(item.get("usa_amk_exts_rqst_yn", "")).strip()
+                        })
 
-                                dedup_key = f"{order_no}|{order_type}|{qty}|{exec_qty}|{ord_tmd_raw}|{orgn_odno}"
-                                current_page_keys.add(dedup_key)
+                    ctx_fk = (data.get("ctx_area_fk200", "") or "").strip()
+                    ctx_nk = (data.get("ctx_area_nk200", "") or "").strip()
+                    if not ctx_fk and not ctx_nk:
+                        break
+                else:
+                    msg1 = data.get("msg1", "")
+                    msg_cd = data.get("msg_cd", "")
+                    logger.warning(f"[체결이력] {ep_name} API 오류: rt_cd={data.get('rt_cd')}, msg_cd={msg_cd}, msg1={msg1}")
+                    if "만료된" in msg1 or data.get("msg_cd") == "EGW00123":
+                        logger.warning("Token 만료 감지: 해외 체결내역 재조회 시도...")
+                        self.access_token = None
+                        self.token_issued_at = 0
+                        if self.get_access_token():
+                            return self.get_overseas_execution_history(symbol=symbol, start_date=start_date, end_date=end_date)
+                    break
+        except Exception as e:
+            logger.warning(f"[체결이력] {ep_name} 조회 예외: {e}")
 
-                                results.append({
-                                    "order_no": order_no,
-                                    "symbol": item_symbol,
-                                    "order_type": order_type,
-                                    "qty": qty,
-                                    "price": ord_price,
-                                    "executed_qty": exec_qty,
-                                    "executed_price": exec_price,
-                                    "status": status,
-                                    "order_time": order_time,
-                                    "ord_dt": ord_dt_raw,
-                                    "ord_tmd": ord_tmd_raw,
-                                    "ord_gno_brno": ord_gno_brno,
-                                    "orgn_odno": orgn_odno,
-                                    "prdt_name": str(item.get("prdt_name", "")).strip(),
-                                    "sll_buy_dvsn_cd": str(item.get("sll_buy_dvsn_cd", "")).strip(),
-                                    "rvse_cncl_dvsn": str(item.get("rvse_cncl_dvsn", "")).strip(),
-                                    "rvse_cncl_dvsn_name": str(item.get("rvse_cncl_dvsn_name", "")).strip(),
-                                    "ft_ccld_amt3": str(item.get("ft_ccld_amt3", "")).strip(),
-                                    "nccs_qty": str(item.get("nccs_qty", "")).strip(),
-                                    "rjct_rson": str(item.get("rjct_rson", "")).strip(),
-                                    "rjct_rson_name": str(item.get("rjct_rson_name", "")).strip(),
-                                    "tr_mket_name": str(item.get("tr_mket_name", "")).strip(),
-                                    "tr_natn_name": str(item.get("tr_natn_name", "")).strip(),
-                                    "ovrs_excg_cd": str(item.get("ovrs_excg_cd", "")).strip(),
-                                    "tr_crcy_cd": str(item.get("tr_crcy_cd", "")).strip(),
-                                    "dmst_ord_dt": str(item.get("dmst_ord_dt", "")).strip(),
-                                    "thco_ord_tmd": str(item.get("thco_ord_tmd", "")).strip(),
-                                    "loan_type_cd": str(item.get("loan_type_cd", "")).strip(),
-                                    "loan_dt": str(item.get("loan_dt", "")).strip(),
-                                    "mdia_dvsn_name": str(item.get("mdia_dvsn_name", "")).strip(),
-                                    "usa_amk_exts_rqst_yn": str(item.get("usa_amk_exts_rqst_yn", "")).strip()
-                                })
-
-                            if prev_page_keys and current_page_keys.issubset(prev_page_keys):
-                                break
-                            prev_page_keys = current_page_keys
-
-                            ctx_fk = (data.get("ctx_area_fk200", "") or "").strip()
-                            ctx_nk = (data.get("ctx_area_nk200", "") or "").strip()
-                            if not ctx_fk and not ctx_nk:
-                                break
-                        else:
-                            msg1 = data.get("msg1", "")
-                            msg_cd = data.get("msg_cd", "")
-                            logger.warning(f"[체결이력] {ep_name} API 오류: rt_cd={data.get('rt_cd')}, msg_cd={msg_cd}, msg1={msg1}")
-                            if "만료된" in msg1 or data.get("msg_cd") == "EGW00123":
-                                logger.warning("Token 만료 감지: 해외 체결내역 재조회 시도...")
-                                self.access_token = None
-                                self.token_issued_at = 0
-                                if self.get_access_token():
-                                    return self.get_overseas_execution_history(symbol=symbol, start_date=start_date, end_date=end_date)
-                            break
-                except Exception as e:
-                    logger.warning(f"[체결이력] {ep_name} 조회 예외: {e}")
-                    continue
+        # NOTE: 주문번호(odno) 기준으로 중복 제거 (페이지네이션 중복 포함)
+        #       중복이 발견되더라도 최대 5페이지까지 모두 조회한 후, 메모리단에서 한 번에 제거한다.
+        seen_odno = set()
+        deduped_results = []
+        for r in results:
+            odno = r.get("order_no", "")
+            if odno and odno in seen_odno:
+                continue
+            if odno:
+                seen_odno.add(odno)
+            deduped_results.append(r)
+        results = deduped_results
 
         logger.info(f"[체결이력] 최종 결과 (통합): {len(results)}건 (symbol={symbol or '전체'}, 기간={start_date}~{end_date})")
-        logger.info(f"[체결이력] 진단: 총 조회={total_fetched}건, 종목필터 스킵={total_skipped_symbol}건, 중복 스킵=0건(중복 포함 표시), 최종={len(results)}건")
+        logger.info(f"[체결이력] 진단: 총 조회={total_fetched}건, 종목필터 스킵={total_skipped_symbol}건, 중복 제거={total_fetched - len(results)}건, 최종={len(results)}건")
         for r in results:
             logger.info(f"  → {r.get('order_time', '')} | {r.get('symbol', '')} | {r.get('order_type', '')} | "
                         f"주문수량={r.get('qty', 0)} | 체결수량={r.get('executed_qty', 0)} | "
