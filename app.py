@@ -570,7 +570,12 @@ def render_stock_detail(symbol: str, bot: TraderBot):
             fail_dates, fail_prices, fail_texts = [], [], []
 
             for h in history:
-                h_date = str(h.get("order_time", ""))[:10]
+                raw_ot = str(h.get("order_time", "")).strip()
+                clean_ot = raw_ot.replace("-", "").replace(":", "").replace(" ", "")
+                if len(clean_ot) >= 8 and clean_ot[:8].isdigit():
+                    h_date = f"{clean_ot[:4]}-{clean_ot[4:6]}-{clean_ot[6:8]}"
+                else:
+                    h_date = raw_ot[:10]
                 h_type = h.get("order_type", "")
                 h_qty = h.get("executed_qty", 0) or h.get("qty", 0)
                 h_price = h.get("executed_price", 0.0) or h.get("price", 0.0)

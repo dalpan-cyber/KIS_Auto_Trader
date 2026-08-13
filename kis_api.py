@@ -1241,11 +1241,13 @@ class KISApiClient:
                                     order_type = "매수"
                             qty = int(item.get("ccld_qty", item.get("ft_ccld_qty", item.get("qty", 0))) or 0)
                             exec_qty = int(item.get("ccld_qty", item.get("ft_ccld_qty", item.get("exec_qty", 0))) or 0)
-                            exec_price = float(item.get("ovrs_stck_ccld_unpr", item.get("ft_ccld_unpr2", item.get("exec_price", 0.0))) or 0.0)
-                            ord_price = float(item.get("ovrs_stck_ccld_unpr", item.get("ft_ccld_unpr2", item.get("price", 0.0))) or 0.0)
+                            exec_price = float(item.get("ft_ccld_unpr2") or item.get("ft_ccld_unpr") or item.get("ovrs_stck_ccld_unpr") or item.get("exec_price") or 0.0)
+                            ord_price = float(item.get("ft_ord_unpr3") or item.get("ft_ord_unpr") or item.get("ft_ccld_unpr2") or item.get("ft_ccld_unpr") or item.get("ovrs_stck_ord_unpr") or item.get("ovrs_stck_ccld_unpr") or item.get("price") or 0.0)
                             ord_dt_raw = str(item.get("trad_dt", item.get("ord_dt", item.get("order_dt", "")))).strip()
                             ord_tmd_raw = str(item.get("ord_tmd", item.get("order_tmd", ""))).strip()
-                            order_time = (ord_dt_raw + " " + ord_tmd_raw).strip()
+                            fmt_dt = f"{ord_dt_raw[:4]}-{ord_dt_raw[4:6]}-{ord_dt_raw[6:8]}" if len(ord_dt_raw) == 8 and ord_dt_raw.isdigit() else ord_dt_raw
+                            fmt_tmd = f"{ord_tmd_raw[:2]}:{ord_tmd_raw[2:4]}:{ord_tmd_raw[4:6]}" if len(ord_tmd_raw) == 6 and ord_tmd_raw.isdigit() else ord_tmd_raw
+                            order_time = f"{fmt_dt} {fmt_tmd}".strip()
                             status = str(item.get("prcs_stat_name", item.get("stat_name", item.get("status", "")))).strip()
                             orgn_odno = str(item.get("orgn_odno", "")).strip()
                             ord_gno_brno = str(item.get("ord_gno_brno", "")).strip()
@@ -1272,7 +1274,7 @@ class KISApiClient:
                                 "sll_buy_dvsn_cd": str(item.get("sll_buy_dvsn_cd", "")).strip(),
                                 "rvse_cncl_dvsn": str(item.get("rvse_cncl_dvsn", "")).strip(),
                                 "rvse_cncl_dvsn_name": str(item.get("rvse_cncl_dvsn_name", "")).strip(),
-                                "ft_ccld_amt3": str(item.get("tr_amt", item.get("ft_ccld_amt3", ""))).strip(),
+                                "ft_ccld_amt3": str(item.get("ft_ccld_amt3", item.get("tr_frcr_amt2", item.get("tr_amt", "")))).strip(),
                                 "nccs_qty": str(item.get("nccs_qty", "")).strip(),
                                 "rjct_rson": str(item.get("rjct_rson", "")).strip(),
                                 "rjct_rson_name": str(item.get("rjct_rson_name", "")).strip(),
