@@ -2,6 +2,7 @@
 자동 매매 메인 코어 모듈 (trader.py)
 KIS Open API, 매매 전략, 리스크 관리자를 통합하여 실시간 자동 매매 루프 실행
 """
+import os
 import time
 import logging
 import datetime
@@ -49,7 +50,8 @@ class TraderBot:
         )
 
         # 사용자 승인 모드 여부 (True: 제안 후 사용자 승인 주문, False: 즉시 자동 주문)
-        self.require_approval = getattr(config, "REQUIRE_USER_APPROVAL", True)
+        is_github_actions = os.getenv("GITHUB_ACTIONS") == "true"
+        self.require_approval = False if is_github_actions else getattr(config, "REQUIRE_USER_APPROVAL", True)
 
         # 계좌 및 상태 데이터
         self.total_eval_amount = 0.0

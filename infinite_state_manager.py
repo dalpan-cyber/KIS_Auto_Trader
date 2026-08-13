@@ -28,7 +28,7 @@ class InfiniteStateManager:
         self.load_state()
 
     def load_state(self) -> Dict[str, Dict[str, Any]]:
-        """로컬 JSON 파일 및 Google Sheets에서 무한매수 전략 상태 로드 (양방향 동기화)"""
+        """로컬 JSON 파일에서 무한매수 전략 상태 로드 (JSON = Single Source of Truth)"""
         if os.path.exists(self.file_path):
             try:
                 with open(self.file_path, "r", encoding="utf-8") as f:
@@ -40,45 +40,16 @@ class InfiniteStateManager:
         else:
             self.states = {}
 
-        # 구글 시트에 사용자가 수동 수정한 전략 상태가 있다면 동기화 반영 (양방향 동기화)
-        if hasattr(self, "gss_mgr") and self.gss_mgr and self.gss_mgr.is_connected:
-            sheet_states = self.gss_mgr.read_states_from_sheet()
-            for symbol, s_data in sheet_states.items():
-                if symbol not in self.states:
-                    s_data.setdefault("division_count", 40)
-                    self.states[symbol] = s_data
-                else:
-                    # 구글 시트 수동 변경사항(진행회차, 총예산, 목표수익률, 매매상태 등) 반영
-                    sheet_status = s_data.get("status")
-                    if sheet_status:
-                        self.states[symbol]["status"] = sheet_status
-
-                    # 매수 진행 중일 경우 구글 시트의 오래된(작은) 회차가 JSON의 최신 회차를 강제로 덮어쓰지 않도록 max 적용
-                    sheet_round = s_data.get("current_round", 0)
-                    json_round = self.states[symbol].get("current_round", 0)
-                    if self.states[symbol].get("status") in ["IDLE", "COMPLETED"]:
-                        self.states[symbol]["current_round"] = sheet_round
-                    else:
-                        self.states[symbol]["current_round"] = max(json_round, sheet_round)
-
-                    self.states[symbol]["total_budget_usd"] = s_data.get("total_budget_usd", self.states[symbol].get("total_budget_usd", 5000.0))
-                    self.states[symbol]["target_roi"] = s_data.get("target_roi", self.states[symbol].get("target_roi", 0.10))
-                    self.states[symbol].setdefault("division_count", 40)
-
         return self.states
 
     def save_state(self):
-        """현재 무한매수 전략 상태를 로컬 JSON 파일 및 Google Sheets로 저장"""
+        """현재 무한매수 전략 상태를 로컬 JSON 파일로 저장"""
         try:
             with open(self.file_path, "w", encoding="utf-8") as f:
                 json.dump(self.states, f, ensure_ascii=False, indent=2)
             logger.debug("무한매수 상태 파일 저장 완료")
         except Exception as e:
             logger.error(f"무한매수 상태 파일 저장 실패: {e}")
-
-        # Google Sheets 상의 전체 종목 전략 상태 동기화
-        if hasattr(self, "gss_mgr") and self.gss_mgr:
-            self.gss_mgr.sync_all_states(self.states)
 
     def get_symbol_state(
         self,
