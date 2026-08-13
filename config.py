@@ -59,5 +59,5 @@ GCP_SERVICE_ACCOUNT_JSON = os.getenv("GCP_SERVICE_ACCOUNT_JSON", "")  # GCP Serv
 # --- 리스크 및 시스템 제한 설정 ---
 MAX_STOCKS_HOLDING = 5        # 최대 보유 가능 종목 수
 API_CALL_DELAY = 0.2          # API 연속 호출 간 최소 딜레이 (초)
-LOG_LEVEL = "INFO"            # DEBUG, INFO, WARNING, ERROR
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")  # DEBUG, INFO, WARNING, ERROR
 
