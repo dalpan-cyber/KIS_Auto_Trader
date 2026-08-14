@@ -24,7 +24,7 @@ logger = logging.getLogger("Dashboard")
 
 
 # -----------------------------------------------------------------------------
-# 1. 페이지 기본 설정 및 디자인 테마 CSS
+# 1. 페이지 기본 설정
 # -----------------------------------------------------------------------------
 st.set_page_config(
     page_title="KIS Open API 투자 대시보드 & 매매 승인 시스템",
@@ -34,7 +34,7 @@ st.set_page_config(
 )
 
 # Custom CSS 커스텀 다크 모드 및 카드 스타일링
-st.markdown("""
+CUSTOM_CSS = """
 <style>
     /* 배경 및 기본 폰트 설정 */
     .stApp {
@@ -106,7 +106,7 @@ st.markdown("""
         font-weight: 700 !important;
     }
 </style>
-""", unsafe_allow_html=True)
+"""
 
 
 # -----------------------------------------------------------------------------
@@ -135,7 +135,6 @@ def setup_logger():
     logger.setLevel(logging.INFO)
     
     # 기존 핸들러를 모두 제거하여 중복 로그 방지
-    # (basicConfig의 StreamHandler, 이전 StreamlitLogHandler 등)
     for handler in list(logger.handlers):
         logger.removeHandler(handler)
             
@@ -161,215 +160,56 @@ bot: TraderBot = st.session_state.bot
 
 
 # -----------------------------------------------------------------------------
-# 4. 사이드바 (제어 및 설정)
+# 4. 공통 렌더링 함수 (CSS + 사이드바)
 # -----------------------------------------------------------------------------
-with st.sidebar:
-    st.title("⚙️ 시스템 제어")
-    
-    # 시스템 접속 상태 정보
-    is_mock = bot.api.mock
-    env_badge = '<span class="badge-mock">🟢 모의투자(VTS)</span>' if is_mock else '<span class="badge-real">🔴 실전투자(LIVE)</span>'
-    status_badge = '<span class="badge-running">▶ 감시 중</span>' if bot.is_running else '<span class="badge-stopped">⏹ 정지됨</span>'
-    
-    st.markdown(f"**접속 환경**: {env_badge}", unsafe_allow_html=True)
-    st.markdown(f"**실행 상태**: {status_badge}", unsafe_allow_html=True)
-    st.markdown(f"**계좌번호**: `{bot.api.cano}-{bot.api.acnt_prdt_cd}`")
-    st.divider()
-
-    # 주문 방식 모드 선택 (반자동 사용자 승인 vs 완전자동)
-    st.subheader("🛡️ 주문 실행 방식")
-    mode_option = st.radio(
-        "모드 선택",
-        ["🛡️ 반자동 (제안 후 승인시 주문)", "⚡ 완전 자동 (즉시 주문)"],
-        index=0 if bot.require_approval else 1,
-        help="반자동 모드는 전략 신호나 손절/익절 감시 시 승인 대기 카드를 생성하고, 사용자가 승인할 때 주문을 제출합니다."
-    )
-    bot.require_approval = (mode_option.startswith("🛡️"))
-
-    st.divider()
-
-    # 자동 감시 시작 / 정지 버튼
-    col_btn1, col_btn2 = st.columns(2)
-    with col_btn1:
-        if st.button("▶ 감시 시작", width="stretch", disabled=bot.is_running, type="primary"):
-            bot.is_running = True
-            logging.info(f"===== 대시보드: 감시 루프 시작 (모드: {'반자동 승인' if bot.require_approval else '완전자동'}) =====")
-            st.rerun()
-            
-    with col_btn2:
-        if st.button("⏹ 감시 정지", width="stretch", disabled=not bot.is_running):
-            bot.is_running = False
-            logging.info("===== 대시보드: 감시 루프 정지 =====")
-            st.rerun()
-
-    if st.button("🔄 잔고/시세/구글시트 즉시 갱신", width="stretch"):
-        bot.fetch_account_balance()
-        bot.fetch_target_prices()
-        bot.sync_holdings_to_state()
-        st.success("계좌 잔고, 시세 및 구글 시트(State/Holdings/ExecutionHistory) 동기화 완료.")
-        st.rerun()
-
-    st.divider()
-    
-    # 자동 갱신 옵션
-    st.subheader("⏱️ 자동 감시 주기")
-    auto_refresh = st.checkbox("자동 감시 및 갱신 활성화", value=bot.is_running)
-    refresh_interval = st.slider("감시 간격 (초)", min_value=3, max_value=60, value=5, step=1)
-    
-    st.divider()
-    st.caption("한국투자증권 Open API Trader v1.2")
+def render_css():
+    """전역 CSS 적용"""
+    st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 
-# -----------------------------------------------------------------------------
-# 5. 메인 대시보드 헤더 & 감시 루프
-# -----------------------------------------------------------------------------
-# -----------------------------------------------------------------------------
-# 5. 메인 대시보드 헤더 & 감시 루프
-# -----------------------------------------------------------------------------
-st.title("🇺🇸 KIS 라오어 무한매수법 전담 자동투자 시스템")
-
-# 감시 활성화 상태 시 트레이딩/감시 사이클 1회 실행
-if bot.is_running:
-    bot.run_trading_cycle()
-
-# 해외 무한매수 종목별 주식 평가금액($) 및 외화 총자산 계산
-infinite_stocks = getattr(config, "INFINITE_STOCKS", ["TQQQ"])
-usd_stock_eval = 0.0
-holding_stock_count = 0
-
-for sym in infinite_stocks:
-    hld = bot.holdings.get(sym, {})
-    q = hld.get("qty", 0)
-    cur_p = bot.current_prices.get(sym, 0.0)
-    if cur_p == 0.0:
-        p_res = bot.api.get_stock_price(sym)
-        if p_res.get("success"):
-            cur_p = float(p_res["price"])
-            bot.current_prices[sym] = cur_p
-    
-    if q > 0:
-        holding_stock_count += 1
-        usd_stock_eval += q * cur_p
-
-usd_cash = getattr(bot, "available_usd_cash", 5000.0)
-usd_total_eval = usd_cash + usd_stock_eval
-ex_rate = getattr(bot, "exchange_rate", 1428.20)
-is_sim = getattr(bot, "is_usd_simulated", True)
-
-usd_dep_sub = "테스트용 시뮬레이션 가상 잔고" if is_sim else "KIS Open API 실시간 조회"
-
-m1, m2, m3, m4 = st.columns(4)
-
-with m1:
-    st.metric(
-        label="🇺🇸 총 자산 평가액 ($)",
-        value=f"${usd_total_eval:,.2f}",
-        delta=f"약 ₩{usd_total_eval * ex_rate:,.0f}",
-        delta_color="off"
-    )
-with m2:
-    st.metric(
-        label="💵 외화(USD) 예수금",
-        value=f"${usd_cash:,.2f}",
-        delta=usd_dep_sub,
-        delta_color="off"
-    )
-with m3:
-    st.metric(
-        label="📈 주식 평가금액 ($)",
-        value=f"${usd_stock_eval:,.2f}",
-        delta=f"약 ₩{usd_stock_eval * ex_rate:,.0f}",
-        delta_color="off"
-    )
-with m4:
-    st.metric(
-        label="💱 미국 USD 환율",
-        value=f"₩{ex_rate:,.2f} / $",
-        delta=f"운용: {len(infinite_stocks)}개종목 (보유 {holding_stock_count}개)",
-        delta_color="off"
-    )
-
-st.divider()
-
-# -----------------------------------------------------------------------------
-# 6. 승인 대기 중인 매매 제안 상단 긴급 섹션
-# -----------------------------------------------------------------------------
-pending_count = len(bot.pending_proposals)
-if pending_count > 0:
-    st.warning(f"🔔 **승인 대기 중인 매매 제안이 {pending_count}건 있습니다!** 아래 카드에서 [승인 및 주문 제출]을 클릭하시면 실제 매매가 실행됩니다.")
-    
-    for prop_id, prop in list(bot.pending_proposals.items()):
-        action_color = "#EF4444" if prop["action"] == "BUY" else "#3B82F6"  # 빨강(매수) / 파랑(매도)
+def render_sidebar():
+    """사이드바 (제어 및 설정)"""
+    with st.sidebar:
+        st.title("⚙️ 시스템 제어")
         
-        with st.container():
-            st.markdown(f"""
-            <div class="proposal-card">
-                <div style="display:flex; justify-content:space-between; align-items:center;">
-                    <h3 style="margin:0; color:#F59E0B;">💡 {prop['stock_name']} ({prop['symbol']}) - <span style="color:{action_color};">{prop['action_kr']} 제안</span></h3>
-                    <span style="color:#94A3B8; font-size:0.9rem;">제안시각: {prop['timestamp']}</span>
-                </div>
-                <hr style="border-color:#334155; margin:10px 0;">
-                <p style="font-size:1.05rem; margin-bottom:5px;"><b>제안 사유</b>: <span style="color:#38BDF8;">{prop['reason']}</span></p>
-                <p style="font-size:1rem; margin-bottom:15px;">
-                    <b>주문 수량</b>: {prop['qty']:,}주 | 
-                    <b>현재가(기준가)</b>: ${prop['price']:,.2f} | 
-                    <b>총 예상 금액</b>: <b>${prop['total_price']:,.2f}</b>
-                </p>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            btn_col1, btn_col2, btn_spacer = st.columns([3, 3, 6])
-            with btn_col1:
-                if st.button(f"✅ 승인 및 {prop['action_kr']} 주문 제출", key=f"approve_{prop_id}", type="primary", width="stretch"):
-                    success = bot.approve_proposal(prop_id)
-                    if success:
-                        st.success(f"🎉 {prop['stock_name']} {prop['action_kr']} 주문이 성공적으로 제출되었습니다!")
-                    else:
-                        st.error(f"❌ 주문 제출에 실패하였습니다. 로그를 확인하세요.")
-                    st.rerun()
-                    
-            with btn_col2:
-                if st.button(f"❌ {prop['action_kr']} 제안 거절", key=f"reject_{prop_id}", width="stretch"):
-                    bot.reject_proposal(prop_id)
-                    st.info(f"{prop['stock_name']} {prop['action_kr']} 제안을 거절하였습니다.")
-                    st.rerun()
-                    
-            st.divider()
+        # 시스템 접속 상태 정보
+        is_mock = bot.api.mock
+        env_badge = '<span class="badge-mock">🟢 모의투자(VTS)</span>' if is_mock else '<span class="badge-real">🔴 실전투자(LIVE)</span>'
+        status_badge = '<span class="badge-running">▶ 감시 중</span>' if bot.is_running else '<span class="badge-stopped">⏹ 정지됨</span>'
+        
+        st.markdown(f"**접속 환경**: {env_badge}", unsafe_allow_html=True)
+        st.markdown(f"**실행 상태**: {status_badge}", unsafe_allow_html=True)
+        st.markdown(f"**계좌번호**: `{bot.api.cano}-{bot.api.acnt_prdt_cd}`")
+        st.divider()
+
+        # 자동 감시 시작 / 정지 버튼
+        col_btn1, col_btn2 = st.columns(2)
+        with col_btn1:
+            if st.button("▶ 감시 시작", width="stretch", disabled=bot.is_running, type="primary"):
+                bot.is_running = True
+                logging.info("===== 대시보드: 감시 루프 시작 =====")
+                st.rerun()
+                
+        with col_btn2:
+            if st.button("⏹ 감시 정지", width="stretch", disabled=not bot.is_running):
+                bot.is_running = False
+                logging.info("===== 대시보드: 감시 루프 정지 =====")
+                st.rerun()
+
+        if st.button("🔄 잔고/시세/구글시트 즉시 갱신", width="stretch"):
+            bot.fetch_account_balance()
+            bot.fetch_target_prices()
+            bot.sync_holdings_to_state()
+            st.success("계좌 잔고, 시세 및 구글 시트(State/Holdings/ExecutionHistory) 동기화 완료.")
+            st.rerun()
+
+        st.divider()
+        st.caption("한국투자증권 Open API Trader v1.2")
+
 
 # -----------------------------------------------------------------------------
-# 7. 메인 탭 구성
+# 5. 페이지 함수 정의
 # -----------------------------------------------------------------------------
-tab_titles = [
-    "🇺🇸 무한매수 현황 & 당일 주문",
-    f"🔔 승인 대기 제안 ({pending_count})" if pending_count > 0 else "🔔 승인 대기 제안",
-    "📜 시스템 실행 로그",
-    "⚙️ 무한매수 설정"
-]
-
-tab_infinite, tab_prop, tab_logs, tab_config = st.tabs(tab_titles)
-
-# 탭 1: 승인 대기 제안 목록 상세
-with tab_prop:
-    st.subheader("🔔 승인 대기 중인 주문 제안 목록")
-    if bot.pending_proposals:
-        prop_table_data = []
-        for pid, p in bot.pending_proposals.items():
-            prop_table_data.append({
-                "제안ID": p["id"],
-                "종목코드": p["symbol"],
-                "종목명": p["stock_name"],
-                "구분": p["action_kr"],
-                "수량": f"{p['qty']:,}주",
-                "현재가": f"₩{p['price']:,.0f}" if isinstance(p['price'], (int, float)) and not bot.api.is_overseas_symbol(p["symbol"]) else f"${p['price']:,.2f}",
-                "예상총액": f"₩{p['total_price']:,.0f}" if not bot.api.is_overseas_symbol(p["symbol"]) else f"${p['total_price']:,.2f}",
-                "제안 사유": p["reason"],
-                "제안 시간": p["timestamp"]
-            })
-        st.dataframe(pd.DataFrame(prop_table_data), width="stretch", hide_index=True)
-    else:
-        st.info("현재 대기 중인 매매 제안이 없습니다. 감시를 시작하면 매수/매도 조건 충족 시 이곳에 제안이 생성됩니다.")
-
-
 def render_stock_detail(symbol: str, bot: TraderBot):
     """특정 종목의 무한매수 현황, 제어, 당일주문, 일별 주가-이력 차트 및 매매이력 표시"""
     st_data = bot.infinite_state_mgr.get_symbol_state(
@@ -421,40 +261,7 @@ def render_stock_detail(symbol: str, bot: TraderBot):
     st.caption(f"**상태**: {status_display} | **전략 시작일**: {st_data.get('start_date', '-')} | **총 예산**: ${budget:,.2f}")
     st.progress(min(1.0, max(0.0, float(curr_round) / float(div_count))))
 
-    # 2. 수동 제어 및 설정 변경
-    col_b1, col_b2, col_b3, col_b4 = st.columns([2.5, 2.5, 2.5, 4.5])
-    with col_b1:
-        if st.button(f"▶ {symbol} 수동 시작", key=f"start_{symbol}", type="primary", width="stretch"):
-            bot.start_infinite_buying(symbol)
-            st.success(f"🚀 [{symbol}] 무한매수 매매 루틴이 수동 시작되었습니다.")
-            st.rerun()
-    with col_b2:
-        if st.button(f"⏹ {symbol} 강제 중지", key=f"stop_{symbol}", width="stretch"):
-            bot.stop_infinite_buying(symbol)
-            st.warning(f"⏹ [{symbol}] 무한매수가 강제 중지되었습니다.")
-            st.rerun()
-    with col_b3:
-        if st.button(f"🔄 {symbol} 회차 초기화", key=f"reset_{symbol}", width="stretch"):
-            bot.infinite_state_mgr.reset_round(symbol)
-            st.info(f"🔄 [{symbol}] 회차가 0회차로 초기화되었습니다.")
-            st.rerun()
-    with col_b4:
-        with st.popover("⚙️ 전략 시작일 변경"):
-            curr_sd_str = st_data.get("start_date", datetime.date.today().strftime("%Y-%m-%d"))
-            try:
-                curr_sd_obj = datetime.datetime.strptime(curr_sd_str, "%Y-%m-%d").date()
-            except Exception:
-                curr_sd_obj = datetime.date.today()
-            new_sd = st.date_input("전략 시작일 지정", value=curr_sd_obj, key=f"sd_input_{symbol}")
-            if st.button("시작일 저장", key=f"sd_save_{symbol}"):
-                new_sd_str = new_sd.strftime("%Y-%m-%d")
-                bot.infinite_state_mgr.update_start_date(symbol, new_sd_str)
-                st.success(f"전략 시작일이 {new_sd_str}로 변경되었습니다.")
-                st.rerun()
-
-    st.markdown("---")
-
-    # 3. 당일 매수/매도 주문 상세 수량
+    # 2. 당일 주문 상세
     calc_price = cur_p if cur_p > 0 else (avg_p if avg_p > 0 else 50.0)
     orders = bot.infinite_strategy.generate_daily_orders(
         symbol, calc_price, st_data,
@@ -479,6 +286,51 @@ def render_stock_detail(symbol: str, bot: TraderBot):
                 st.success(f"**LOC 매수**: ${b['price']:.2f} 이하 (수량: {b['qty']:,}주)")
         else:
             st.write("매수 조건 미충족 또는 최대 회차 도달")
+
+    st.markdown("---")
+
+    # 3. 당일 주문 즉시 실행 버튼
+    st.markdown("#### ⚡ 당일 주문 즉시 실행")
+    col_exec1, col_exec2, col_exec3 = st.columns([3, 3, 6])
+    with col_exec1:
+        if st.button(f"🔴 {symbol} 전량 익절 매도 즉시 실행", key=f"exec_sell_{symbol}", type="primary", width="stretch"):
+            result = bot.execute_daily_orders(symbol, action_filter="SELL")
+            if result["success"] and result["executed"] > 0:
+                st.success(f"🎉 [{symbol}] 익절 매도 주문이 즉시 실행되었습니다! ({result['executed']}건)")
+            elif result["failed"] > 0:
+                st.error(f"❌ [{symbol}] 익절 매도 주문 실행 중 오류 발생! (성공: {result['executed']}건, 실패: {result['failed']}건)")
+            else:
+                st.info(f"ℹ️ [{symbol}] 실행할 익절 매도 주문이 없습니다.")
+            for msg in result["messages"]:
+                st.caption(msg)
+            st.rerun()
+
+    with col_exec2:
+        if st.button(f"🟢 {symbol} 분할 매수 즉시 실행", key=f"exec_buy_{symbol}", width="stretch"):
+            result = bot.execute_daily_orders(symbol, action_filter="BUY")
+            if result["success"] and result["executed"] > 0:
+                st.success(f"🎉 [{symbol}] 분할 매수 주문이 즉시 실행되었습니다! ({result['executed']}건)")
+            elif result["failed"] > 0:
+                st.error(f"❌ [{symbol}] 분할 매수 주문 실행 중 오류 발생! (성공: {result['executed']}건, 실패: {result['failed']}건)")
+            else:
+                st.info(f"ℹ️ [{symbol}] 실행할 분할 매수 주문이 없습니다.")
+            for msg in result["messages"]:
+                st.caption(msg)
+            st.rerun()
+
+    with col_exec3:
+        with st.popover("⚙️ 전략 시작일 변경"):
+            curr_sd_str = st_data.get("start_date", datetime.date.today().strftime("%Y-%m-%d"))
+            try:
+                curr_sd_obj = datetime.datetime.strptime(curr_sd_str, "%Y-%m-%d").date()
+            except Exception:
+                curr_sd_obj = datetime.date.today()
+            new_sd = st.date_input("전략 시작일 지정", value=curr_sd_obj, key=f"sd_input_{symbol}")
+            if st.button("시작일 저장", key=f"sd_save_{symbol}"):
+                new_sd_str = new_sd.strftime("%Y-%m-%d")
+                bot.infinite_state_mgr.update_start_date(symbol, new_sd_str)
+                st.success(f"전략 시작일이 {new_sd_str}로 변경되었습니다.")
+                st.rerun()
 
     st.markdown("---")
 
@@ -709,8 +561,77 @@ def render_stock_detail(symbol: str, bot: TraderBot):
         st.info("아직 누적된 매매 이력이 없습니다.")
 
 
-# 탭 2: 라오어 무한매수 현황
-with tab_infinite:
+def page_main_dashboard():
+    """메인 대시보드: 무한매수 현황 & 당일 주문"""
+    render_css()
+    render_sidebar()
+
+    st.title("🇺🇸 KIS 라오어 무한매수법 전담 자동투자 시스템")
+
+    # 감시 활성화 상태 시 트레이딩/감시 사이클 1회 실행
+    if bot.is_running:
+        bot.run_trading_cycle()
+
+    # 해외 무한매수 종목별 주식 평가금액($) 및 외화 총자산 계산
+    infinite_stocks = getattr(config, "INFINITE_STOCKS", ["TQQQ"])
+    usd_stock_eval = 0.0
+    holding_stock_count = 0
+
+    for sym in infinite_stocks:
+        hld = bot.holdings.get(sym, {})
+        q = hld.get("qty", 0)
+        cur_p = bot.current_prices.get(sym, 0.0)
+        if cur_p == 0.0:
+            p_res = bot.api.get_stock_price(sym)
+            if p_res.get("success"):
+                cur_p = float(p_res["price"])
+                bot.current_prices[sym] = cur_p
+        
+        if q > 0:
+            holding_stock_count += 1
+            usd_stock_eval += q * cur_p
+
+    usd_cash = getattr(bot, "available_usd_cash", 5000.0)
+    usd_total_eval = usd_cash + usd_stock_eval
+    ex_rate = getattr(bot, "exchange_rate", 1428.20)
+    is_sim = getattr(bot, "is_usd_simulated", True)
+
+    usd_dep_sub = "테스트용 시뮬레이션 가상 잔고" if is_sim else "KIS Open API 실시간 조회"
+
+    m1, m2, m3, m4 = st.columns(4)
+
+    with m1:
+        st.metric(
+            label="🇺🇸 총 자산 평가액 ($)",
+            value=f"${usd_total_eval:,.2f}",
+            delta=f"약 ₩{usd_total_eval * ex_rate:,.0f}",
+            delta_color="off"
+        )
+    with m2:
+        st.metric(
+            label="💵 외화(USD) 예수금",
+            value=f"${usd_cash:,.2f}",
+            delta=usd_dep_sub,
+            delta_color="off"
+        )
+    with m3:
+        st.metric(
+            label="📈 주식 평가금액 ($)",
+            value=f"${usd_stock_eval:,.2f}",
+            delta=f"약 ₩{usd_stock_eval * ex_rate:,.0f}",
+            delta_color="off"
+        )
+    with m4:
+        st.metric(
+            label="💱 미국 USD 환율",
+            value=f"₩{ex_rate:,.2f} / $",
+            delta=f"운용: {len(infinite_stocks)}개종목 (보유 {holding_stock_count}개)",
+            delta_color="off"
+        )
+
+    st.divider()
+
+    # 무한매수 현황
     st.subheader("🇺🇸 라오어 무한매수법 v2.0 진행 현황")
     
     if getattr(config, "INFINITE_BUYING_ENABLED", False):
@@ -745,10 +666,12 @@ with tab_infinite:
         st.warning("현재 무한매수법이 비활성화되어 있습니다. config.py에서 `INFINITE_BUYING_ENABLED = True`로 설정하세요.")
 
 
+def page_logs():
+    """시스템 실행 로그 페이지"""
+    render_css()
+    render_sidebar()
 
-# 탭 3: 실시간 로그
-with tab_logs:
-    st.subheader("📜 실시간 이벤트 및 매매 실행 로그")
+    st.title("📜 시스템 실행 로그")
     
     col_log1, col_log2 = st.columns([8, 2])
     with col_log2:
@@ -757,12 +680,16 @@ with tab_logs:
             st.rerun()
 
     log_text = "\n".join(reversed(st.session_state.logs))
-    st.text_area("시스템 로그 (최신순)", value=log_text, height=450)
+    st.text_area("시스템 로그 (최신순)", value=log_text, height=600)
 
 
-# 탭 4: 무한매수 전담 설정 조회
-with tab_config:
-    st.subheader("⚙️ 현재 적용 중인 무한매수 파라미터 ([config.py](file:///c:/KIS_Auto_Trader/config.py))")
+def page_config():
+    """무한매수 설정 페이지"""
+    render_css()
+    render_sidebar()
+
+    st.title("⚙️ 무한매수 설정")
+    st.subheader("현재 적용 중인 무한매수 파라미터 ([config.py](file:///c:/KIS_Auto_Trader/config.py))")
     
     col_cfg1, col_cfg2 = st.columns(2)
     with col_cfg1:
@@ -775,15 +702,24 @@ with tab_config:
 
     with col_cfg2:
         st.markdown("### 🛡️ 시스템 주문 및 리스크 관리")
-        st.write(f"- **주문 실행 방식**: `{'🛡️ 반자동 (승인 후 주문)' if bot.require_approval else '⚡ 완전 자동 (즉시 주문)'}`")
+        st.write(f"- **주문 실행 방식**: `⚡ 완전 자동 (GitHub Actions Cron 1일 2회)`")
         st.write(f"- **주문 구문**: `LOC (Limit On Close - 종가입찰) & 지정가 익절 매도`")
         st.write(f"- **최대 보유 종목 수**: `{getattr(config, 'MAX_STOCKS_HOLDING', 5)}` 개")
         st.write(f"- **API 호출 안전 딜레이**: `{getattr(config, 'API_CALL_DELAY', 0.2)}` 초")
 
 
 # -----------------------------------------------------------------------------
-# 8. 자동 리프레시 루프 (스케줄러)
+# 6. 페이지 네비게이션 (왼쪽 nav)
 # -----------------------------------------------------------------------------
-if auto_refresh and bot.is_running:
-    time.sleep(refresh_interval)
-    st.rerun()
+pages = {
+    "📊 대시보드": [
+        st.Page(page_main_dashboard, title="무한매수 현황 & 당일 주문", icon="📈", default=True),
+    ],
+    "🛠️ 시스템": [
+        st.Page(page_logs, title="시스템 실행 로그", icon="📜"),
+        st.Page(page_config, title="무한매수 설정", icon="⚙️"),
+    ],
+}
+
+pg = st.navigation(pages, position="sidebar")
+pg.run()

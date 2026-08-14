@@ -473,6 +473,115 @@ class TraderBot:
             prop = self.pending_proposals.pop(proposal_id)
             self.logger.info(f"❌ [{prop['symbol']}] {prop['action_kr']} 제안이 사용자에 의해 거절되었습니다.")
 
+    def execute_daily_orders(self, symbol: str, action_filter: str = "ALL") -> Dict[str, Any]:
+        """
+        당일 생성된 무한매수 주문(익절 매도/분할 매수)을 승인 없이 즉시 실행
+        :param symbol: 종목 코드 (예: TQQQ)
+        :param action_filter: "ALL" | "SELL" | "BUY" - 실행할 주문 유형 필터
+        :return: {"success": bool, "executed": int, "failed": int, "messages": [str]}
+        """
+        result = {"success": True, "executed": 0, "failed": 0, "messages": []}
+
+        if self.risk_mgr.is_circuit_broken():
+            msg = "🚨 서킷브레이커 발동 상태입니다. 주문 실행을 중단합니다."
+            self.logger.error(msg)
+            result["success"] = False
+            result["messages"].append(msg)
+            return result
+
+        # 현재가 조회
+        price_res = self.api.get_stock_price(symbol)
+        if not price_res.get("success"):
+            msg = f"[{symbol}] 현재가 시세 조회 실패 - 주문 실행 중단"
+            self.logger.warning(msg)
+            result["success"] = False
+            result["messages"].append(msg)
+            return result
+        cur_price = float(price_res["price"])
+
+        # 종목 상태 및 보유 정보 조회
+        state = self.infinite_state_mgr.get_symbol_state(
+            symbol,
+            default_budget_usd=getattr(config, "INFINITE_TOTAL_BUDGET_USD", 5000.0),
+            division_count=getattr(config, "INFINITE_DIVISION_COUNT", 40),
+            target_roi=getattr(config, "INFINITE_TARGET_ROI", 0.10)
+        )
+        actual_held_qty = int(self.holdings.get(symbol, {}).get("qty", 0))
+        actual_avg_p = float(self.holdings.get(symbol, {}).get("avg_price", 0.0))
+
+        # 당일 주문 목록 생성
+        orders = self.infinite_strategy.generate_daily_orders(
+            symbol, cur_price, state,
+            avg_price=actual_avg_p, total_qty=actual_held_qty
+        )
+
+        # 필터 적용
+        if action_filter != "ALL":
+            orders = [o for o in orders if o["action"] == action_filter]
+
+        if not orders:
+            msg = f"[{symbol}] 실행할 주문이 없습니다. (보유 수량/회차 상태 확인 필요)"
+            self.logger.info(msg)
+            result["messages"].append(msg)
+            return result
+
+        for order in orders:
+            action = order["action"]
+            qty = order["qty"]
+            price = order["price"]
+            ord_type = order["ord_type"]
+            desc = order["desc"]
+            round_inc = order.get("round_inc", 1.0)
+
+            # 전량 익절 매도 시 실시간 계좌 수량과 자동 맞춤
+            if action == "SELL":
+                actual_held_qty = int(self.holdings.get(symbol, {}).get("qty", 0))
+                if actual_held_qty > 0 and qty != actual_held_qty:
+                    self.logger.warning(
+                        f"⚠️ [{symbol}] 전량 매도 수량 맞춤 보정! 주문: {qty}주 -> 실시간 계좌 보유: {actual_held_qty}주"
+                    )
+                    qty = actual_held_qty
+                    order["qty"] = qty
+
+            is_buy = (action == "BUY")
+            action_kr = "LOC 매수" if ord_type == "34" else ("매수" if is_buy else "익절 매도")
+            total_ord_amt = qty * price
+
+            self.logger.info(
+                f"🚀 [수동 즉시 실행] {symbol} {action_kr} {qty}주 @ ${price:.2f} (주문예상총액: ${total_ord_amt:,.2f}) | {desc}"
+            )
+
+            order_res = self.api.order_overseas_cash(symbol, qty, price=price, buy=is_buy, ord_type=ord_type)
+            if order_res.get("success"):
+                result["executed"] += 1
+                msg = f"✅ [{symbol}] {action_kr} 주문 접수 성공! ({qty}주 @ ${price:.2f})"
+                result["messages"].append(msg)
+                self.logger.info(msg)
+
+                if is_buy:
+                    # 매수 주문 접수/체결 시 진행 회차 증가
+                    self.infinite_state_mgr.advance_round(symbol, round_inc=round_inc)
+                else:
+                    # 전량 익절 매도 시 회차 리셋 및 구글 시트 완료 일지 기록
+                    self.infinite_state_mgr.complete_round(symbol, avg_price=actual_avg_p, sell_price=price, qty=qty)
+                self.risk_mgr.reset_error()
+            else:
+                result["failed"] += 1
+                err_msg = order_res.get('msg', '')
+                msg = f"❌ [{symbol}] {action_kr} 주문 실패: {err_msg}"
+                result["messages"].append(msg)
+                self.logger.error(msg)
+                self._check_and_log_apbk1681_guidance(symbol, err_msg)
+                self.risk_mgr.record_error()
+
+        # 주문 실행 후 계좌/구글시트 동기화
+        if result["executed"] > 0:
+            self.fetch_account_balance()
+            self.sync_holdings_to_state()
+
+        result["success"] = (result["failed"] == 0)
+        return result
+
     def run_infinite_buying_cycle(self):
         """
         라오어 무한매수법 전용 트레이딩 사이클
