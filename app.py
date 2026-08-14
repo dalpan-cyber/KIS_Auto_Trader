@@ -105,6 +105,28 @@ CUSTOM_CSS = """
         font-size: 1.8rem !important;
         font-weight: 700 !important;
     }
+
+    /* 매도 실행 버튼 - 레드 계열 (key: exec_sell_*) */
+    [class*="st-key-exec_sell"] button[kind="primary"] {
+        background-color: #DC2626 !important;
+        border-color: #DC2626 !important;
+        color: #FFFFFF !important;
+    }
+    [class*="st-key-exec_sell"] button[kind="primary"]:hover {
+        background-color: #B91C1C !important;
+        border-color: #B91C1C !important;
+    }
+
+    /* 매수 실행 버튼 - 블루 계열 (key: exec_buy_*) */
+    [class*="st-key-exec_buy"] button[kind="primary"] {
+        background-color: #2563EB !important;
+        border-color: #2563EB !important;
+        color: #FFFFFF !important;
+    }
+    [class*="st-key-exec_buy"] button[kind="primary"]:hover {
+        background-color: #1D4ED8 !important;
+        border-color: #1D4ED8 !important;
+    }
 </style>
 """
 
@@ -182,20 +204,6 @@ def render_sidebar():
         st.markdown(f"**계좌번호**: `{bot.api.cano}-{bot.api.acnt_prdt_cd}`")
         st.divider()
 
-        # 자동 감시 시작 / 정지 버튼
-        col_btn1, col_btn2 = st.columns(2)
-        with col_btn1:
-            if st.button("▶ 감시 시작", width="stretch", disabled=bot.is_running, type="primary"):
-                bot.is_running = True
-                logging.info("===== 대시보드: 감시 루프 시작 =====")
-                st.rerun()
-                
-        with col_btn2:
-            if st.button("⏹ 감시 정지", width="stretch", disabled=not bot.is_running):
-                bot.is_running = False
-                logging.info("===== 대시보드: 감시 루프 정지 =====")
-                st.rerun()
-
         if st.button("🔄 잔고/시세/구글시트 즉시 갱신", width="stretch"):
             bot.fetch_account_balance()
             bot.fetch_target_prices()
@@ -261,17 +269,37 @@ def render_stock_detail(symbol: str, bot: TraderBot):
     st.caption(f"**상태**: {status_display} | **전략 시작일**: {st_data.get('start_date', '-')} | **총 예산**: ${budget:,.2f}")
     st.progress(min(1.0, max(0.0, float(curr_round) / float(div_count))))
 
-    # 2. 당일 주문 상세
+    # 2. 당일 주문 제안 생성
     calc_price = cur_p if cur_p > 0 else (avg_p if avg_p > 0 else 50.0)
     orders = bot.infinite_strategy.generate_daily_orders(
         symbol, calc_price, st_data,
         avg_price=avg_p, total_qty=total_qty
     )
 
+    # 2. 당일 주문 제안 + 즉시 실행 (제안/실행 통합 UI)
+    st.markdown("#### ⚡ 당일 주문 제안 및 즉시 실행")
+    s_orders = [o for o in orders if o["action"] == "SELL"]
+    b_orders = [o for o in orders if o["action"] == "BUY"]
+
     col_det1, col_det2 = st.columns(2)
     with col_det1:
-        st.markdown("#### 🔴 당일 전량 익절 매도 주문 (지정가)")
-        s_orders = [o for o in orders if o["action"] == "SELL"]
+        # 헤더 + 실행 버튼을 같은 라인에 배치
+        hdr_col1, btn_col1 = st.columns([3, 1])
+        with hdr_col1:
+            st.markdown("#### 🔴 당일 전량 익절 매도 주문 (지정가)")
+        with btn_col1:
+            if st.button("매도 실행", key=f"exec_sell_{symbol}", type="primary", width="stretch"):
+                result = bot.execute_daily_orders(symbol, action_filter="SELL")
+                if result["success"] and result["executed"] > 0:
+                    st.success(f"🎉 [{symbol}] 익절 매도 주문이 즉시 실행되었습니다! ({result['executed']}건)")
+                elif result["failed"] > 0:
+                    st.error(f"❌ [{symbol}] 익절 매도 주문 실행 중 오류 발생! (성공: {result['executed']}건, 실패: {result['failed']}건)")
+                else:
+                    st.info(f"ℹ️ [{symbol}] 실행할 익절 매도 주문이 없습니다.")
+                for msg in result["messages"]:
+                    st.caption(msg)
+                st.rerun()
+
         if s_orders:
             for s in s_orders:
                 st.info(f"**익절 매도**: ${s['price']:.2f} (수량: {s['qty']:,}주 / +10% 익절)")
@@ -279,8 +307,23 @@ def render_stock_detail(symbol: str, bot: TraderBot):
             st.write("보유 수량이 없거나 익절 조건 미충족")
 
     with col_det2:
-        st.markdown("#### 🟢 당일 분할 매수 주문 (LOC)")
-        b_orders = [o for o in orders if o["action"] == "BUY"]
+        # 헤더 + 실행 버튼을 같은 라인에 배치
+        hdr_col2, btn_col2 = st.columns([3, 1])
+        with hdr_col2:
+            st.markdown("#### 🟢 당일 분할 매수 주문 (LOC)")
+        with btn_col2:
+            if st.button("매수 실행", key=f"exec_buy_{symbol}", type="primary", width="stretch"):
+                result = bot.execute_daily_orders(symbol, action_filter="BUY")
+                if result["success"] and result["executed"] > 0:
+                    st.success(f"🎉 [{symbol}] 분할 매수 주문이 즉시 실행되었습니다! ({result['executed']}건)")
+                elif result["failed"] > 0:
+                    st.error(f"❌ [{symbol}] 분할 매수 주문 실행 중 오류 발생! (성공: {result['executed']}건, 실패: {result['failed']}건)")
+                else:
+                    st.info(f"ℹ️ [{symbol}] 실행할 분할 매수 주문이 없습니다.")
+                for msg in result["messages"]:
+                    st.caption(msg)
+                st.rerun()
+
         if b_orders:
             for b in b_orders:
                 st.success(f"**LOC 매수**: ${b['price']:.2f} 이하 (수량: {b['qty']:,}주)")
@@ -289,48 +332,19 @@ def render_stock_detail(symbol: str, bot: TraderBot):
 
     st.markdown("---")
 
-    # 3. 당일 주문 즉시 실행 버튼
-    st.markdown("#### ⚡ 당일 주문 즉시 실행")
-    col_exec1, col_exec2, col_exec3 = st.columns([3, 3, 6])
-    with col_exec1:
-        if st.button(f"🔴 {symbol} 전량 익절 매도 즉시 실행", key=f"exec_sell_{symbol}", type="primary", width="stretch"):
-            result = bot.execute_daily_orders(symbol, action_filter="SELL")
-            if result["success"] and result["executed"] > 0:
-                st.success(f"🎉 [{symbol}] 익절 매도 주문이 즉시 실행되었습니다! ({result['executed']}건)")
-            elif result["failed"] > 0:
-                st.error(f"❌ [{symbol}] 익절 매도 주문 실행 중 오류 발생! (성공: {result['executed']}건, 실패: {result['failed']}건)")
-            else:
-                st.info(f"ℹ️ [{symbol}] 실행할 익절 매도 주문이 없습니다.")
-            for msg in result["messages"]:
-                st.caption(msg)
+    # 3. 전략 시작일 변경
+    with st.popover("⚙️ 전략 시작일 변경"):
+        curr_sd_str = st_data.get("start_date", datetime.date.today().strftime("%Y-%m-%d"))
+        try:
+            curr_sd_obj = datetime.datetime.strptime(curr_sd_str, "%Y-%m-%d").date()
+        except Exception:
+            curr_sd_obj = datetime.date.today()
+        new_sd = st.date_input("전략 시작일 지정", value=curr_sd_obj, key=f"sd_input_{symbol}")
+        if st.button("시작일 저장", key=f"sd_save_{symbol}"):
+            new_sd_str = new_sd.strftime("%Y-%m-%d")
+            bot.infinite_state_mgr.update_start_date(symbol, new_sd_str)
+            st.success(f"전략 시작일이 {new_sd_str}로 변경되었습니다.")
             st.rerun()
-
-    with col_exec2:
-        if st.button(f"🟢 {symbol} 분할 매수 즉시 실행", key=f"exec_buy_{symbol}", width="stretch"):
-            result = bot.execute_daily_orders(symbol, action_filter="BUY")
-            if result["success"] and result["executed"] > 0:
-                st.success(f"🎉 [{symbol}] 분할 매수 주문이 즉시 실행되었습니다! ({result['executed']}건)")
-            elif result["failed"] > 0:
-                st.error(f"❌ [{symbol}] 분할 매수 주문 실행 중 오류 발생! (성공: {result['executed']}건, 실패: {result['failed']}건)")
-            else:
-                st.info(f"ℹ️ [{symbol}] 실행할 분할 매수 주문이 없습니다.")
-            for msg in result["messages"]:
-                st.caption(msg)
-            st.rerun()
-
-    with col_exec3:
-        with st.popover("⚙️ 전략 시작일 변경"):
-            curr_sd_str = st_data.get("start_date", datetime.date.today().strftime("%Y-%m-%d"))
-            try:
-                curr_sd_obj = datetime.datetime.strptime(curr_sd_str, "%Y-%m-%d").date()
-            except Exception:
-                curr_sd_obj = datetime.date.today()
-            new_sd = st.date_input("전략 시작일 지정", value=curr_sd_obj, key=f"sd_input_{symbol}")
-            if st.button("시작일 저장", key=f"sd_save_{symbol}"):
-                new_sd_str = new_sd.strftime("%Y-%m-%d")
-                bot.infinite_state_mgr.update_start_date(symbol, new_sd_str)
-                st.success(f"전략 시작일이 {new_sd_str}로 변경되었습니다.")
-                st.rerun()
 
     st.markdown("---")
 
