@@ -191,25 +191,27 @@ def render_css():
 
 
 def render_sidebar():
-    """사이드바 (제어 및 설정)"""
+    """사이드바 (시스템 정보 및 상태)"""
     with st.sidebar:
-        st.title("⚙️ 시스템 제어")
+        st.title("⚙️ 시스템 정보")
         
         # 시스템 접속 상태 정보
         is_mock = bot.api.mock
         env_badge = '<span class="badge-mock">🟢 모의투자(VTS)</span>' if is_mock else '<span class="badge-real">🔴 실전투자(LIVE)</span>'
-        status_badge = '<span class="badge-running">▶ 감시 중</span>' if bot.is_running else '<span class="badge-stopped">⏹ 정지됨</span>'
+        auto_badge = '<span class="badge-running">🤖 무인 가동 중</span>'
         
         st.markdown(f"**접속 환경**: {env_badge}", unsafe_allow_html=True)
-        st.markdown(f"**실행 상태**: {status_badge}", unsafe_allow_html=True)
+        st.markdown(f"**자동 매매**: {auto_badge}", unsafe_allow_html=True)
+        st.caption("⚡ GitHub Actions (매일 21:59 KST 자동 발주)")
         st.markdown(f"**계좌번호**: `{bot.api.cano}-{bot.api.acnt_prdt_cd}`")
         st.divider()
 
-        if st.button("🔄 잔고/시세/구글시트 즉시 갱신", width="stretch"):
+        # 잔고 및 시세 새로고침 버튼
+        if st.button("🔄 잔고 및 시세 새로고침", width="stretch"):
             bot.fetch_account_balance()
             bot.fetch_target_prices()
             bot.sync_holdings_to_state()
-            st.success("계좌 잔고, 시세 및 구글 시트(State/Holdings/ExecutionHistory) 동기화 완료.")
+            st.success("실시간 계좌 잔고 및 종목 시세를 새로고침했습니다.")
             st.rerun()
 
         st.divider()
@@ -703,10 +705,6 @@ def page_main_dashboard():
     render_sidebar()
 
     st.title("🇺🇸 KIS 라오어 무한매수법 전담 자동투자 시스템")
-
-    # 감시 활성화 상태 시 트레이딩/감시 사이클 1회 실행
-    if bot.is_running:
-        bot.run_trading_cycle()
 
     # 해외 무한매수 종목별 주식 평가금액($) 및 외화 총자산 계산
     infinite_stocks = getattr(config, "INFINITE_STOCKS", ["TQQQ"])
