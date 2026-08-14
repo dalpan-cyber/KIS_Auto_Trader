@@ -1,6 +1,9 @@
-# 한국투자증권 KIS Open Trading API 자동 투자 프로그램 (Auto Trading Engine)
+# 🇺🇸 한국투자증권 KIS 라오어 무한매수법 무인 자동투자 시스템
 
-한국투자증권 **KIS Developers Open Trading API** (REST API / WebSocket) 규격을 준수하여 구현된 **Python 기반 주식 자동 투자 시스템**입니다.
+한국투자증권 **KIS Developers Open Trading API**와 **GitHub Actions**, **Streamlit Cloud**, **Google Sheets**를 연동하여 컴퓨터를 켜둘 필요 없이 24시간 365일 무인으로 운영되는 **라오어 무한매수법 v2.0 전담 자동 매매 시스템**입니다.
+
+> 📖 **처음 시작하시나요?**  
+> GitHub Actions 무인 자동매매 및 Streamlit 웹 대시보드 구축 방법은 **[👉 무인 자동매매 구축 상세 가이드 (SETUP_GUIDE.md)](./SETUP_GUIDE.md)**를 참고하세요!
 
 ---
 
