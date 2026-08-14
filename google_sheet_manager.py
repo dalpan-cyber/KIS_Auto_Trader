@@ -47,6 +47,7 @@ class GoogleSheetManager:
         self.history_worksheet: Optional[Any] = None
         self.exec_balance_worksheet: Optional[Any] = None
         self.completed_worksheet: Optional[Any] = None
+        self.settings_worksheet: Optional[Any] = None
         self.is_connected = False
 
         if self.enabled and GSPREAD_AVAILABLE:
@@ -153,6 +154,14 @@ class GoogleSheetManager:
                 self.completed_worksheet = self.spreadsheet.add_worksheet(title="CompletedTrades", rows="500", cols="14")
                 headers = ["완료일시", "티커", "시작일자", "매도일자", "완료회차", "매도수량", "매수평단가($)", "매도단가($)", "총매수금액($)", "총매도금액($)", "실현손익($)", "수익률(%)", "상태"]
                 self.completed_worksheet.append_row(headers)
+
+            # 'Settings' 워크시트 준비 (무한매수 설정값 - UI에서 변경한 설정을 저장/로드)
+            try:
+                self.settings_worksheet = self.spreadsheet.worksheet("Settings")
+            except Exception:
+                self.settings_worksheet = self.spreadsheet.add_worksheet(title="Settings", rows="50", cols="10")
+                headers = ["설정키", "설정값", "설명", "최종갱신시각"]
+                self.settings_worksheet.append_row(headers)
 
             self.is_connected = True
             logger.info(f"🟢 Google Sheets 연동 성공! (서비스 계정: {sa_email} | 시트: {self.spreadsheet.title})")
@@ -607,3 +616,81 @@ class GoogleSheetManager:
         except Exception as e:
             logger.warning(f"Google Sheet CompletedTrades 기록 예외: {e}")
 
+
+    def sync_settings_to_sheet(self, settings: Dict[str, Any]):
+        """
+        무한매수 설정값을 'Settings' 워크시트에 저장
+        - settings: {"infinite_stocks": [...], "infinite_total_budget_usd": float, ...}
+        - UI에서 설정 변경 시 호출되어 Google Sheet에 영속 저장
+        """
+        if not self.is_connected or not self.settings_worksheet:
+            return
+
+        try:
+            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            # 설정값을 문자열로 변환 (리스트는 쉼표 구분 문자열로)
+            settings_rows = []
+            for key, value in settings.items():
+                if isinstance(value, list):
+                    value_str = ", ".join(str(v) for v in value)
+                else:
+                    value_str = str(value)
+                settings_rows.append([key, value_str, "", now_str])
+
+            # 기존 데이터 삭제 (헤더 제외)
+            try:
+                all_records = self.settings_worksheet.get_all_records()
+                if all_records:
+                    self.settings_worksheet.delete_rows(2, len(all_records) + 1)
+            except Exception:
+                pass
+
+            if settings_rows:
+                self.settings_worksheet.append_rows(settings_rows)
+                logger.info(f"📊 Google Sheet 'Settings' 워크시트에 설정값 {len(settings_rows)}건 저장 성공")
+        except Exception as e:
+            if "429" in str(e) or "Quota exceeded" in str(e):
+                logger.debug("Google Sheet Settings API 호출 할당량 초과 (다음 턴 재시도)")
+            else:
+                logger.warning(f"Google Sheet Settings 동기화 예외: {e}")
+
+    def read_settings_from_sheet(self) -> Dict[str, Any]:
+        """
+        Google Sheet 'Settings' 워크시트에서 무한매수 설정값 읽어오기
+        - GitHub Actions 자동 실행 시에도 이 값을 읽어 동일한 설정 적용
+        - 반환: {"infinite_stocks": [...], "infinite_total_budget_usd": float, ...}
+        """
+        if not self.is_connected or not self.settings_worksheet:
+            return {}
+
+        settings = {}
+        try:
+            records = self.settings_worksheet.get_all_records()
+            for rec in records:
+                key = str(rec.get("설정키", "")).strip()
+                value = str(rec.get("설정값", "")).strip()
+                if not key or not value:
+                    continue
+
+                # 값 타입 변환
+                if key == "infinite_stocks":
+                    settings[key] = [s.strip().upper() for s in value.split(",") if s.strip()]
+                elif key in ("infinite_total_budget_usd", "infinite_target_roi", "api_call_delay"):
+                    try:
+                        settings[key] = float(value)
+                    except ValueError:
+                        settings[key] = value
+                elif key in ("infinite_division_count", "max_stocks_holding"):
+                    try:
+                        settings[key] = int(float(value))
+                    except ValueError:
+                        settings[key] = value
+                else:
+                    settings[key] = value
+
+            if settings:
+                logger.info(f"📊 Google Sheet 'Settings'에서 설정값 {len(settings)}건 불러오기 성공")
+        except Exception as e:
+            logger.warning(f"Google Sheet Settings 읽기 실패: {e}")
+        return settings

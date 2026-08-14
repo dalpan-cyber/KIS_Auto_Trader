@@ -3,6 +3,7 @@
 """
 import time
 import datetime
+import json
 import logging
 import pandas as pd
 import numpy as np
@@ -718,23 +719,186 @@ def page_config():
     render_sidebar()
 
     st.title("⚙️ 무한매수 설정")
-    st.subheader("현재 적용 중인 무한매수 파라미터 ([config.py](file:///c:/KIS_Auto_Trader/config.py))")
-    
+    st.subheader("무한매수 파라미터를 수정하고 [설정 적용] 버튼을 누르면 변경 사항이 반영됩니다.")
+    st.caption("⚠️ 설정을 변경하여 적용하면 **무한매수 전략이 초기화**됩니다. (진행 회차 0회, 상태 IDLE, 시작일 오늘로 리셋)")
+
+    # 현재 설정값을 세션 상태에 저장 (페이지 리로드 시 유지)
+    if "cfg_stocks" not in st.session_state:
+        st.session_state.cfg_stocks = ", ".join(getattr(config, "INFINITE_STOCKS", ["TQQQ"]))
+    if "cfg_budget" not in st.session_state:
+        st.session_state.cfg_budget = float(getattr(config, "INFINITE_TOTAL_BUDGET_USD", 5000.0))
+    if "cfg_division" not in st.session_state:
+        st.session_state.cfg_division = int(getattr(config, "INFINITE_DIVISION_COUNT", 40))
+    if "cfg_roi" not in st.session_state:
+        st.session_state.cfg_roi = float(getattr(config, "INFINITE_TARGET_ROI", 0.10))
+    if "cfg_max_stocks" not in st.session_state:
+        st.session_state.cfg_max_stocks = int(getattr(config, "MAX_STOCKS_HOLDING", 5))
+    if "cfg_api_delay" not in st.session_state:
+        st.session_state.cfg_api_delay = float(getattr(config, "API_CALL_DELAY", 0.2))
+
     col_cfg1, col_cfg2 = st.columns(2)
+
     with col_cfg1:
         st.markdown("### 🇺🇸 라오어 무한매수법 v2.0 파라미터")
         st.write(f"- **전담 매매 전략**: `라오어 무한매수법 v2.0 (INFINITE_BUYING)`")
-        st.write(f"- **운용 대상 종목**: `{', '.join(getattr(config, 'INFINITE_STOCKS', ['TQQQ']))}`")
-        st.write(f"- **종목당 총 예산 ($)**: `${getattr(config, 'INFINITE_TOTAL_BUDGET_USD', 5000):,.0f}`")
-        st.write(f"- **총 분할 매수 횟수**: `{getattr(config, 'INFINITE_DIVISION_COUNT', 40)}` 회차")
-        st.write(f"- **전량 익절 목표 수익률**: `+{getattr(config, 'INFINITE_TARGET_ROI', 0.10)*100:.1f}%`")
+
+        new_stocks = st.text_input(
+            "운용 대상 종목 (쉼표로 구분)",
+            value=st.session_state.cfg_stocks,
+            key="cfg_input_stocks",
+            help="예: TQQQ, SOXL, SPXL"
+        )
+        new_budget = st.number_input(
+            "종목당 총 예산 ($)",
+            min_value=100.0,
+            max_value=1000000.0,
+            value=st.session_state.cfg_budget,
+            step=100.0,
+            key="cfg_input_budget",
+            help="종목당 분할 매수에 사용할 총 예산 (USD)"
+        )
+        new_division = st.number_input(
+            "총 분할 매수 횟수 (회차)",
+            min_value=1,
+            max_value=200,
+            value=st.session_state.cfg_division,
+            step=1,
+            key="cfg_input_division",
+            help="무한매수 총 분할 횟수 (예: 40 = 40회차)"
+        )
+        new_roi = st.number_input(
+            "전량 익절 목표 수익률 (%)",
+            min_value=1.0,
+            max_value=100.0,
+            value=st.session_state.cfg_roi * 100.0,
+            step=1.0,
+            key="cfg_input_roi",
+            help="전량 익절 매도 목표 수익률 (예: 10 = +10%)"
+        )
 
     with col_cfg2:
         st.markdown("### 🛡️ 시스템 주문 및 리스크 관리")
         st.write(f"- **주문 실행 방식**: `⚡ 완전 자동 (GitHub Actions Cron 1일 2회)`")
         st.write(f"- **주문 구문**: `LOC (Limit On Close - 종가입찰) & 지정가 익절 매도`")
-        st.write(f"- **최대 보유 종목 수**: `{getattr(config, 'MAX_STOCKS_HOLDING', 5)}` 개")
-        st.write(f"- **API 호출 안전 딜레이**: `{getattr(config, 'API_CALL_DELAY', 0.2)}` 초")
+
+        new_max_stocks = st.number_input(
+            "최대 보유 종목 수",
+            min_value=1,
+            max_value=50,
+            value=st.session_state.cfg_max_stocks,
+            step=1,
+            key="cfg_input_max_stocks",
+            help="동시에 보유 가능한 최대 종목 수"
+        )
+        new_api_delay = st.number_input(
+            "API 호출 안전 딜레이 (초)",
+            min_value=0.0,
+            max_value=10.0,
+            value=st.session_state.cfg_api_delay,
+            step=0.1,
+            key="cfg_input_api_delay",
+            help="API 연속 호출 간 최소 딜레이 (초)"
+        )
+
+    st.divider()
+
+    # 설정 변경 감지 및 적용 버튼
+    stocks_list = [s.strip().upper() for s in new_stocks.split(",") if s.strip()]
+    roi_decimal = new_roi / 100.0
+
+    changed = (
+        stocks_list != getattr(config, "INFINITE_STOCKS", ["TQQQ"])
+        or abs(new_budget - float(getattr(config, "INFINITE_TOTAL_BUDGET_USD", 5000.0))) > 0.01
+        or new_division != int(getattr(config, "INFINITE_DIVISION_COUNT", 40))
+        or abs(roi_decimal - float(getattr(config, "INFINITE_TARGET_ROI", 0.10))) > 0.0001
+        or new_max_stocks != int(getattr(config, "MAX_STOCKS_HOLDING", 5))
+        or abs(new_api_delay - float(getattr(config, "API_CALL_DELAY", 0.2))) > 0.001
+    )
+
+    if changed:
+        st.warning("설정값이 변경되었습니다. [설정 적용] 버튼을 누르면 무한매수 전략이 초기화됩니다.")
+
+    if st.button("💾 설정 적용 (무한매수 초기화)", type="primary", width="stretch", disabled=not changed):
+        # 1. config 모듈의 설정값을 런타임에 업데이트
+        setattr(config, "INFINITE_STOCKS", stocks_list)
+        setattr(config, "TARGET_STOCKS", stocks_list)
+        setattr(config, "INFINITE_TOTAL_BUDGET_USD", new_budget)
+        setattr(config, "INFINITE_DIVISION_COUNT", new_division)
+        setattr(config, "INFINITE_TARGET_ROI", roi_decimal)
+        setattr(config, "MAX_STOCKS_HOLDING", new_max_stocks)
+        setattr(config, "API_CALL_DELAY", new_api_delay)
+
+        # 2. 봇의 설정값도 동기화
+        bot.infinite_stocks = stocks_list
+        bot.target_symbols = stocks_list
+        bot.infinite_strategy.division_count = new_division
+        bot.infinite_strategy.target_roi = roi_decimal
+        bot.risk_mgr.max_stocks_holding = new_max_stocks
+
+        # 3. 무한매수 전략 상태 초기화 (모든 대상 종목에 대해)
+        for sym in stocks_list:
+            bot.infinite_state_mgr.reset_all(
+                sym,
+                total_budget_usd=new_budget,
+                division_count=new_division,
+                target_roi=roi_decimal
+            )
+
+        # 4. 영속 설정 저장 (로컬 JSON + Google Sheet)
+        #    - 로컬 JSON: 앱 재시작 시 config.py가 로드
+        #    - Google Sheet: GitHub Actions 자동 실행 시에도 동일한 설정 적용
+        settings_data = {
+            "infinite_stocks": stocks_list,
+            "infinite_total_budget_usd": new_budget,
+            "infinite_division_count": new_division,
+            "infinite_target_roi": roi_decimal,
+            "max_stocks_holding": new_max_stocks,
+            "api_call_delay": new_api_delay,
+        }
+
+        # 4-1. 로컬 JSON 파일에 저장
+        try:
+            with open(config.SETTINGS_FILE, "w", encoding="utf-8") as f:
+                json.dump(settings_data, f, ensure_ascii=False, indent=2)
+            logger.info(f"💾 영속 설정 파일({config.SETTINGS_FILE}) 저장 완료")
+        except Exception as e:
+            logger.error(f"영속 설정 파일({config.SETTINGS_FILE}) 저장 실패: {e}")
+            st.error(f"설정 파일 저장 실패: {e}")
+
+        # 4-2. Google Sheet 'Settings' 워크시트에 저장
+        try:
+            gss = bot.infinite_state_mgr.gss_mgr
+            if gss and gss.is_connected:
+                gss.sync_settings_to_sheet(settings_data)
+                logger.info("📊 Google Sheet 'Settings' 워크시트에 설정값 저장 완료")
+            else:
+                logger.warning("Google Sheet 미연동 상태 - 설정값은 로컬 파일에만 저장됩니다.")
+        except Exception as e:
+            logger.warning(f"Google Sheet 설정값 저장 실패: {e}")
+
+        # 5. 세션 상태에 새 설정값 저장
+        st.session_state.cfg_stocks = ", ".join(stocks_list)
+        st.session_state.cfg_budget = new_budget
+        st.session_state.cfg_division = new_division
+        st.session_state.cfg_roi = roi_decimal
+        st.session_state.cfg_max_stocks = new_max_stocks
+        st.session_state.cfg_api_delay = new_api_delay
+
+        logger.info(f"⚙️ 무한매수 설정 변경 및 초기화 완료: 종목={stocks_list}, 예산=${new_budget:,.0f}, 분할={new_division}회, 목표수익률=+{roi_decimal*100:.1f}%")
+        st.success("✅ 설정이 적용되었고 무한매수 전략이 초기화되었습니다.")
+        st.rerun()
+
+    # 현재 적용 중인 설정 요약 표시
+    st.markdown("### 📋 현재 적용 중인 설정")
+    col_sum1, col_sum2, col_sum3, col_sum4 = st.columns(4)
+    with col_sum1:
+        st.metric("운용 대상 종목", ", ".join(getattr(config, "INFINITE_STOCKS", ["TQQQ"])))
+    with col_sum2:
+        st.metric("종목당 총 예산", f"${getattr(config, 'INFINITE_TOTAL_BUDGET_USD', 5000):,.0f}")
+    with col_sum3:
+        st.metric("총 분할 횟수", f"{getattr(config, 'INFINITE_DIVISION_COUNT', 40)} 회차")
+    with col_sum4:
+        st.metric("목표 수익률", f"+{getattr(config, 'INFINITE_TARGET_ROI', 0.10)*100:.1f}%")
 
 
 # -----------------------------------------------------------------------------

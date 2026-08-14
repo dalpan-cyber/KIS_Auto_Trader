@@ -44,8 +44,8 @@ jobs:
           python run_infinite_buying.py
 
 
-      - name: 5. 무한매수 진행 회차 상태(infinite_trader_state.json) Git 저장소 자동 커밋 & 푸시
+      - name: 5. 무한매수 진행 회차 상태(infinite_trader_state.json) 및 설정(infinite_settings.json) Git 저장소 자동 커밋 & 푸시
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: '🤖 [GitHub Actions] 무한매수 진행 회차 및 평단가 상태 자동 갱신'
-          file_pattern: 'infinite_trader_state.json'
+          commit_message: '🤖 [GitHub Actions] 무한매수 진행 회차 및 설정 상태 자동 갱신'
+          file_pattern: 'infinite_trader_state.json infinite_settings.json'

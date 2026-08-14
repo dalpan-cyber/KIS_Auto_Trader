@@ -1,11 +1,11 @@
 {
   "TQQQ": {
     "symbol": "TQQQ",
-    "start_date": "2026-08-07",
+    "start_date": "2026-08-14",
     "total_budget_usd": 5000.0,
     "division_count": 40,
-    "current_round": 5.0,
+    "current_round": 0,
     "target_roi": 0.1,
-    "status": "BUYING"
+    "status": "IDLE"
   }
 }

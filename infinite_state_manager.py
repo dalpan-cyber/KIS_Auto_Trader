@@ -83,10 +83,38 @@ class InfiniteStateManager:
         state["total_budget_usd"] = total_budget_usd
         self.save_state()
 
+    def update_division_count(self, symbol: str, division_count: int):
+        """총 분할 횟수 업데이트"""
+        state = self.get_symbol_state(symbol)
+        state["division_count"] = division_count
+        self.save_state()
+
+    def update_target_roi(self, symbol: str, target_roi: float):
+        """전량 익절 목표 수익률 업데이트"""
+        state = self.get_symbol_state(symbol)
+        state["target_roi"] = target_roi
+        self.save_state()
+
     def update_start_date(self, symbol: str, start_date: str):
         """전략 시작일 업데이트"""
         state = self.get_symbol_state(symbol)
         state["start_date"] = start_date
+        self.save_state()
+
+    def reset_all(self, symbol: str, total_budget_usd: float, division_count: int, target_roi: float):
+        """
+        무한매수 전략 전체 초기화 (설정 변경 시 호출)
+        - 진행 회차를 0으로 리셋하고, 상태를 IDLE로 변경
+        - 새 예산/분할횟수/목표수익률을 상태에 반영
+        """
+        state = self.get_symbol_state(symbol)
+        state["total_budget_usd"] = total_budget_usd
+        state["division_count"] = division_count
+        state["target_roi"] = target_roi
+        state["current_round"] = 0
+        state["status"] = "IDLE"
+        state["start_date"] = datetime.now().strftime("%Y-%m-%d")
+        logger.info(f"🔄 [{symbol}] 무한매수 설정 변경으로 전체 초기화 완료! (예산: ${total_budget_usd:,.0f}, 분할: {division_count}회, 목표수익률: +{target_roi*100:.1f}%, 상태: IDLE)")
         self.save_state()
 
     def start_buying(self, symbol: str):

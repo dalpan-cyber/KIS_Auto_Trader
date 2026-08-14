@@ -2,6 +2,8 @@
 한국투자증권 Open Trading API (KIS Developers) 라오어 무한매수법 전담 자동투자 설정 파일
 """
 import os
+import json
+import logging
 
 # --- 로컬 .env 파일 자동 로드 (.env 파일이 존재하는 경우 환경변수로 등록) ---
 if os.path.exists(".env"):
@@ -50,6 +52,81 @@ INFINITE_TARGET_ROI = 0.10            # 전량 익절 목표 수익률 (+10%)
 # 하위 호환성 유지용 TARGET_STOCKS (해외 무한매수 대상 동기화)
 TARGET_STOCKS = INFINITE_STOCKS
 
+# --- 영속 설정 파일 (infinite_settings.json) 로드 ---
+# UI에서 변경한 무한매수 설정값을 저장/로드하여,
+# 앱 재시작 및 GitHub Actions 자동 실행 시에도 동일한 설정이 유지되도록 한다.
+SETTINGS_FILE = "infinite_settings.json"
+
+def _apply_settings(_settings: dict):
+    """설정 dict를 config 모듈 변수에 반영"""
+    if not isinstance(_settings, dict):
+        return
+
+    # 무한매수 설정값 반영
+    if "infinite_stocks" in _settings and isinstance(_settings["infinite_stocks"], list):
+        global INFINITE_STOCKS, TARGET_STOCKS
+        INFINITE_STOCKS = [s.strip().upper() for s in _settings["infinite_stocks"] if s.strip()]
+        TARGET_STOCKS = INFINITE_STOCKS
+    if "infinite_total_budget_usd" in _settings:
+        global INFINITE_TOTAL_BUDGET_USD
+        INFINITE_TOTAL_BUDGET_USD = float(_settings["infinite_total_budget_usd"])
+    if "infinite_division_count" in _settings:
+        global INFINITE_DIVISION_COUNT
+        INFINITE_DIVISION_COUNT = int(_settings["infinite_division_count"])
+    if "infinite_target_roi" in _settings:
+        global INFINITE_TARGET_ROI
+        INFINITE_TARGET_ROI = float(_settings["infinite_target_roi"])
+
+    # 리스크/시스템 설정값 반영
+    if "max_stocks_holding" in _settings:
+        global MAX_STOCKS_HOLDING
+        MAX_STOCKS_HOLDING = int(_settings["max_stocks_holding"])
+    if "api_call_delay" in _settings:
+        global API_CALL_DELAY
+        API_CALL_DELAY = float(_settings["api_call_delay"])
+
+
+def _load_persistent_settings():
+    """infinite_settings.json 파일 및 Google Sheet에서 영속 설정값을 로드하여 config 모듈 변수에 반영"""
+    _settings = {}
+
+    # 1. 로컬 JSON 파일에서 로드
+    if os.path.exists(SETTINGS_FILE):
+        try:
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as _f:
+                _file_settings = json.load(_f)
+            if isinstance(_file_settings, dict):
+                _settings.update(_file_settings)
+        except Exception as e:
+            logging.getLogger("Config").warning(f"영속 설정 파일({SETTINGS_FILE}) 로드 실패: {e}")
+
+    # 2. Google Sheet 'Settings' 워크시트에서 로드 (로컬 JSON보다 우선)
+    #    - 순환 import 방지: google_sheet_manager가 이미 import되고 있는 중이면 건너뜀
+    try:
+        import sys
+        if "google_sheet_manager" in sys.modules and "GoogleSheetManager" in dir(sys.modules["google_sheet_manager"]):
+            from google_sheet_manager import GoogleSheetManager
+            _gss = GoogleSheetManager(enabled=True)
+            if _gss.is_connected:
+                _sheet_settings = _gss.read_settings_from_sheet()
+                if _sheet_settings:
+                    _settings.update(_sheet_settings)
+                    logging.getLogger("Config").info(f"📊 Google Sheet 'Settings'에서 설정값 로드 완료: {list(_sheet_settings.keys())}")
+    except Exception as e:
+        logging.getLogger("Config").warning(f"Google Sheet 설정값 로드 실패: {e}")
+
+    # 3. 설정값 반영
+    if _settings:
+        _apply_settings(_settings)
+        logging.getLogger("Config").info(f"⚙️ 영속 설정 적용 완료: 종목={INFINITE_STOCKS}, 예산=${INFINITE_TOTAL_BUDGET_USD:,.0f}, 분할={INFINITE_DIVISION_COUNT}회, 목표수익률=+{INFINITE_TARGET_ROI*100:.1f}%")
+
+# 리스크 및 시스템 제한 설정 (영속 설정 로드 전에 정의)
+MAX_STOCKS_HOLDING = 5        # 최대 보유 가능 종목 수
+API_CALL_DELAY = 0.2          # API 연속 호출 간 최소 딜레이 (초)
+
+# 영속 설정 파일 로드 (기본값을 영속 설정으로 오버라이드)
+_load_persistent_settings()
+
 # --- Google Sheets 동기화 설정 ---
 GOOGLE_SHEET_ENABLED = os.getenv("GOOGLE_SHEET_ENABLED", "true").lower() == "true"
 GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME", "KIS_무한매수_매매일지")
@@ -57,7 +134,5 @@ GOOGLE_SHEET_KEY = os.getenv("GOOGLE_SHEET_KEY", "")  # 구글 시트 ID/Key
 GCP_SERVICE_ACCOUNT_JSON = os.getenv("GCP_SERVICE_ACCOUNT_JSON", "")  # GCP Service Account JSON
 
 # --- 리스크 및 시스템 제한 설정 ---
-MAX_STOCKS_HOLDING = 5        # 최대 보유 가능 종목 수
-API_CALL_DELAY = 0.2          # API 연속 호출 간 최소 딜레이 (초)
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")  # DEBUG, INFO, WARNING, ERROR
 
