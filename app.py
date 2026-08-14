@@ -532,7 +532,7 @@ def render_stock_detail(symbol: str, bot: TraderBot):
 
 
     # 5. 종목 매매 및 체결/실패 히스토리 테이블 (KIS API 실계좌 단일 소스)
-    st.subheader(f"📜 [{symbol}] 매수/매도 & 체결/실패 이력 (KIS API 실계좌)")
+    st.subheader(f"📜 [{symbol}] 매수/매도 체결")
     if history:
         h_rows = []
         for h in reversed(history):
@@ -592,6 +592,81 @@ def render_stock_detail(symbol: str, bot: TraderBot):
         st.dataframe(pd.DataFrame(h_rows), width="stretch", hide_index=True)
     else:
         st.info("아직 누적된 매매 이력이 없습니다.")
+
+    st.markdown("---")
+
+    # 6. TQQQ 거래요청 이력 상세 (inquire-ccnl, TTTS3035R/VTTS3035R)
+    st.subheader(f"📋 [{symbol}] 거래요청 이력 상세")
+    with st.expander(f"🔍 [{symbol}] 거래요청 이력 상세 보기 (start_date 이후)", expanded=False):
+        # start_date 이후의 거래 이력 조회 (inquire-ccnl API)
+        ccnl_start = clean_sd if clean_sd and clean_sd.isdigit() else default_start
+        logger.info(f"[대시보드] 거래요청 이력 상세 조회 시작: symbol={symbol}, start_date={ccnl_start}, end_date={end_date_fmt}")
+        ccnl_history = bot.api.get_overseas_order_ccnl(
+            symbol=symbol,
+            start_date=ccnl_start,
+            end_date=end_date_fmt
+        )
+        logger.info(f"[대시보드] 거래요청 이력 상세 조회 완료: {len(ccnl_history)}건 (symbol={symbol})")
+
+        if ccnl_history:
+            ccnl_rows = []
+            for h in ccnl_history:
+                rvse_cncl_name = str(h.get("rvse_cncl_dvsn_name", "")).strip()
+                rvse_cncl_cd = str(h.get("rvse_cncl_dvsn", "")).strip()
+                status = str(h.get("status", "")).strip()
+
+                # "취소" 항목 제외 (정정/취소구분 또는 상태에 '취소'가 포함된 경우 테이블에서 제외)
+                if "취소" in rvse_cncl_name or rvse_cncl_cd == "02" or "취소" in status:
+                    continue
+
+                h_qty = h.get("qty", 0)
+                h_exec_qty = h.get("executed_qty", 0)
+                h_price = h.get("price", 0.0)
+                h_exec_price = h.get("executed_price", 0.0)
+                h_type = h.get("order_type", "-")
+
+                disp_ord_price = f"${h_price:.2f}" if h_price > 0 else "-"
+                disp_exec_price = f"${h_exec_price:.2f}" if h_exec_qty > 0 else "-"
+                disp_exec_amt = f"${h_exec_qty * h_exec_price:,.2f}" if h_exec_qty > 0 else "-"
+
+                # API 응답의 추가 필드 (없으면 "-" 표시)
+                def _disp(v):
+                    v = str(v or "").strip()
+                    return v if v else "-"
+
+                ccnl_rows.append({
+                    "일시": h.get("order_time", "-"),
+                    "구분": h_type,
+                    "주문수량": f"{h_qty:,}주",
+                    "체결수량": f"{h_exec_qty:,}주",
+                    "미체결수량": _disp(h.get("nccs_qty")),
+                    "주문단가 ($)": disp_ord_price,
+                    "체결단가 ($)": disp_exec_price,
+                    "총 체결금액 ($)": disp_exec_amt,
+                    "상태": status,
+                    "주문번호": h.get("order_no", "-"),
+                    "원주문번호": _disp(h.get("orgn_odno")),
+                    "주문지점": _disp(h.get("ord_gno_brno")),
+                    "주문일자": _disp(h.get("ord_dt")),
+                    "주문시각": _disp(h.get("ord_tmd")),
+                    "상품명": _disp(h.get("prdt_name")),
+                    "매도/매수코드": _disp(h.get("sll_buy_dvsn_cd")),
+                    "정정/취소구분": _disp(h.get("rvse_cncl_dvsn_name")),
+                    "거절사유": _disp(h.get("rjct_rson_name")),
+                    "거래시장": _disp(h.get("tr_mket_name")),
+                    "거래국가": _disp(h.get("tr_natn_name")),
+                    "거래소": _disp(h.get("ovrs_excg_cd")),
+                    "통화": _disp(h.get("tr_crcy_cd")),
+                    "국내주문일자": _disp(h.get("dmst_ord_dt")),
+                    "당사주문시각": _disp(h.get("thco_ord_tmd")),
+                    "대출유형": _disp(h.get("loan_type_cd")),
+                    "대출일자": _disp(h.get("loan_dt")),
+                    "매체구분": _disp(h.get("mdia_dvsn_name")),
+                    "장외연장요청": _disp(h.get("usa_amk_exts_rqst_yn"))
+                })
+            st.dataframe(pd.DataFrame(ccnl_rows), width="stretch", hide_index=True)
+        else:
+            st.info(f"start_date({ccnl_start}) 이후의 거래요청 이력이 없습니다.")
 
 
 def page_main_dashboard():

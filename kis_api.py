@@ -1332,3 +1332,243 @@ class KISApiClient:
                         f"주문수량={r.get('qty', 0)} | 체결수량={r.get('executed_qty', 0)} | "
                         f"체결가={r.get('executed_price', 0)} | 상태={r.get('status', '')} | 주문번호={r.get('order_no', '')}")
         return results
+
+    def get_overseas_order_ccnl(
+        self,
+        symbol: str = "",
+        start_date: str = "",
+        end_date: str = "",
+        sll_buy_dvsn: str = "00",
+        ccld_nccs_dvsn: str = "00",
+        sort_sqn: str = "DS"
+    ) -> List[Dict[str, Any]]:
+        """
+        해외주식 주문체결내역 조회 (inquire-ccnl, TTTS3035R/VTTS3035R)
+        - 실전 TR_ID: TTTS3035R
+        - 모의 TR_ID: VTTS3035R
+        - URL: /uapi/overseas-stock/v1/trading/inquire-ccnl
+        - 연속 조회(tr_cont=M) 시 모든 페이지를 자동으로 조회한다.
+
+        Args:
+            symbol: 상품번호 (예: "TQQQ"). 비어있으면 전체 종목 조회.
+            start_date: 조회 시작일 (YYYYMMDD). 비어있으면 오늘.
+            end_date: 조회 종료일 (YYYYMMDD). 비어있으면 오늘.
+            sll_buy_dvsn: 매도매수구분 (00:전체, 01:매도, 02:매수)
+            ccld_nccs_dvsn: 체결미체결구분 (00:전체, 01:체결, 02:미체결)
+            sort_sqn: 정렬순서 (DS:정순, AS:역순)
+
+        Returns:
+            List[Dict]: 정규화된 주문/체결 내역 리스트
+        """
+        self._ensure_token()
+        if not self.access_token or not self.cano:
+            return []
+
+        if not start_date:
+            start_date = time.strftime("%Y%m%d")
+        if not end_date:
+            end_date = time.strftime("%Y%m%d")
+
+        tr_id = "VTTS3035R" if self.mock else "TTTS3035R"
+        url = f"{self.url_base}/uapi/overseas-stock/v1/trading/inquire-ccnl"
+        headers = self._get_headers(tr_id)
+        headers["tr_cont"] = ""  # 초기 조회 (연속 조회 시 "N")
+
+        # 요청 파라미터 구성
+        # - PDNO: 전종목일 경우 "%" 입력 (모의투자계좌의 경우 ""(전체 조회)만 가능)
+        # - OVRS_EXCG_CD: 전종목일 경우 "%" 입력 (모의투자계좌의 경우 ""(전체 조회)만 가능)
+        # - SLL_BUY_DVSN: 00:전체, 01:매도, 02:매수 (모의투자계좌의 경우 "00"만 가능)
+        # - CCLD_NCCS_DVSN: 00:전체, 01:체결, 02:미체결 (모의투자계좌의 경우 "00"만 가능)
+        # - SORT_SQN: DS:정순, AS:역순 (모의투자계좌의 경우 정렬순서 사용불가, Default: DS)
+        params = {
+            "CANO": self.cano,
+            "ACNT_PRDT_CD": self.acnt_prdt_cd,
+            "PDNO": symbol.upper() if symbol else ("%" if not self.mock else ""),
+            "ORD_STRT_DT": start_date,
+            "ORD_END_DT": end_date,
+            "SLL_BUY_DVSN": sll_buy_dvsn,
+            "CCLD_NCCS_DVSN": ccld_nccs_dvsn,
+            "OVRS_EXCG_CD": "%" if not self.mock else "",
+            "SORT_SQN": sort_sqn,
+            "ORD_DT": "",
+            "ORD_GNO_BRNO": "",
+            "ODNO": "",
+            "CTX_AREA_NK200": "",
+            "CTX_AREA_FK200": ""
+        }
+
+        all_output = []
+        page = 0
+        max_pages = 20  # 최대 페이지 수 제한 (무한 루프 방지)
+
+        try:
+            ctx_nk = ""
+            ctx_fk = ""
+            for page in range(1, max_pages + 1):
+                # 연속 조회 여부에 따라 tr_cont 설정
+                # - 최초 조회: "" (공백)
+                # - 다음 데이터 조회: "N" (output header의 tr_cont가 M일 경우)
+                headers["tr_cont"] = "" if page == 1 else "N"
+                params["CTX_AREA_NK200"] = ctx_nk
+                params["CTX_AREA_FK200"] = ctx_fk
+
+                time.sleep(0.05)
+                res = requests.get(url, headers=headers, params=params, timeout=8)
+                data = self._safe_json_response(res, context=f"주문체결내역[inquire-ccnl]")
+
+                logger.debug(f"[주문체결내역] inquire-ccnl page={page} HTTP {res.status_code} | rt_cd={data.get('rt_cd')} | msg_cd={data.get('msg_cd')} | msg1={data.get('msg1')} | raw={json.dumps(data, ensure_ascii=False)[:3000]}")
+
+                if res.status_code == 200 and data.get("rt_cd") == "0":
+                    output = data.get("output", [])
+                    if isinstance(output, list):
+                        all_output.extend(output)
+                    elif isinstance(output, dict):
+                        all_output.append(output)
+
+                    # 연속 조회 여부 확인 (응답 헤더의 tr_cont)
+                    tr_cont = res.headers.get("tr_cont", "")
+                    if tr_cont != "M":
+                        break
+
+                    # 다음 페이지를 위한 CTX_AREA_NK200/FK200 값 설정
+                    ctx_nk = (data.get("ctx_area_nk200", "") or "").strip()
+                    ctx_fk = (data.get("ctx_area_fk200", "") or "").strip()
+                    if not ctx_nk and not ctx_fk:
+                        break
+                else:
+                    msg1 = data.get("msg1", "")
+                    msg_cd = data.get("msg_cd", "")
+                    logger.warning(f"[주문체결내역] inquire-ccnl API 오류: rt_cd={data.get('rt_cd')}, msg_cd={msg_cd}, msg1={msg1}")
+                    if "만료된" in msg1 or data.get("msg_cd") == "EGW00123":
+                        logger.warning("Token 만료 감지: 주문체결내역 재조회 시도...")
+                        self.access_token = None
+                        self.token_issued_at = 0
+                        if self.get_access_token():
+                            return self.get_overseas_order_ccnl(
+                                symbol=symbol, start_date=start_date, end_date=end_date,
+                                sll_buy_dvsn=sll_buy_dvsn, ccld_nccs_dvsn=ccld_nccs_dvsn, sort_sqn=sort_sqn
+                            )
+                    break
+        except Exception as e:
+            logger.warning(f"[주문체결내역] inquire-ccnl 조회 예외: {e}")
+
+        # --- 레코드 정규화 ---
+        def _get_field(item: dict, *keys) -> str:
+            """여러 키 중 첫 번째로 존재하는 값을 반환"""
+            for k in keys:
+                if k in item and item[k] is not None:
+                    return str(item[k]).strip()
+            return ""
+
+        def _fmt_date(raw: str) -> str:
+            """YYYYMMDD → YYYY-MM-DD 형식 변환"""
+            raw = raw.strip()
+            if len(raw) == 8 and raw.isdigit():
+                return f"{raw[:4]}-{raw[4:6]}-{raw[6:8]}"
+            return raw
+
+        normalized = []
+        for item in all_output:
+            if not isinstance(item, dict):
+                continue
+
+            # 일자: ord_dt (주문일자) 또는 dmst_ord_dt (국내주문일자)
+            ord_dt = _get_field(item, "ord_dt", "dmst_ord_dt", "trad_dt")
+            # 주문번호: odno
+            odno = _get_field(item, "odno", "ord_no")
+            # 종목: pdno (상품번호)
+            pdno = _get_field(item, "pdno")
+            # 종목명: prdt_name (상품명)
+            prdt_name = _get_field(item, "prdt_name")
+            # 수량: ft_ccld_qty (FT체결수량) 또는 ft_ord_qty (FT주문수량)
+            ccld_qty = _get_field(item, "ft_ccld_qty", "ft_ord_qty", "ccld_qty")
+            # 체결가(USD): ft_ccld_unpr3 (FT체결단가3)
+            ccld_unpr = _get_field(item, "ft_ccld_unpr3", "ft_ccld_unpr2", "ft_ccld_unpr")
+            # 체결금액(USD): ft_ccld_amt3 (FT체결금액3)
+            ccld_amt = _get_field(item, "ft_ccld_amt3", "ft_ccld_amt2", "ft_ccld_amt")
+            # 매도매수구분
+            sll_buy = _get_field(item, "sll_buy_dvsn_cd", "sll_buy_dvsn")
+            sll_buy_name = _get_field(item, "sll_buy_dvsn_cd_name", "sll_buy_dvsn_name")
+            # 처리상태
+            status = _get_field(item, "prcs_stat_name")
+            # 미체결수량
+            nccs_qty = _get_field(item, "nccs_qty")
+            # 거부사유명
+            rjct_rson_name = _get_field(item, "rjct_rson_name", "rjct_rson")
+            # 주문시각
+            ord_tmd = _get_field(item, "ord_tmd", "thco_ord_tmd")
+            # 정정/취소구분
+            rvse_cncl_dvsn = _get_field(item, "rvse_cncl_dvsn")
+            rvse_cncl_dvsn_name = _get_field(item, "rvse_cncl_dvsn_name")
+            # 거래시장/국가/거래소/통화
+            tr_mket_name = _get_field(item, "tr_mket_name")
+            tr_natn_name = _get_field(item, "tr_natn_name")
+            ovrs_excg_cd = _get_field(item, "ovrs_excg_cd")
+            tr_crcy_cd = _get_field(item, "tr_crcy_cd")
+            # 주문지점
+            ord_gno_brno = _get_field(item, "ord_gno_brno")
+            # 원주문번호
+            orgn_odno = _get_field(item, "orgn_odno")
+            # 주문수량
+            ord_qty = _get_field(item, "ft_ord_qty", "ord_qty")
+            # 주문단가
+            ord_unpr = _get_field(item, "ft_ord_unpr3", "ft_ord_unpr2", "ft_ord_unpr")
+            # 대출유형/일자
+            loan_type_cd = _get_field(item, "loan_type_cd")
+            loan_dt = _get_field(item, "loan_dt")
+            # 매체구분
+            mdia_dvsn_name = _get_field(item, "mdia_dvsn_name")
+            # 장외연장요청
+            usa_amk_exts_rqst_yn = _get_field(item, "usa_amk_exts_rqst_yn")
+
+            # order_type 결정 (매수/매도)
+            order_type = sll_buy_name
+            if not order_type or order_type == "-":
+                if sll_buy in ("01", "1"):
+                    order_type = "매도"
+                elif sll_buy in ("02", "2"):
+                    order_type = "매수"
+
+            # order_time 구성 (ord_dt + ord_tmd)
+            fmt_dt = _fmt_date(ord_dt)
+            fmt_tmd = ord_tmd
+            if len(ord_tmd) == 6 and ord_tmd.isdigit():
+                fmt_tmd = f"{ord_tmd[:2]}:{ord_tmd[2:4]}:{ord_tmd[4:6]}"
+            order_time = f"{fmt_dt} {fmt_tmd}".strip()
+
+            normalized.append({
+                "order_no": odno,
+                "symbol": pdno,
+                "order_type": order_type,
+                "qty": int(float(ord_qty)) if ord_qty and ord_qty.replace('.', '').isdigit() else 0,
+                "price": float(ord_unpr) if ord_unpr and ord_unpr.replace('.', '').isdigit() else 0.0,
+                "executed_qty": int(float(ccld_qty)) if ccld_qty and ccld_qty.replace('.', '').isdigit() else 0,
+                "executed_price": float(ccld_unpr) if ccld_unpr and ccld_unpr.replace('.', '').isdigit() else 0.0,
+                "status": status,
+                "order_time": order_time,
+                "ord_dt": ord_dt,
+                "ord_tmd": ord_tmd,
+                "ord_gno_brno": ord_gno_brno,
+                "orgn_odno": orgn_odno,
+                "prdt_name": prdt_name,
+                "sll_buy_dvsn_cd": sll_buy,
+                "rvse_cncl_dvsn": rvse_cncl_dvsn,
+                "rvse_cncl_dvsn_name": rvse_cncl_dvsn_name,
+                "ft_ccld_amt3": ccld_amt,
+                "nccs_qty": nccs_qty,
+                "rjct_rson": rjct_rson_name,
+                "rjct_rson_name": rjct_rson_name,
+                "tr_mket_name": tr_mket_name,
+                "tr_natn_name": tr_natn_name,
+                "ovrs_excg_cd": ovrs_excg_cd,
+                "tr_crcy_cd": tr_crcy_cd,
+                "dmst_ord_dt": ord_dt,
+                "thco_ord_tmd": ord_tmd,
+                "loan_type_cd": loan_type_cd,
+                "loan_dt": loan_dt,
+                "mdia_dvsn_name": mdia_dvsn_name,
+                "usa_amk_exts_rqst_yn": usa_amk_exts_rqst_yn
+            })
+
+        logger.info(f"[주문체결내역] inquire-ccnl 조회 완료: {len(normalized)}건 (symbol={symbol or '전체'}, 기간={start_date}~{end_date})")
+        return normalized
