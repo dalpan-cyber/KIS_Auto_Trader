@@ -350,7 +350,7 @@ def render_stock_detail(symbol: str, bot: TraderBot):
 
     # 4. 차트 및 매매 이력
     st.subheader(f"📈 [{symbol}] 주가 차트 및 매매 체결 이력")
-    chart_data = bot.api.get_daily_chart(symbol, count=90)
+    chart_data = bot.api.get_daily_chart(symbol, count=60)
 
     today_dt = datetime.date.today()
     hist_start = st_data.get("start_date", "")
@@ -431,9 +431,14 @@ def render_stock_detail(symbol: str, bot: TraderBot):
             ))
 
         if history:
-            buy_dates, buy_prices, buy_texts = [], [], []
             sell_dates, sell_prices, sell_texts = [], [], []
             fail_dates, fail_prices, fail_texts = [], [], []
+            avg_dates, avg_costs = [], []
+
+            # 날짜별 평단가 추이 계산 (매수 체결 기준 누적 평단가)
+            cum_qty = 0.0
+            cum_cost = 0.0
+            last_avg = 0.0
 
             for h in history:
                 raw_ot = str(h.get("order_time", "")).strip()
@@ -456,9 +461,13 @@ def render_stock_detail(symbol: str, bot: TraderBot):
                         fail_prices.append(h_price)
                         fail_texts.append(f"❌ 매수 실패: {h_qty}주 @ ${h_price:.2f} ({h_status})")
                     else:
-                        buy_dates.append(h_date)
-                        buy_prices.append(h_price)
-                        buy_texts.append(f"🟢 매수 주문/체결: {h_qty}주 @ ${h_price:.2f} ({h_status})")
+                        # 매수 체결 시 누적 수량/비용 갱신하여 평단가 계산
+                        cum_qty += h_qty
+                        cum_cost += h_qty * h_price
+                        if cum_qty > 0:
+                            last_avg = cum_cost / cum_qty
+                        avg_dates.append(h_date)
+                        avg_costs.append(last_avg)
                 elif "매도" in h_type:
                     if is_failed:
                         fail_dates.append(h_date)
@@ -468,13 +477,12 @@ def render_stock_detail(symbol: str, bot: TraderBot):
                         sell_dates.append(h_date)
                         sell_prices.append(h_price)
                         sell_texts.append(f"🎉 익절 매도: {h_qty}주 @ ${h_price:.2f} ({h_status})")
+                        # 매도 시 수량 감소 (평단가는 유지)
+                        cum_qty = max(0.0, cum_qty - h_qty)
+                        if cum_qty > 0:
+                            avg_dates.append(h_date)
+                            avg_costs.append(last_avg)
 
-            if buy_dates:
-                fig.add_trace(go.Scatter(
-                    x=buy_dates, y=buy_prices, mode='markers', name='🟢 매수 주문/체결',
-                    marker=dict(symbol='triangle-up', size=12, color='#22C55E'),
-                    text=buy_texts, hoverinfo='text'
-                ))
             if sell_dates:
                 fig.add_trace(go.Scatter(
                     x=sell_dates, y=sell_prices, mode='markers', name='🎉 익절 매도',
@@ -486,6 +494,13 @@ def render_stock_detail(symbol: str, bot: TraderBot):
                     x=fail_dates, y=fail_prices, mode='markers', name='❌ 매수 실패',
                     marker=dict(symbol='x', size=12, color='#F97316'),
                     text=fail_texts, hoverinfo='text'
+                ))
+            if avg_dates:
+                fig.add_trace(go.Scatter(
+                    x=avg_dates, y=avg_costs, mode='lines+markers', name='📉 날짜별 평단가 추이',
+                    line=dict(color='#4ADE80', width=3, dash='dot'),
+                    marker=dict(size=6, color='#4ADE80'),
+                    text=[f"평단가: ${c:.2f}" for c in avg_costs], hoverinfo='text'
                 ))
 
         if avg_p > 0:
