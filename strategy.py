@@ -8,6 +8,8 @@ import pandas as pd
 import numpy as np
 import logging
 
+import config
+
 class Signal:
     BUY = "BUY"
     SELL = "SELL"
@@ -142,10 +144,18 @@ class InfiniteBuyingStrategy(BaseStrategy):
     - 매일 미국 장 개장 전/프리마켓에 당일 매수/매도 주문 제안 목록을 생성합니다.
     """
 
-    def __init__(self, division_count: int = 40, target_roi: float = 0.10):
+    def __init__(
+        self,
+        division_count: int = 40,
+        target_roi: float = 0.10,
+        exhaust_action: str = "HOLD",
+        exhaust_target_roi: float = 0.05
+    ):
         super().__init__("InfiniteBuying")
         self.division_count = division_count
         self.target_roi = target_roi
+        self.exhaust_action = exhaust_action
+        self.exhaust_target_roi = exhaust_target_roi
 
     def generate_signal(
         self,
@@ -184,26 +194,42 @@ class InfiniteBuyingStrategy(BaseStrategy):
         division = state.get("division_count", self.division_count)
         total_budget = state.get("total_budget_usd", 10000.0)
         target_roi = state.get("target_roi", self.target_roi)
+        exhaust_action = str(state.get("exhaust_action", getattr(self, "exhaust_action", getattr(config, "INFINITE_EXHAUST_ACTION", "HOLD")))).upper()
+        exhaust_target_roi = float(state.get("exhaust_target_roi", getattr(self, "exhaust_target_roi", getattr(config, "INFINITE_EXHAUST_TARGET_ROI", 0.05))))
+
+        is_exhausted = (curr_round >= division)
 
         # 1. 익절 매도 주문 제안 (보유 수량이 있는 경우)
         if total_qty > 0 and avg_price > 0:
-            sell_target_price = round(avg_price * (1.0 + target_roi), 2)
-            orders.append({
-                "action": "SELL",
-                "symbol": symbol,
-                "qty": total_qty,
-                "price": sell_target_price,
-                "ord_type": "00",  # 지정가 매도
-                "desc": f"전량 익절 매도 (목표가: ${sell_target_price:.2f}, +{target_roi*100:.1f}%)"
-            })
+            if is_exhausted and exhaust_action == "LOWER_TARGET":
+                eff_roi = exhaust_target_roi
+                sell_target_price = round(avg_price * (1.0 + eff_roi), 2)
+                orders.append({
+                    "action": "SELL",
+                    "symbol": symbol,
+                    "qty": total_qty,
+                    "price": sell_target_price,
+                    "ord_type": "00",  # 지정가 매도
+                    "desc": f"전량 익절 매도 (40회차 소진 - 목표가 하향: ${sell_target_price:.2f}, +{eff_roi*100:.1f}%)"
+                })
+            else:
+                sell_target_price = round(avg_price * (1.0 + target_roi), 2)
+                orders.append({
+                    "action": "SELL",
+                    "symbol": symbol,
+                    "qty": total_qty,
+                    "price": sell_target_price,
+                    "ord_type": "00",  # 지정가 매도
+                    "desc": f"전량 익절 매도 (목표가: ${sell_target_price:.2f}, +{target_roi*100:.1f}%)"
+                })
 
         status = state.get("status", "IDLE")
         if status in ["STOPPED", "PAUSED"]:
             self.logger.info(f"[{symbol}] 무한매수 강제 중지 상태({status})입니다. 매수 주문 생성을 생략합니다.")
             return orders
 
-        # 2. 매수 주문 제안 (회차 미소진 시)
-        if curr_round < division:
+        # 2. 매수 및 40회차 소진 대응 주문 제안
+        if not is_exhausted:
             one_round_budget = total_budget / division
             half_budget = one_round_budget / 2.0
 
@@ -236,7 +262,45 @@ class InfiniteBuyingStrategy(BaseStrategy):
                 "desc": f"0.5회차 상향 LOC 매수 (${loc2_price:.2f}, {qty2}주)"
             })
         else:
-            self.logger.warning(f"[{symbol}] 무한매수 소진 ({curr_round}/{division}회차) - 추가 매수를 중단합니다.")
+            # 40회차 소진 시 3가지 대응 모드 분기
+            if exhaust_action == "REBALANCE_QUARTER":
+                # 옵션 2: 쿼터 순환 매매 (1회차 분량 매도 후 당일 LOC 재매수로 평단가 인하)
+                one_round_budget = total_budget / division
+                rebalance_qty = max(1, int(total_qty / division)) if total_qty > 0 else max(1, int(one_round_budget / current_price))
+                loc_price = round(current_price * 1.02, 2)
+                buy_qty = max(1, int(one_round_budget / loc_price))
+
+                self.logger.info(
+                    f"[{symbol}] 무한매수 {division}회차 소진 -> 쿼터 순환 모드 (1회차 분량 {rebalance_qty}주 매도 + LOC {buy_qty}주 재매수)"
+                )
+                orders.append({
+                    "action": "SELL",
+                    "symbol": symbol,
+                    "qty": rebalance_qty,
+                    "price": round(current_price, 2),
+                    "ord_type": "00",
+                    "round_inc": 0.0,
+                    "desc": f"순환 매도 ({division}회차 소진 - 평단가 인하용 {rebalance_qty}주 매도)"
+                })
+                orders.append({
+                    "action": "BUY",
+                    "symbol": symbol,
+                    "qty": buy_qty,
+                    "price": loc_price,
+                    "ord_type": "34",
+                    "round_inc": 0.0,
+                    "desc": f"순환 LOC 재매수 ({division}회차 소진 - 평단가 인하용 ${loc_price:.2f}, {buy_qty}주)"
+                })
+            elif exhaust_action == "LOWER_TARGET":
+                eff_roi = exhaust_target_roi
+                self.logger.warning(
+                    f"[{symbol}] 무한매수 소진 ({curr_round}/{division}회차) - 목표수익률 하향(+{eff_roi*100:.1f}%) 빠른 탈출 대기 중"
+                )
+            else:
+                # 옵션 1: HOLD (무한 대기)
+                self.logger.warning(
+                    f"[{symbol}] 무한매수 소진 ({curr_round}/{division}회차) - 무한 대기 모드 (추가 매수 중단, +{target_roi*100:.1f}% 익절 매도 대기)"
+                )
 
         return orders
 
@@ -248,8 +312,15 @@ class StrategyFactory:
     def create_strategy(strategy_name: str, **kwargs) -> BaseStrategy:
         division = kwargs.get("division_count", 40)
         roi = kwargs.get("target_roi", 0.10)
+        exhaust_act = kwargs.get("exhaust_action", getattr(config, "INFINITE_EXHAUST_ACTION", "HOLD"))
+        exhaust_roi = kwargs.get("exhaust_target_roi", getattr(config, "INFINITE_EXHAUST_TARGET_ROI", 0.05))
         if strategy_name == "INFINITE_BUYING":
-            return InfiniteBuyingStrategy(division_count=division, target_roi=roi)
+            return InfiniteBuyingStrategy(
+                division_count=division,
+                target_roi=roi,
+                exhaust_action=exhaust_act,
+                exhaust_target_roi=exhaust_roi
+            )
         elif strategy_name == "MA_CROSS":
             short_p = kwargs.get("short_period", 5)
             long_p = kwargs.get("long_period", 20)
@@ -258,5 +329,5 @@ class StrategyFactory:
             k_val = kwargs.get("k", 0.5)
             return VolatilityBreakoutStrategy(k=k_val)
         else:
-            return InfiniteBuyingStrategy(division_count=division, target_roi=roi)
+            return BaseStrategy(strategy_name)
 

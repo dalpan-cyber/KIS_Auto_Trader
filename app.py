@@ -270,8 +270,36 @@ def render_stock_detail(symbol: str, bot: TraderBot):
         pnl_rt = (pnl / (total_qty * avg_p) * 100) if (total_qty * avg_p) > 0 else 0.0
         st.metric("평가 손익", f"${pnl:+,.2f}", delta=f"{pnl_rt:+.2f}%")
 
-    st.caption(f"**상태**: {status_display} | **전략 시작일**: {st_data.get('start_date', '-')} | **총 예산**: ${budget:,.2f}")
+    exhaust_act = getattr(config, "INFINITE_EXHAUST_ACTION", "HOLD").upper()
+    exhaust_roi = getattr(config, "INFINITE_EXHAUST_TARGET_ROI", 0.05)
+    exhaust_name_map = {
+        "HOLD": "🛡️ 1. 무한 대기 (존버)",
+        "REBALANCE_QUARTER": "✂️ 2. 쿼터 순환 매매",
+        "LOWER_TARGET": f"🎯 3. 목표가 하향 (+{exhaust_roi*100:.1f}%)"
+    }
+    exhaust_name = exhaust_name_map.get(exhaust_act, exhaust_act)
+
+    st.caption(f"**상태**: {status_display} | **전략 시작일**: {st_data.get('start_date', '-')} | **총 예산**: ${budget:,.2f} | **소진 시 대응**: {exhaust_name}")
     st.progress(min(1.0, max(0.0, float(curr_round) / float(div_count))))
+
+    # 40회차 소진 시 대응 모드 상태 배너 표시
+    is_exhausted = (curr_round >= div_count)
+    if is_exhausted:
+        if exhaust_act == "LOWER_TARGET":
+            st.warning(
+                f"🚨 **[{div_count}회차 최대치 도달 - 목표수익률 하향 탈출 모드 가동]** "
+                f"목표 수익률이 **+{exhaust_roi*100:.1f}%**로 하향 조정되어 빠른 원금 회수 익절 매도 주문이 발주됩니다."
+            )
+        elif exhaust_act == "REBALANCE_QUARTER":
+            st.warning(
+                f"🚨 **[{div_count}회차 최대치 도달 - 쿼터 순환 매매 모드 가동]** "
+                f"1회차 분량 매도 및 당일 LOC 재매수를 통해 평단가를 강제로 인하하는 리밸런싱이 진행됩니다."
+            )
+        else:
+            st.info(
+                f"🛡️ **[{div_count}회차 최대치 도달 - 무한 대기(존버) 모드 가동]** "
+                f"추가 매수를 중단하고 원금을 보존하며, 반등 시점까지 +{st_data.get('target_roi', 0.10)*100:.1f}% 전량 익절 매도 주문을 유지합니다."
+            )
 
     # 2. 당일 주문 제안 생성
     calc_price = cur_p if cur_p > 0 else (avg_p if avg_p > 0 else 50.0)
@@ -809,6 +837,10 @@ def page_config():
         st.session_state.cfg_division = int(getattr(config, "INFINITE_DIVISION_COUNT", 40))
     if "cfg_roi" not in st.session_state:
         st.session_state.cfg_roi = float(getattr(config, "INFINITE_TARGET_ROI", 0.10))
+    if "cfg_exhaust_action" not in st.session_state:
+        st.session_state.cfg_exhaust_action = str(getattr(config, "INFINITE_EXHAUST_ACTION", "HOLD")).upper()
+    if "cfg_exhaust_roi" not in st.session_state:
+        st.session_state.cfg_exhaust_roi = float(getattr(config, "INFINITE_EXHAUST_TARGET_ROI", 0.05))
     if "cfg_max_stocks" not in st.session_state:
         st.session_state.cfg_max_stocks = int(getattr(config, "MAX_STOCKS_HOLDING", 5))
     if "cfg_api_delay" not in st.session_state:
@@ -854,6 +886,39 @@ def page_config():
             help="전량 익절 매도 목표 수익률 (예: 10 = +10%)"
         )
 
+        st.markdown("---")
+        st.markdown("#### 🚨 40회차(최대 회차) 소진 시 대응 옵션")
+        exhaust_options = [
+            ("HOLD", "🛡️ 1. 무한 대기 (추가 매수 중단, +10% 익절 매도 대기)"),
+            ("REBALANCE_QUARTER", "✂️ 2. 쿼터 손절 & 순환 매매 (1회차 매도 + LOC 재매수로 평단가 인하)"),
+            ("LOWER_TARGET", "🎯 3. 목표수익률 하향 빠른 탈출 (도달 시 목표 수익률 자동 하향)")
+        ]
+        action_keys = [opt[0] for opt in exhaust_options]
+        current_idx = action_keys.index(st.session_state.cfg_exhaust_action) if st.session_state.cfg_exhaust_action in action_keys else 0
+
+        selected_action_tuple = st.selectbox(
+            "40회차 소진 시 대응 전략 선택",
+            options=exhaust_options,
+            index=current_idx,
+            format_func=lambda x: x[1],
+            key="cfg_input_exhaust_action",
+            help="최대 분할 회차까지 매수했으나 목표가에 도달하지 않았을 때의 동작 방식"
+        )
+        new_exhaust_action = selected_action_tuple[0]
+
+        if new_exhaust_action == "LOWER_TARGET":
+            new_exhaust_roi = st.number_input(
+                "40회차 소진 시 탈출 목표 수익률 (%)",
+                min_value=0.5,
+                max_value=50.0,
+                value=st.session_state.cfg_exhaust_roi * 100.0,
+                step=0.5,
+                key="cfg_input_exhaust_roi",
+                help="40회차 도달 시 적용할 하향 목표 수익률 (예: 5 = +5.0%)"
+            )
+        else:
+            new_exhaust_roi = st.session_state.cfg_exhaust_roi * 100.0
+
     with col_cfg2:
         st.markdown("### 🛡️ 시스템 주문 및 리스크 관리")
         st.write(f"- **주문 실행 방식**: `⚡ 완전 자동 (GitHub Actions Cron 1일 2회)`")
@@ -883,12 +948,15 @@ def page_config():
     # 설정 변경 감지 및 적용 버튼
     stocks_list = [s.strip().upper() for s in new_stocks.split(",") if s.strip()]
     roi_decimal = new_roi / 100.0
+    exhaust_roi_decimal = new_exhaust_roi / 100.0
 
     changed = (
         stocks_list != getattr(config, "INFINITE_STOCKS", ["TQQQ"])
         or abs(new_budget - float(getattr(config, "INFINITE_TOTAL_BUDGET_USD", 5000.0))) > 0.01
         or new_division != int(getattr(config, "INFINITE_DIVISION_COUNT", 40))
         or abs(roi_decimal - float(getattr(config, "INFINITE_TARGET_ROI", 0.10))) > 0.0001
+        or new_exhaust_action != str(getattr(config, "INFINITE_EXHAUST_ACTION", "HOLD")).upper()
+        or abs(exhaust_roi_decimal - float(getattr(config, "INFINITE_EXHAUST_TARGET_ROI", 0.05))) > 0.0001
         or new_max_stocks != int(getattr(config, "MAX_STOCKS_HOLDING", 5))
         or abs(new_api_delay - float(getattr(config, "API_CALL_DELAY", 0.2))) > 0.001
     )
@@ -903,6 +971,8 @@ def page_config():
         setattr(config, "INFINITE_TOTAL_BUDGET_USD", new_budget)
         setattr(config, "INFINITE_DIVISION_COUNT", new_division)
         setattr(config, "INFINITE_TARGET_ROI", roi_decimal)
+        setattr(config, "INFINITE_EXHAUST_ACTION", new_exhaust_action)
+        setattr(config, "INFINITE_EXHAUST_TARGET_ROI", exhaust_roi_decimal)
         setattr(config, "MAX_STOCKS_HOLDING", new_max_stocks)
         setattr(config, "API_CALL_DELAY", new_api_delay)
 
@@ -911,6 +981,8 @@ def page_config():
         bot.target_symbols = stocks_list
         bot.infinite_strategy.division_count = new_division
         bot.infinite_strategy.target_roi = roi_decimal
+        bot.infinite_strategy.exhaust_action = new_exhaust_action
+        bot.infinite_strategy.exhaust_target_roi = exhaust_roi_decimal
         bot.risk_mgr.max_stocks_holding = new_max_stocks
 
         # 3. 무한매수 전략 상태 초기화 (모든 대상 종목에 대해)
@@ -930,6 +1002,8 @@ def page_config():
             "infinite_total_budget_usd": new_budget,
             "infinite_division_count": new_division,
             "infinite_target_roi": roi_decimal,
+            "infinite_exhaust_action": new_exhaust_action,
+            "infinite_exhaust_target_roi": exhaust_roi_decimal,
             "max_stocks_holding": new_max_stocks,
             "api_call_delay": new_api_delay,
         }
@@ -959,16 +1033,18 @@ def page_config():
         st.session_state.cfg_budget = new_budget
         st.session_state.cfg_division = new_division
         st.session_state.cfg_roi = roi_decimal
+        st.session_state.cfg_exhaust_action = new_exhaust_action
+        st.session_state.cfg_exhaust_roi = exhaust_roi_decimal
         st.session_state.cfg_max_stocks = new_max_stocks
         st.session_state.cfg_api_delay = new_api_delay
 
-        logger.info(f"⚙️ 무한매수 설정 변경 및 초기화 완료: 종목={stocks_list}, 예산=${new_budget:,.0f}, 분할={new_division}회, 목표수익률=+{roi_decimal*100:.1f}%")
+        logger.info(f"⚙️ 무한매수 설정 변경 및 초기화 완료: 종목={stocks_list}, 예산=${new_budget:,.0f}, 분할={new_division}회, 목표수익률=+{roi_decimal*100:.1f}%, 소진대응={new_exhaust_action}")
         st.success("✅ 설정이 적용되었고 무한매수 전략이 초기화되었습니다.")
         st.rerun()
 
     # 현재 적용 중인 설정 요약 표시
     st.markdown("### 📋 현재 적용 중인 설정")
-    col_sum1, col_sum2, col_sum3, col_sum4 = st.columns(4)
+    col_sum1, col_sum2, col_sum3, col_sum4, col_sum5 = st.columns(5)
     with col_sum1:
         st.metric("운용 대상 종목", ", ".join(getattr(config, "INFINITE_STOCKS", ["TQQQ"])))
     with col_sum2:
@@ -977,6 +1053,10 @@ def page_config():
         st.metric("총 분할 횟수", f"{getattr(config, 'INFINITE_DIVISION_COUNT', 40)} 회차")
     with col_sum4:
         st.metric("목표 수익률", f"+{getattr(config, 'INFINITE_TARGET_ROI', 0.10)*100:.1f}%")
+    with col_sum5:
+        cur_ex = getattr(config, "INFINITE_EXHAUST_ACTION", "HOLD").upper()
+        cur_ex_name = {"HOLD": "🛡️ 무한대기", "REBALANCE_QUARTER": "✂️ 쿼터순환", "LOWER_TARGET": f"🎯 하향(+{getattr(config, 'INFINITE_EXHAUST_TARGET_ROI', 0.05)*100:.0f}%)"}.get(cur_ex, cur_ex)
+        st.metric("40회차 소진 대응", cur_ex_name)
 
 
 # -----------------------------------------------------------------------------

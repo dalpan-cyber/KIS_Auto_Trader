@@ -48,6 +48,8 @@ INFINITE_STOCKS = ["TQQQ"]            # 무한매수 대상 미국 3배 레버�
 INFINITE_TOTAL_BUDGET_USD = 5000.0    # 종목당 총 분할 매수 예산 ($)
 INFINITE_DIVISION_COUNT = 40          # 총 분할 횟수 (40회차)
 INFINITE_TARGET_ROI = 0.10            # 전량 익절 목표 수익률 (+10%)
+INFINITE_EXHAUST_ACTION = "HOLD"      # 40회차 소진 시 대응 모드: HOLD(무한대기), REBALANCE_QUARTER(쿼터순환), LOWER_TARGET(목표가하향)
+INFINITE_EXHAUST_TARGET_ROI = 0.05    # LOWER_TARGET 선택 시 탈출 목표 수익률 (+5%)
 
 # 하위 호환성 유지용 TARGET_STOCKS (해외 무한매수 대상 동기화)
 TARGET_STOCKS = INFINITE_STOCKS
@@ -76,6 +78,12 @@ def _apply_settings(_settings: dict):
     if "infinite_target_roi" in _settings:
         global INFINITE_TARGET_ROI
         INFINITE_TARGET_ROI = float(_settings["infinite_target_roi"])
+    if "infinite_exhaust_action" in _settings:
+        global INFINITE_EXHAUST_ACTION
+        INFINITE_EXHAUST_ACTION = str(_settings["infinite_exhaust_action"]).strip().upper()
+    if "infinite_exhaust_target_roi" in _settings:
+        global INFINITE_EXHAUST_TARGET_ROI
+        INFINITE_EXHAUST_TARGET_ROI = float(_settings["infinite_exhaust_target_roi"])
 
     # 리스크/시스템 설정값 반영
     if "max_stocks_holding" in _settings:

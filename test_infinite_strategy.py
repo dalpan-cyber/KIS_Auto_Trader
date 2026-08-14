@@ -79,5 +79,40 @@ class TestInfiniteStrategy(unittest.TestCase):
         sell_order = [o for o in orders if o["action"] == "SELL"][0]
         self.assertEqual(sell_order["price"], 55.0)  # +10% 지정가 = 55.0
 
+    def test_strategy_exhaust_modes(self):
+        symbol = "TQQQ"
+        state_40 = {
+            "symbol": symbol,
+            "total_budget_usd": 4000.0,
+            "division_count": 40,
+            "current_round": 40.0,
+            "target_roi": 0.10
+        }
+
+        # 1. HOLD 모드 (무한 대기)
+        strat_hold = InfiniteBuyingStrategy(division_count=40, target_roi=0.10, exhaust_action="HOLD")
+        orders_hold = strat_hold.generate_daily_orders(symbol, current_price=50.0, state=state_40, avg_price=50.0, total_qty=40)
+        self.assertEqual(len(orders_hold), 1)  # 매수 없이 익절 매도 1건만
+        self.assertEqual(orders_hold[0]["action"], "SELL")
+        self.assertEqual(orders_hold[0]["price"], 55.0)  # +10%
+
+        # 2. LOWER_TARGET 모드 (목표가 하향 탈출)
+        strat_lower = InfiniteBuyingStrategy(division_count=40, target_roi=0.10, exhaust_action="LOWER_TARGET", exhaust_target_roi=0.05)
+        orders_lower = strat_lower.generate_daily_orders(symbol, current_price=50.0, state=state_40, avg_price=50.0, total_qty=40)
+        self.assertEqual(len(orders_lower), 1)  # 매수 없이 익절 매도 1건만
+        self.assertEqual(orders_lower[0]["action"], "SELL")
+        self.assertEqual(orders_lower[0]["price"], 52.5)  # +5% (50.0 * 1.05)
+
+        # 3. REBALANCE_QUARTER 모드 (쿼터 순환 매매)
+        strat_reb = InfiniteBuyingStrategy(division_count=40, target_roi=0.10, exhaust_action="REBALANCE_QUARTER")
+        orders_reb = strat_reb.generate_daily_orders(symbol, current_price=50.0, state=state_40, avg_price=50.0, total_qty=40)
+        # 익절 매도 1건 + 순환 매도 1건 + 순환 LOC 재매수 1건 = 총 3건
+        self.assertEqual(len(orders_reb), 3)
+        sell_orders = [o for o in orders_reb if o["action"] == "SELL"]
+        buy_orders = [o for o in orders_reb if o["action"] == "BUY"]
+        self.assertEqual(len(sell_orders), 2)
+        self.assertEqual(len(buy_orders), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

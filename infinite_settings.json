@@ -5,6 +5,8 @@
   "infinite_total_budget_usd": 5000.0,
   "infinite_division_count": 40,
   "infinite_target_roi": 0.1,
+  "infinite_exhaust_action": "HOLD",
+  "infinite_exhaust_target_roi": 0.05,
   "max_stocks_holding": 5,
   "api_call_delay": 0.2
 }

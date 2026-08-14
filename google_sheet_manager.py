@@ -652,7 +652,7 @@ class GoogleSheetManager:
                 # 값 타입 변환
                 if key == "infinite_stocks":
                     settings[key] = [s.strip().upper() for s in value.split(",") if s.strip()]
-                elif key in ("infinite_total_budget_usd", "infinite_target_roi", "api_call_delay"):
+                elif key in ("infinite_total_budget_usd", "infinite_target_roi", "infinite_exhaust_target_roi", "api_call_delay"):
                     try:
                         settings[key] = float(value)
                     except ValueError:
@@ -662,6 +662,8 @@ class GoogleSheetManager:
                         settings[key] = int(float(value))
                     except ValueError:
                         settings[key] = value
+                elif key == "infinite_exhaust_action":
+                    settings[key] = str(value).strip().upper()
                 else:
                     settings[key] = value
 
