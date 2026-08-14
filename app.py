@@ -252,7 +252,7 @@ def render_stock_detail(symbol: str, bot: TraderBot):
     status_display = status_map.get(raw_status, raw_status)
 
     # 1. 상단 메트릭 요약
-    c_m1, c_m2, c_m3, c_m4, c_m5 = st.columns(5)
+    c_m1, c_m2, c_m3, c_m4, c_m5, c_m6 = st.columns(6)
     with c_m1:
         st.metric("진행 회차", f"{curr_round} / {div_count} 회차")
     with c_m2:
@@ -262,6 +262,9 @@ def render_stock_detail(symbol: str, bot: TraderBot):
     with c_m4:
         st.metric("현재가", f"${cur_p:.2f}" if cur_p > 0 else "-")
     with c_m5:
+        total_exec_amt = (total_qty * avg_p) if avg_p > 0 else 0.0
+        st.metric("총 체결금액", f"${total_exec_amt:,.2f}")
+    with c_m6:
         eval_amt = total_qty * cur_p if cur_p > 0 else 0.0
         pnl = (eval_amt - (total_qty * avg_p)) if avg_p > 0 else 0.0
         pnl_rt = (pnl / (total_qty * avg_p) * 100) if (total_qty * avg_p) > 0 else 0.0
