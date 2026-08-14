@@ -289,58 +289,24 @@ class TraderBot:
 
 
     def sync_holdings_to_state(self):
-        """
-        실시간 계좌 보유 종목 수량/평단가를 갱신하고 Google Sheets에 동기화
-        - 보유 수량/평단가는 KIS API가 Source of Truth이므로 JSON에는 기록하지 않음
-        - Google Sheets 'Holdings' 워크시트에 주식평가 금액 동기화
-        - Google Sheets 'ExecutionHistory' 워크시트에 체결/실패 이력 동기화 (TTTS3012R 체결기준)
-        - Google Sheets 'ExecutionBalance' 워크시트에 체결기준 현물 잔고 동기화 (TTTS3012R)
-        """
+        """실시간 계좌 잔고를 갱신하고 무한매수 완료 상태를 점검"""
         self.fetch_account_balance()
         self.logger.info("🔄 실계좌 보유 종목 수량/평단가를 API에서 갱신 완료 (JSON에는 전략 상태만 기록)")
 
-        # Google Sheets에 보유 종목 평가 금액 및 체결 이력 동기화 (KIS API 실계좌 데이터)
+        # 무한매수 종목별 실제 전량 익절 매도 체결 여부 점검 및 사이클 완료 처리
         if hasattr(self, "infinite_state_mgr") and self.infinite_state_mgr:
-            gss = getattr(self.infinite_state_mgr, "gss_mgr", None)
-            if gss and gss.is_connected:
-                try:
-                    gss.sync_holdings(self.holdings, self.current_prices)
+            for symbol in getattr(self, "infinite_stocks", []):
+                st = self.infinite_state_mgr.get_symbol_state(symbol)
+                prev_status = st.get("status", "IDLE")
+                prev_round = st.get("current_round", 0.0)
+                held_qty = int(self.holdings.get(symbol, {}).get("qty", 0))
 
-                    # 1. 체결/실패 이력 동기화 (TTTS3012R/VTTS3012R 체결기준)
-                    # NOTE: TTTS3035R/JTTT3001R 대신 TTTS3012R(해외주식 잔고)을 사용하여
-                    #       체결수량/체결단가가 정확히 반영된 데이터를 Google Sheets에 기록한다.
-                    #       (JTTT3001R은 한국 시간 낮에 데이터가 매칭되지 않아 사용하지 않음)
-                    today_str = time.strftime("%Y%m%d")
-                    # JSON 상태 파일의 start_date를 시작일로 사용
-                    default_start = (datetime.date.today() - datetime.timedelta(days=30)).strftime("%Y%m%d")
-                    start_date = default_start
-                    for sym in self.infinite_stocks:
-                        st = self.infinite_state_mgr.get_symbol_state(sym)
-                        sd = st.get("start_date", "")
-                        sym_start_date = sd.replace("-", "") if (sd and sd.replace("-", "").isdigit()) else ""
-                        if sym_start_date and sym_start_date.isdigit():
-                            start_date = sym_start_date
-                            break
-                    exec_balance = self.api.get_overseas_execution_balance(
-                        symbol="",
-                        start_date=start_date,
-                        end_date=today_str,
-                        cblc_dvsn="02"  # 체결(02) 기준으로 조회
+                # 진행 중(BUYING 상태이면서 1회차 이상 진행)이었는데 실제 보유 수량이 0이 된 경우 (전량 익절 매도 체결 완료)
+                if prev_status == "BUYING" and prev_round > 0 and held_qty == 0:
+                    self.logger.info(
+                        f"🎊 [{symbol}] 전량 익절 매도 체결 확인! 무한매수 {prev_round}회차 사이클 완료 처리합니다."
                     )
-                    if exec_balance.get("success"):
-                        exec_holdings = exec_balance.get("holdings", [])
-                        self.logger.info(f"[체결기준] TTTS3012R 조회 성공: {len(exec_holdings)}개 종목")
-                        # ExecutionHistory 워크시트에 체결기준 데이터 동기화
-                        gss.sync_execution_history(exec_holdings)
-                        # ExecutionBalance 워크시트에도 동일 데이터 동기화
-                        gss.sync_execution_balance(exec_holdings)
-                        self.logger.info(f"📊 Google Sheet 'ExecutionHistory'/'ExecutionBalance' 동기화 완료 (체결기준 {len(exec_holdings)}개 종목)")
-                    else:
-                        self.logger.warning(f"[체결기준] TTTS3012R 조회 실패: {exec_balance.get('msg', 'Unknown')}")
-
-                    self.logger.info("📊 Google Sheet 'Holdings'/'ExecutionHistory'/'ExecutionBalance' 동기화 완료 (KIS API 실계좌)")
-                except Exception as e:
-                    self.logger.warning(f"Google Sheet Holdings/ExecutionHistory/ExecutionBalance 동기화 예외: {e}")
+                    self.infinite_state_mgr.complete_round(symbol, avg_price=0.0, sell_price=0.0, qty=0)
 
     def start_infinite_buying(self, symbol: str):
         """특정 종목의 무한매수 수동 시작"""
@@ -436,9 +402,10 @@ class TraderBot:
                     # 매수 주문 접수/체결 시 진행 회차 증가 (전략 상태만 JSON/구글 시트에 기록)
                     self.infinite_state_mgr.advance_round(symbol, round_inc=round_inc)
                 else:
-                    # 전량 익절 매도 시 회차 리셋 및 구글 시트 완료 일지 기록
-                    actual_avg_p = float(self.holdings.get(symbol, {}).get("avg_price", price))
-                    self.infinite_state_mgr.complete_round(symbol, avg_price=actual_avg_p, sell_price=price, qty=qty)
+                    # 전량 익절 매도 주문 발주 성공 (실제 체결 완료는 장 마감/잔고 동기화 시 확인)
+                    self.logger.info(
+                        f"🎉 [{symbol}] 해외주식 익절 매도 주문 접수 성공! (체결 대기: {qty}주 @ ${price:.2f})"
+                    )
                 self.risk_mgr.reset_error()
                 self.logger.info(f"🎉 [{symbol}] 해외주식 무한매수 {prop['action_kr']} 주문 성공!")
                 self.fetch_account_balance()
@@ -562,8 +529,10 @@ class TraderBot:
                     # 매수 주문 접수/체결 시 진행 회차 증가
                     self.infinite_state_mgr.advance_round(symbol, round_inc=round_inc)
                 else:
-                    # 전량 익절 매도 시 회차 리셋 및 구글 시트 완료 일지 기록
-                    self.infinite_state_mgr.complete_round(symbol, avg_price=actual_avg_p, sell_price=price, qty=qty)
+                    # 전량 익절 매도 주문 발주 성공 (실제 체결 완료는 장 마감/잔고 동기화 시 확인)
+                    self.logger.info(
+                        f"🎉 [{symbol}] 익절 매도 주문 접수 성공! (체결 대기: {qty}주 @ ${price:.2f})"
+                    )
                 self.risk_mgr.reset_error()
             else:
                 result["failed"] += 1
@@ -692,11 +661,10 @@ class TraderBot:
                                 # 매수 주문 접수/체결 시 진행 회차 증가 (전략 상태만 JSON/구글 시트에 기록)
                                 self.infinite_state_mgr.advance_round(symbol, round_inc=round_inc)
                             else:
-                                # 전량 익절 매도 시 회차 리셋 및 구글 시트 완료 일지 기록
-                                self.infinite_state_mgr.complete_round(symbol, avg_price=actual_avg_p, sell_price=price, qty=qty)
+                                # 전량 익절 매도 주문 발주 성공 (실제 체결 완료는 장 마감/잔고 동기화 시 확인)
                                 self.logger.info(
                                     f"🎉 [{symbol}] 해외주식 익절 매도 주문 접수 성공! "
-                                    f"(매도수량: {qty}주, 목표가: ${price:.2f}, 예상총액: ${total_ord_amt:,.2f})"
+                                    f"(체결 대기: {qty}주, 목표가: ${price:.2f}, 예상총액: ${total_ord_amt:,.2f})"
                                 )
                             self.risk_mgr.reset_error()
                         else:

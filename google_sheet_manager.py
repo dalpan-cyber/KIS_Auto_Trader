@@ -123,31 +123,7 @@ class GoogleSheetManager:
                     logger.info(f"구글 시트 '{self.sheet_name}' 생성 시도 (서비스 계정: {sa_email})...")
                     self.spreadsheet = self.client.create(self.sheet_name)
 
-            # 'State' 워크시트 준비
-            try:
-                self.state_worksheet = self.spreadsheet.worksheet("State")
-            except Exception:
-                self.state_worksheet = self.spreadsheet.add_worksheet(title="State", rows="50", cols="10")
-                headers = ["티커", "시작일", "진행회차", "총예산($)", "목표수익률(%)", "상태", "최종갱신시각"]
-                self.state_worksheet.append_row(headers)
-
-            # 'Holdings' 워크시트 준비 (주식평가 금액 - KIS API 실계좌)
-            try:
-                self.holdings_worksheet = self.spreadsheet.worksheet("Holdings")
-            except Exception:
-                self.holdings_worksheet = self.spreadsheet.add_worksheet(title="Holdings", rows="100", cols="10")
-                headers = ["티커", "종목명", "보유수량", "평단가($)", "현재가($)", "평가금액($)", "평가손익($)", "수익률(%)", "최종갱신시각"]
-                self.holdings_worksheet.append_row(headers)
-
-            # 'ExecutionHistory' 워크시트 준비 (매수/매도 & 체결/실패 이력)
-            try:
-                self.history_worksheet = self.spreadsheet.worksheet("ExecutionHistory")
-            except Exception:
-                self.history_worksheet = self.spreadsheet.add_worksheet(title="ExecutionHistory", rows="1000", cols="12")
-                headers = ["일시", "티커", "구분", "주문수량", "체결수량", "주문단가($)", "체결단가($)", "총금액($)", "상태", "주문번호", "최종갱신시각"]
-                self.history_worksheet.append_row(headers)
-
-            # 'CompletedTrades' 워크시트 준비 (무한매수 전량 매도 완료 일지)
+            # 1. 'CompletedTrades' 워크시트 준비 (무한매수 전량 매도 완료 일지)
             try:
                 self.completed_worksheet = self.spreadsheet.worksheet("CompletedTrades")
             except Exception:
@@ -155,7 +131,7 @@ class GoogleSheetManager:
                 headers = ["완료일시", "티커", "시작일자", "매도일자", "완료회차", "매도수량", "매수평단가($)", "매도단가($)", "총매수금액($)", "총매도금액($)", "실현손익($)", "수익률(%)", "상태"]
                 self.completed_worksheet.append_row(headers)
 
-            # 'Settings' 워크시트 준비 (무한매수 설정값 - UI에서 변경한 설정을 저장/로드)
+            # 2. 'Settings' 워크시트 준비 (무한매수 설정값 - UI에서 변경한 설정을 저장/로드)
             try:
                 self.settings_worksheet = self.spreadsheet.worksheet("Settings")
             except Exception:
