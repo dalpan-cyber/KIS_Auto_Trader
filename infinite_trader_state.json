@@ -6,6 +6,8 @@
     "division_count": 40,
     "current_round": 7.0,
     "target_roi": 0.1,
-    "status": "BUYING"
+    "status": "BUYING",
+    "exhaust_action": "HOLD",
+    "exhaust_target_roi": 0.05
   }
 }

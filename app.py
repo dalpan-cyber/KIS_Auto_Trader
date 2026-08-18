@@ -223,11 +223,14 @@ def render_sidebar():
 # -----------------------------------------------------------------------------
 def render_stock_detail(symbol: str, bot: TraderBot):
     """특정 종목의 무한매수 현황, 제어, 당일주문, 일별 주가-이력 차트 및 매매이력 표시"""
+    stock_cfg = config.get_stock_config(symbol)
     st_data = bot.infinite_state_mgr.get_symbol_state(
         symbol,
-        default_budget_usd=getattr(config, "INFINITE_TOTAL_BUDGET_USD", 5000.0),
-        division_count=getattr(config, "INFINITE_DIVISION_COUNT", 40),
-        target_roi=getattr(config, "INFINITE_TARGET_ROI", 0.10)
+        default_budget_usd=stock_cfg["total_budget_usd"],
+        division_count=stock_cfg["division_count"],
+        target_roi=stock_cfg["target_roi"],
+        exhaust_action=stock_cfg["exhaust_action"],
+        exhaust_target_roi=stock_cfg["exhaust_target_roi"]
     )
     curr_round = st_data.get("current_round", 0)
     div_count = st_data.get("division_count", 40)
@@ -272,8 +275,8 @@ def render_stock_detail(symbol: str, bot: TraderBot):
         pnl_rt = (pnl / (total_qty * avg_p) * 100) if (total_qty * avg_p) > 0 else 0.0
         st.metric("평가 손익", f"${pnl:+,.2f}", delta=f"{pnl_rt:+.2f}%")
 
-    exhaust_act = getattr(config, "INFINITE_EXHAUST_ACTION", "HOLD").upper()
-    exhaust_roi = getattr(config, "INFINITE_EXHAUST_TARGET_ROI", 0.05)
+    exhaust_act = str(st_data.get("exhaust_action", stock_cfg["exhaust_action"])).upper()
+    exhaust_roi = float(st_data.get("exhaust_target_roi", stock_cfg["exhaust_target_roi"]))
     exhaust_name_map = {
         "HOLD": "🛡️ 1. 무한 대기 (존버)",
         "REBALANCE_QUARTER": "✂️ 2. 쿼터 순환 매매",
@@ -823,187 +826,201 @@ def page_config():
     render_sidebar()
 
     st.title("⚙️ 무한매수 설정")
-    st.subheader("무한매수 파라미터를 수정하고 [설정 적용] 버튼을 누르면 변경 사항이 반영됩니다.")
-    st.caption("⚠️ 설정을 변경하여 적용하면 **무한매수 전략이 초기화**됩니다. (진행 회차 0회, 상태 IDLE, 시작일 오늘로 리셋)")
+    st.subheader("종목별로 무한매수 파라미터를 수정하고 [설정 적용] 버튼을 누르면 변경 사항이 반영됩니다.")
+    st.caption("ℹ️ 설정을 변경하여 적용하면 **설정값만 업데이트**되며, 진행 중인 전략 상태(진행 회차, 상태, 시작일)는 유지됩니다.")
 
     # 현재 설정값을 세션 상태에 저장 (페이지 리로드 시 유지)
     if "cfg_stocks" not in st.session_state:
-        st.session_state.cfg_stocks = ", ".join(getattr(config, "INFINITE_STOCKS", ["TQQQ"]))
-    if "cfg_budget" not in st.session_state:
-        st.session_state.cfg_budget = float(getattr(config, "INFINITE_TOTAL_BUDGET_USD", 5000.0))
-    if "cfg_division" not in st.session_state:
-        st.session_state.cfg_division = int(getattr(config, "INFINITE_DIVISION_COUNT", 40))
-    if "cfg_roi" not in st.session_state:
-        st.session_state.cfg_roi = float(getattr(config, "INFINITE_TARGET_ROI", 0.10))
-    if "cfg_exhaust_action" not in st.session_state:
-        st.session_state.cfg_exhaust_action = str(getattr(config, "INFINITE_EXHAUST_ACTION", "HOLD")).upper()
-    if "cfg_exhaust_roi" not in st.session_state:
-        st.session_state.cfg_exhaust_roi = float(getattr(config, "INFINITE_EXHAUST_TARGET_ROI", 0.05))
+        st.session_state.cfg_stocks = list(getattr(config, "INFINITE_STOCKS", ["TQQQ"]))
+    if "cfg_stock_configs" not in st.session_state:
+        # 종목별 설정: {symbol: {total_budget_usd, division_count, target_roi, exhaust_action, exhaust_target_roi}}
+        st.session_state.cfg_stock_configs = {}
+        for sym in st.session_state.cfg_stocks:
+            st.session_state.cfg_stock_configs[sym] = config.get_stock_config(sym)
     if "cfg_max_stocks" not in st.session_state:
         st.session_state.cfg_max_stocks = int(getattr(config, "MAX_STOCKS_HOLDING", 5))
     if "cfg_api_delay" not in st.session_state:
         st.session_state.cfg_api_delay = float(getattr(config, "API_CALL_DELAY", 0.2))
 
-    col_cfg1, col_cfg2 = st.columns(2)
-
-    with col_cfg1:
-        st.markdown("### 🇺🇸 라오어 무한매수법 v2.0 파라미터")
-        st.write(f"- **전담 매매 전략**: `라오어 무한매수법 v2.0 (INFINITE_BUYING)`")
-
-        new_stocks = st.text_input(
-            "운용 대상 종목 (쉼표로 구분)",
-            value=st.session_state.cfg_stocks,
-            key="cfg_input_stocks",
-            help="예: TQQQ, SOXL, SPXL"
-        )
-        new_budget = st.number_input(
-            "종목당 총 예산 ($)",
-            min_value=100.0,
-            max_value=1000000.0,
-            value=st.session_state.cfg_budget,
-            step=100.0,
-            key="cfg_input_budget",
-            help="종목당 분할 매수에 사용할 총 예산 (USD)"
-        )
-        new_division = st.number_input(
-            "총 분할 매수 횟수 (회차)",
-            min_value=1,
-            max_value=200,
-            value=st.session_state.cfg_division,
-            step=1,
-            key="cfg_input_division",
-            help="무한매수 총 분할 횟수 (예: 40 = 40회차)"
-        )
-        new_roi = st.number_input(
-            "전량 익절 목표 수익률 (%)",
-            min_value=1.0,
-            max_value=100.0,
-            value=st.session_state.cfg_roi * 100.0,
-            step=1.0,
-            key="cfg_input_roi",
-            help="전량 익절 매도 목표 수익률 (예: 10 = +10%)"
-        )
-
-        st.markdown("---")
-        st.markdown("#### 🚨 40회차(최대 회차) 소진 시 대응 옵션")
-        exhaust_options = [
-            ("HOLD", "🛡️ 1. 무한 대기 (추가 매수 중단, +10% 익절 매도 대기)"),
-            ("REBALANCE_QUARTER", "✂️ 2. 쿼터 손절 & 순환 매매 (1회차 매도 + LOC 재매수로 평단가 인하)"),
-            ("LOWER_TARGET", "🎯 3. 목표수익률 하향 빠른 탈출 (도달 시 목표 수익률 자동 하향)")
-        ]
-        action_keys = [opt[0] for opt in exhaust_options]
-        current_idx = action_keys.index(st.session_state.cfg_exhaust_action) if st.session_state.cfg_exhaust_action in action_keys else 0
-
-        selected_action_tuple = st.selectbox(
-            "40회차 소진 시 대응 전략 선택",
-            options=exhaust_options,
-            index=current_idx,
-            format_func=lambda x: x[1],
-            key="cfg_input_exhaust_action",
-            help="최대 분할 회차까지 매수했으나 목표가에 도달하지 않았을 때의 동작 방식"
-        )
-        new_exhaust_action = selected_action_tuple[0]
-
-        if new_exhaust_action == "LOWER_TARGET":
-            new_exhaust_roi = st.number_input(
-                "40회차 소진 시 탈출 목표 수익률 (%)",
-                min_value=0.5,
-                max_value=50.0,
-                value=st.session_state.cfg_exhaust_roi * 100.0,
-                step=0.5,
-                key="cfg_input_exhaust_roi",
-                help="40회차 도달 시 적용할 하향 목표 수익률 (예: 5 = +5.0%)"
+    # 종목 추가/삭제 처리
+    with st.expander("➕ 종목 추가 / 삭제", expanded=False):
+        col_add1, col_add2 = st.columns([3, 1])
+        with col_add1:
+            new_stock_input = st.text_input(
+                "새 종목 코드 (티커)",
+                placeholder="예: SOXL, SPXL, TQQQ",
+                key="cfg_input_new_stock"
             )
+        with col_add2:
+            if st.button("종목 추가", key="cfg_btn_add_stock", type="primary"):
+                new_stock = new_stock_input.strip().upper()
+                if not new_stock:
+                    st.warning("종목 코드를 입력해주세요.")
+                elif new_stock in st.session_state.cfg_stocks:
+                    st.warning(f"'{new_stock}'은(는) 이미 등록된 종목입니다.")
+                else:
+                    # 새 종목의 기본 설정값은 현재 전역 기본값 사용
+                    default_cfg = config.get_stock_config(new_stock)
+                    st.session_state.cfg_stocks.append(new_stock)
+                    st.session_state.cfg_stock_configs[new_stock] = default_cfg
+                    st.success(f"'{new_stock}' 종목이 추가되었습니다. 아래에서 설정값을 입력하세요.")
+                    st.rerun()
+
+        # 기존 종목 삭제
+        if len(st.session_state.cfg_stocks) > 1:
+            col_del1, col_del2 = st.columns([3, 1])
+            with col_del1:
+                del_stock = st.selectbox(
+                    "삭제할 종목 선택",
+                    options=st.session_state.cfg_stocks,
+                    key="cfg_input_del_stock"
+                )
+            with col_del2:
+                if st.button("종목 삭제", key="cfg_btn_del_stock"):
+                    if del_stock in st.session_state.cfg_stocks:
+                        st.session_state.cfg_stocks.remove(del_stock)
+                        st.session_state.cfg_stock_configs.pop(del_stock, None)
+                        st.success(f"'{del_stock}' 종목이 삭제되었습니다.")
+                        st.rerun()
         else:
-            new_exhaust_roi = st.session_state.cfg_exhaust_roi * 100.0
-
-    with col_cfg2:
-        st.markdown("### 🛡️ 시스템 주문 및 리스크 관리")
-        st.write(f"- **주문 실행 방식**: `⚡ 완전 자동 (GitHub Actions Cron 1일 2회)`")
-        st.write(f"- **주문 구문**: `LOC (Limit On Close - 종가입찰) & 지정가 익절 매도`")
-
-        new_max_stocks = st.number_input(
-            "최대 보유 종목 수",
-            min_value=1,
-            max_value=50,
-            value=st.session_state.cfg_max_stocks,
-            step=1,
-            key="cfg_input_max_stocks",
-            help="동시에 보유 가능한 최대 종목 수"
-        )
-        new_api_delay = st.number_input(
-            "API 호출 안전 딜레이 (초)",
-            min_value=0.0,
-            max_value=10.0,
-            value=st.session_state.cfg_api_delay,
-            step=0.1,
-            key="cfg_input_api_delay",
-            help="API 연속 호출 간 최소 딜레이 (초)"
-        )
+            st.caption("최소 1개 이상의 종목이 필요합니다.")
 
     st.divider()
 
-    # 설정 변경 감지 및 적용 버튼
-    stocks_list = [s.strip().upper() for s in new_stocks.split(",") if s.strip()]
-    roi_decimal = new_roi / 100.0
-    exhaust_roi_decimal = new_exhaust_roi / 100.0
+    # 종목별 설정 입력 폼
+    st.markdown("### 🇺🇸 라오어 무한매수법 v2.0 파라미터 (종목별)")
+    st.write(f"- **전담 매매 전략**: `라오어 무한매수법 v2.0 (INFINITE_BUYING)`")
 
-    changed = (
-        stocks_list != getattr(config, "INFINITE_STOCKS", ["TQQQ"])
-        or abs(new_budget - float(getattr(config, "INFINITE_TOTAL_BUDGET_USD", 5000.0))) > 0.01
-        or new_division != int(getattr(config, "INFINITE_DIVISION_COUNT", 40))
-        or abs(roi_decimal - float(getattr(config, "INFINITE_TARGET_ROI", 0.10))) > 0.0001
-        or new_exhaust_action != str(getattr(config, "INFINITE_EXHAUST_ACTION", "HOLD")).upper()
-        or abs(exhaust_roi_decimal - float(getattr(config, "INFINITE_EXHAUST_TARGET_ROI", 0.05))) > 0.0001
-        or new_max_stocks != int(getattr(config, "MAX_STOCKS_HOLDING", 5))
-        or abs(new_api_delay - float(getattr(config, "API_CALL_DELAY", 0.2))) > 0.001
-    )
+    # 각 종목 입력값을 저장할 임시 변수
+    new_stock_configs = {}
+    for idx, sym in enumerate(st.session_state.cfg_stocks):
+        cfg = st.session_state.cfg_stock_configs.get(sym, config.get_stock_config(sym))
+        with st.expander(f"📌 {sym} 설정", expanded=True):
+            col1, col2 = st.columns(2)
+            with col1:
+                new_budget = st.number_input(
+                    f"{sym} - 종목당 총 예산 ($)",
+                    min_value=100.0,
+                    max_value=1000000.0,
+                    value=float(cfg.get("total_budget_usd", 5000.0)),
+                    step=100.0,
+                    key=f"cfg_input_budget_{sym}",
+                    help="이 종목의 분할 매수에 사용할 총 예산 (USD)"
+                )
+                new_division = st.number_input(
+                    f"{sym} - 총 분할 매수 횟수 (회차)",
+                    min_value=1,
+                    max_value=200,
+                    value=int(cfg.get("division_count", 40)),
+                    step=1,
+                    key=f"cfg_input_division_{sym}",
+                    help="이 종목의 무한매수 총 분할 횟수 (예: 40 = 40회차)"
+                )
+            with col2:
+                new_roi = st.number_input(
+                    f"{sym} - 전량 익절 목표 수익률 (%)",
+                    min_value=1.0,
+                    max_value=100.0,
+                    value=float(cfg.get("target_roi", 0.10)) * 100.0,
+                    step=1.0,
+                    key=f"cfg_input_roi_{sym}",
+                    help="이 종목의 전량 익절 매도 목표 수익률 (예: 10 = +10%)"
+                )
+
+                # 40회차 소진 대응 옵션 - 종목별 선택
+                exhaust_options = [
+                    ("HOLD", "🛡️ 1. 무한 대기 (추가 매수 중단, +10% 익절 매도 대기)"),
+                    ("REBALANCE_QUARTER", "✂️ 2. 쿼터 손절 & 순환 매매 (1회차 매도 + LOC 재매수로 평단가 인하)"),
+                    ("LOWER_TARGET", "🎯 3. 목표수익률 하향 빠른 탈출 (도달 시 목표 수익률 자동 하향)"),
+                ]
+                action_keys = [opt[0] for opt in exhaust_options]
+                current_idx = action_keys.index(cfg.get("exhaust_action", "HOLD")) if cfg.get("exhaust_action", "HOLD") in action_keys else 0
+
+                selected_action_tuple = st.selectbox(
+                    f"{sym} - 40회차 소진 시 대응 전략",
+                    options=exhaust_options,
+                    index=current_idx,
+                    format_func=lambda x: x[1],
+                    key=f"cfg_input_exhaust_action_{sym}",
+                    help="이 종목이 최대 분할 회차까지 매수했으나 목표가에 도달하지 않았을 때의 동작 방식"
+                )
+                new_exhaust_action = selected_action_tuple[0]
+
+                if new_exhaust_action == "LOWER_TARGET":
+                    new_exhaust_roi = st.number_input(
+                        f"{sym} - 40회차 소진 시 탈출 목표 수익률 (%)",
+                        min_value=0.5,
+                        max_value=50.0,
+                        value=float(cfg.get("exhaust_target_roi", 0.05)) * 100.0,
+                        step=0.5,
+                        key=f"cfg_input_exhaust_roi_{sym}",
+                        help="이 종목이 40회차에 도달 시 적용할 하향 목표 수익률 (예: 5 = +5.0%)"
+                    )
+                else:
+                    new_exhaust_roi = float(cfg.get("exhaust_target_roi", 0.05)) * 100.0
+
+            new_stock_configs[sym] = {
+                "total_budget_usd": float(new_budget),
+                "division_count": int(new_division),
+                "target_roi": float(new_roi) / 100.0,
+                "exhaust_action": new_exhaust_action,
+                "exhaust_target_roi": float(new_exhaust_roi) / 100.0,
+            }
+
+    st.divider()
+
+    # 설정 변경 감지
+    stocks_list = list(st.session_state.cfg_stocks)
+    changed = False
+
+    # 종목 리스트 변경 감지
+    if stocks_list != list(getattr(config, "INFINITE_STOCKS", ["TQQQ"])):
+        changed = True
+
+    # 각 종목의 설정 변경 감지
+    if not changed:
+        for sym in stocks_list:
+            new_cfg = new_stock_configs.get(sym, {})
+            old_cfg = config.get_stock_config(sym)
+            if (abs(new_cfg.get("total_budget_usd", 0) - old_cfg["total_budget_usd"]) > 0.01 or
+                new_cfg.get("division_count", 0) != old_cfg["division_count"] or
+                abs(new_cfg.get("target_roi", 0) - old_cfg["target_roi"]) > 0.0001 or
+                new_cfg.get("exhaust_action", "") != old_cfg["exhaust_action"] or
+                abs(new_cfg.get("exhaust_target_roi", 0) - old_cfg["exhaust_target_roi"]) > 0.0001):
+                changed = True
+                break
 
     if changed:
-        st.warning("설정값이 변경되었습니다. [설정 적용] 버튼을 누르면 무한매수 전략이 초기화됩니다.")
+        st.warning("설정값이 변경되었습니다. [설정 적용] 버튼을 누르면 변경 사항이 반영됩니다. (전략 진행 상태는 유지)")
 
-    if st.button("💾 설정 적용 (무한매수 초기화)", type="primary", width="stretch", disabled=not changed):
+    if st.button("💾 설정 적용", type="primary", width="stretch", disabled=not changed):
         # 1. config 모듈의 설정값을 런타임에 업데이트
         setattr(config, "INFINITE_STOCKS", stocks_list)
         setattr(config, "TARGET_STOCKS", stocks_list)
-        setattr(config, "INFINITE_TOTAL_BUDGET_USD", new_budget)
-        setattr(config, "INFINITE_DIVISION_COUNT", new_division)
-        setattr(config, "INFINITE_TARGET_ROI", roi_decimal)
-        setattr(config, "INFINITE_EXHAUST_ACTION", new_exhaust_action)
-        setattr(config, "INFINITE_EXHAUST_TARGET_ROI", exhaust_roi_decimal)
-        setattr(config, "MAX_STOCKS_HOLDING", new_max_stocks)
-        setattr(config, "API_CALL_DELAY", new_api_delay)
+        setattr(config, "INFINITE_STOCK_CONFIGS", new_stock_configs)
 
         # 2. 봇의 설정값도 동기화
         bot.infinite_stocks = stocks_list
         bot.target_symbols = stocks_list
-        bot.infinite_strategy.division_count = new_division
-        bot.infinite_strategy.target_roi = roi_decimal
-        bot.infinite_strategy.exhaust_action = new_exhaust_action
-        bot.infinite_strategy.exhaust_target_roi = exhaust_roi_decimal
-        bot.risk_mgr.max_stocks_holding = new_max_stocks
 
-        # 3. 무한매수 전략 상태 초기화 (모든 대상 종목에 대해)
+        # 3. 무한매수 설정값만 업데이트 (전략 진행 상태는 유지)
         for sym in stocks_list:
-            bot.infinite_state_mgr.reset_all(
+            cfg = new_stock_configs[sym]
+            bot.infinite_state_mgr.update_settings(
                 sym,
-                total_budget_usd=new_budget,
-                division_count=new_division,
-                target_roi=roi_decimal
+                total_budget_usd=cfg["total_budget_usd"],
+                division_count=cfg["division_count"],
+                target_roi=cfg["target_roi"],
+                exhaust_action=cfg["exhaust_action"],
+                exhaust_target_roi=cfg["exhaust_target_roi"]
             )
 
         # 4. 영속 설정 저장 (로컬 JSON + Google Sheet)
-        #    - 로컬 JSON: 앱 재시작 시 config.py가 로드
-        #    - Google Sheet: GitHub Actions 자동 실행 시에도 동일한 설정 적용
         settings_data = {
             "infinite_stocks": stocks_list,
-            "infinite_total_budget_usd": new_budget,
-            "infinite_division_count": new_division,
-            "infinite_target_roi": roi_decimal,
-            "infinite_exhaust_action": new_exhaust_action,
-            "infinite_exhaust_target_roi": exhaust_roi_decimal,
-            "max_stocks_holding": new_max_stocks,
-            "api_call_delay": new_api_delay,
+            "infinite_stock_configs": new_stock_configs,
+            "max_stocks_holding": st.session_state.cfg_max_stocks,
+            "api_call_delay": st.session_state.cfg_api_delay,
         }
 
         # 4-1. 로컬 JSON 파일에 저장
@@ -1027,34 +1044,38 @@ def page_config():
             logger.warning(f"Google Sheet 설정값 저장 실패: {e}")
 
         # 5. 세션 상태에 새 설정값 저장
-        st.session_state.cfg_stocks = ", ".join(stocks_list)
-        st.session_state.cfg_budget = new_budget
-        st.session_state.cfg_division = new_division
-        st.session_state.cfg_roi = roi_decimal
-        st.session_state.cfg_exhaust_action = new_exhaust_action
-        st.session_state.cfg_exhaust_roi = exhaust_roi_decimal
-        st.session_state.cfg_max_stocks = new_max_stocks
-        st.session_state.cfg_api_delay = new_api_delay
+        st.session_state.cfg_stocks = stocks_list
+        st.session_state.cfg_stock_configs = new_stock_configs
 
-        logger.info(f"⚙️ 무한매수 설정 변경 및 초기화 완료: 종목={stocks_list}, 예산=${new_budget:,.0f}, 분할={new_division}회, 목표수익률=+{roi_decimal*100:.1f}%, 소진대응={new_exhaust_action}")
-        st.success("✅ 설정이 적용되었고 무한매수 전략이 초기화되었습니다.")
+        logger.info(f"⚙️ 무한매수 설정 변경 완료: 종목={stocks_list}")
+        for sym in stocks_list:
+            cfg = new_stock_configs[sym]
+            logger.info(f"  - {sym}: 예산=${cfg['total_budget_usd']:,.0f}, 분할={cfg['division_count']}회, 목표=+{cfg['target_roi']*100:.1f}%, 소진대응={cfg['exhaust_action']}")
+        st.success("✅ 설정이 적용되었습니다. 전략 진행 상태는 유지됩니다.")
         st.rerun()
 
     # 현재 적용 중인 설정 요약 표시
     st.markdown("### 📋 현재 적용 중인 설정")
-    col_sum1, col_sum2, col_sum3, col_sum4, col_sum5 = st.columns(5)
-    with col_sum1:
-        st.metric("운용 대상 종목", ", ".join(getattr(config, "INFINITE_STOCKS", ["TQQQ"])))
-    with col_sum2:
-        st.metric("종목당 총 예산", f"${getattr(config, 'INFINITE_TOTAL_BUDGET_USD', 5000):,.0f}")
-    with col_sum3:
-        st.metric("총 분할 횟수", f"{getattr(config, 'INFINITE_DIVISION_COUNT', 40)} 회차")
-    with col_sum4:
-        st.metric("목표 수익률", f"+{getattr(config, 'INFINITE_TARGET_ROI', 0.10)*100:.1f}%")
-    with col_sum5:
-        cur_ex = getattr(config, "INFINITE_EXHAUST_ACTION", "HOLD").upper()
-        cur_ex_name = {"HOLD": "🛡️ 무한대기", "REBALANCE_QUARTER": "✂️ 쿼터순환", "LOWER_TARGET": f"🎯 하향(+{getattr(config, 'INFINITE_EXHAUST_TARGET_ROI', 0.05)*100:.0f}%)"}.get(cur_ex, cur_ex)
-        st.metric("40회차 소진 대응", cur_ex_name)
+    for sym in getattr(config, "INFINITE_STOCKS", ["TQQQ"]):
+        cfg = config.get_stock_config(sym)
+        cur_ex = cfg["exhaust_action"]
+        cur_ex_name = {
+            "HOLD": "🛡️ 무한대기",
+            "REBALANCE_QUARTER": "✂️ 쿼터순환",
+            "LOWER_TARGET": f"🎯 하향(+{cfg['exhaust_target_roi']*100:.0f}%)"
+        }.get(cur_ex, cur_ex)
+        col_sum1, col_sum2, col_sum3, col_sum4, col_sum5 = st.columns(5)
+        with col_sum1:
+            st.metric("운용 대상", sym)
+        with col_sum2:
+            st.metric("총 예산", f"${cfg['total_budget_usd']:,.0f}")
+        with col_sum3:
+            st.metric("분할 횟수", f"{cfg['division_count']} 회차")
+        with col_sum4:
+            st.metric("목표 수익률", f"+{cfg['target_roi']*100:.1f}%")
+        with col_sum5:
+            st.metric("40회차 소진 대응", cur_ex_name)
+        st.divider()
 
 
 # -----------------------------------------------------------------------------

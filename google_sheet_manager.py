@@ -596,7 +596,7 @@ class GoogleSheetManager:
     def sync_settings_to_sheet(self, settings: Dict[str, Any]):
         """
         무한매수 설정값을 'Settings' 워크시트에 저장
-        - settings: {"infinite_stocks": [...], "infinite_total_budget_usd": float, ...}
+        - settings: {"infinite_stocks": [...], "infinite_stock_configs": {...}, ...}
         - UI에서 설정 변경 시 호출되어 Google Sheet에 영속 저장
         """
         if not self.is_connected or not self.settings_worksheet:
@@ -605,11 +605,13 @@ class GoogleSheetManager:
         try:
             now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-            # 설정값을 문자열로 변환 (리스트는 쉼표 구분 문자열로)
+            # 설정값을 문자열로 변환 (리스트는 쉼표 구분 문자열로, dict는 JSON 문자열로)
             settings_rows = []
             for key, value in settings.items():
                 if isinstance(value, list):
                     value_str = ", ".join(str(v) for v in value)
+                elif isinstance(value, dict):
+                    value_str = json.dumps(value, ensure_ascii=False)
                 else:
                     value_str = str(value)
                 settings_rows.append([key, value_str, "", now_str])
@@ -635,7 +637,7 @@ class GoogleSheetManager:
         """
         Google Sheet 'Settings' 워크시트에서 무한매수 설정값 읽어오기
         - GitHub Actions 자동 실행 시에도 이 값을 읽어 동일한 설정 적용
-        - 반환: {"infinite_stocks": [...], "infinite_total_budget_usd": float, ...}
+        - 반환: {"infinite_stocks": [...], "infinite_stock_configs": {...}, ...}
         """
         if not self.is_connected or not self.settings_worksheet:
             return {}
@@ -652,6 +654,14 @@ class GoogleSheetManager:
                 # 값 타입 변환
                 if key == "infinite_stocks":
                     settings[key] = [s.strip().upper() for s in value.split(",") if s.strip()]
+                elif key == "infinite_stock_configs":
+                    # JSON 문자열로 저장된 종목별 설정 파싱
+                    try:
+                        parsed = json.loads(value)
+                        if isinstance(parsed, dict):
+                            settings[key] = parsed
+                    except (json.JSONDecodeError, ValueError):
+                        logger.warning(f"Google Sheet 'infinite_stock_configs' JSON 파싱 실패: {value[:100]}...")
                 elif key in ("infinite_total_budget_usd", "infinite_target_roi", "infinite_exhaust_target_roi", "api_call_delay"):
                     try:
                         settings[key] = float(value)

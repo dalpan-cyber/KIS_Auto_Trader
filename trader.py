@@ -31,7 +31,9 @@ class TraderBot:
         self.infinite_stocks = getattr(config, "INFINITE_STOCKS", ["TQQQ", "SOXL"])
         self.infinite_strategy = InfiniteBuyingStrategy(
             division_count=getattr(config, "INFINITE_DIVISION_COUNT", 40),
-            target_roi=getattr(config, "INFINITE_TARGET_ROI", 0.10)
+            target_roi=getattr(config, "INFINITE_TARGET_ROI", 0.10),
+            exhaust_action=getattr(config, "INFINITE_EXHAUST_ACTION", "HOLD"),
+            exhaust_target_roi=getattr(config, "INFINITE_EXHAUST_TARGET_ROI", 0.05)
         )
 
         # 설정 및 객체 로드
@@ -39,7 +41,9 @@ class TraderBot:
         self.strategy = StrategyFactory.create_strategy(
             getattr(config, "STRATEGY_NAME", "INFINITE_BUYING"),
             division_count=getattr(config, "INFINITE_DIVISION_COUNT", 40),
-            target_roi=getattr(config, "INFINITE_TARGET_ROI", 0.10)
+            target_roi=getattr(config, "INFINITE_TARGET_ROI", 0.10),
+            exhaust_action=getattr(config, "INFINITE_EXHAUST_ACTION", "HOLD"),
+            exhaust_target_roi=getattr(config, "INFINITE_EXHAUST_TARGET_ROI", 0.05)
         )
         self.risk_mgr = RiskManager(
             stop_loss_ratio=getattr(config, "STOP_LOSS_RATIO", 0.03),
@@ -466,12 +470,15 @@ class TraderBot:
             return result
         cur_price = float(price_res["price"])
 
-        # 종목 상태 및 보유 정보 조회
+        # 종목 상태 및 보유 정보 조회 (종목별 설정 사용)
+        stock_cfg = config.get_stock_config(symbol)
         state = self.infinite_state_mgr.get_symbol_state(
             symbol,
-            default_budget_usd=getattr(config, "INFINITE_TOTAL_BUDGET_USD", 5000.0),
-            division_count=getattr(config, "INFINITE_DIVISION_COUNT", 40),
-            target_roi=getattr(config, "INFINITE_TARGET_ROI", 0.10)
+            default_budget_usd=stock_cfg["total_budget_usd"],
+            division_count=stock_cfg["division_count"],
+            target_roi=stock_cfg["target_roi"],
+            exhaust_action=stock_cfg["exhaust_action"],
+            exhaust_target_roi=stock_cfg["exhaust_target_roi"]
         )
         actual_held_qty = int(self.holdings.get(symbol, {}).get("qty", 0))
         actual_avg_p = float(self.holdings.get(symbol, {}).get("avg_price", 0.0))
@@ -574,11 +581,14 @@ class TraderBot:
                     continue
 
                 cur_price = float(price_res["price"])
+                stock_cfg = config.get_stock_config(symbol)
                 state = self.infinite_state_mgr.get_symbol_state(
                     symbol,
-                    default_budget_usd=getattr(config, "INFINITE_TOTAL_BUDGET_USD", 10000.0),
-                    division_count=getattr(config, "INFINITE_DIVISION_COUNT", 40),
-                    target_roi=getattr(config, "INFINITE_TARGET_ROI", 0.10)
+                    default_budget_usd=stock_cfg["total_budget_usd"],
+                    division_count=stock_cfg["division_count"],
+                    target_roi=stock_cfg["target_roi"],
+                    exhaust_action=stock_cfg["exhaust_action"],
+                    exhaust_target_roi=stock_cfg["exhaust_target_roi"]
                 )
 
                 curr_round = state.get("current_round", 0)

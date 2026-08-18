@@ -56,11 +56,14 @@ class InfiniteStateManager:
         symbol: str,
         default_budget_usd: float = 10000.0,
         division_count: int = 40,
-        target_roi: float = 0.10
+        target_roi: float = 0.10,
+        exhaust_action: str = "HOLD",
+        exhaust_target_roi: float = 0.05
     ) -> Dict[str, Any]:
         """
         종목별 전략 상태 조회 (없으면 기본값 생성)
-        - 전략 상태만 관리: start_date, current_round, division_count, total_budget_usd, target_roi, status
+        - 전략 상태만 관리: start_date, current_round, division_count, total_budget_usd, target_roi,
+          exhaust_action, exhaust_target_roi, status
         - 보유 수량/평단가/체결 이력은 API에서 실시간 조회하므로 여기서 관리하지 않음
         """
         symbol_upper = symbol.upper()
@@ -72,9 +75,16 @@ class InfiniteStateManager:
                 "division_count": division_count,
                 "current_round": 0,
                 "target_roi": target_roi,
+                "exhaust_action": str(exhaust_action).strip().upper(),
+                "exhaust_target_roi": exhaust_target_roi,
                 "status": "IDLE",  # IDLE, BUYING, COMPLETED, PAUSED_MAX
             }
             self.save_state()
+        # 기존 상태에 exhaust_action/exhaust_target_roi가 없으면 기본값 추가 (하위 호환성)
+        if "exhaust_action" not in self.states[symbol_upper]:
+            self.states[symbol_upper]["exhaust_action"] = str(exhaust_action).strip().upper()
+        if "exhaust_target_roi" not in self.states[symbol_upper]:
+            self.states[symbol_upper]["exhaust_target_roi"] = exhaust_target_roi
         return self.states[symbol_upper]
 
     def update_budget(self, symbol: str, total_budget_usd: float):
@@ -95,26 +105,71 @@ class InfiniteStateManager:
         state["target_roi"] = target_roi
         self.save_state()
 
+    def update_exhaust_action(self, symbol: str, exhaust_action: str):
+        """40회차 소진 시 대응 모드 업데이트"""
+        state = self.get_symbol_state(symbol)
+        state["exhaust_action"] = str(exhaust_action).strip().upper()
+        self.save_state()
+
+    def update_exhaust_target_roi(self, symbol: str, exhaust_target_roi: float):
+        """40회차 소진 시 탈출 목표 수익률 업데이트"""
+        state = self.get_symbol_state(symbol)
+        state["exhaust_target_roi"] = exhaust_target_roi
+        self.save_state()
+
     def update_start_date(self, symbol: str, start_date: str):
         """전략 시작일 업데이트"""
         state = self.get_symbol_state(symbol)
         state["start_date"] = start_date
         self.save_state()
 
-    def reset_all(self, symbol: str, total_budget_usd: float, division_count: int, target_roi: float):
+    def update_settings(
+        self,
+        symbol: str,
+        total_budget_usd: float,
+        division_count: int,
+        target_roi: float,
+        exhaust_action: str = "HOLD",
+        exhaust_target_roi: float = 0.05
+    ):
         """
-        무한매수 전략 전체 초기화 (설정 변경 시 호출)
-        - 진행 회차를 0으로 리셋하고, 상태를 IDLE로 변경
-        - 새 예산/분할횟수/목표수익률을 상태에 반영
+        무한매수 설정값만 업데이트 (전략 진행 상태는 유지)
+        - 진행 회차, 상태, 시작일은 변경하지 않음
+        - 새 예산/분할횟수/목표수익률/소진대응을 상태에 반영
         """
         state = self.get_symbol_state(symbol)
         state["total_budget_usd"] = total_budget_usd
         state["division_count"] = division_count
         state["target_roi"] = target_roi
+        state["exhaust_action"] = str(exhaust_action).strip().upper()
+        state["exhaust_target_roi"] = exhaust_target_roi
+        logger.info(f"⚙️ [{symbol}] 무한매수 설정값 업데이트 완료! (예산: ${total_budget_usd:,.0f}, 분할: {division_count}회, 목표수익률: +{target_roi*100:.1f}%, 소진대응: {exhaust_action}) - 진행 상태 유지")
+        self.save_state()
+
+    def reset_all(
+        self,
+        symbol: str,
+        total_budget_usd: float,
+        division_count: int,
+        target_roi: float,
+        exhaust_action: str = "HOLD",
+        exhaust_target_roi: float = 0.05
+    ):
+        """
+        무한매수 전략 전체 초기화 (설정 변경 시 호출)
+        - 진행 회차를 0으로 리셋하고, 상태를 IDLE로 변경
+        - 새 예산/분할횟수/목표수익률/소진대응을 상태에 반영
+        """
+        state = self.get_symbol_state(symbol)
+        state["total_budget_usd"] = total_budget_usd
+        state["division_count"] = division_count
+        state["target_roi"] = target_roi
+        state["exhaust_action"] = str(exhaust_action).strip().upper()
+        state["exhaust_target_roi"] = exhaust_target_roi
         state["current_round"] = 0
         state["status"] = "IDLE"
         state["start_date"] = datetime.now().strftime("%Y-%m-%d")
-        logger.info(f"🔄 [{symbol}] 무한매수 설정 변경으로 전체 초기화 완료! (예산: ${total_budget_usd:,.0f}, 분할: {division_count}회, 목표수익률: +{target_roi*100:.1f}%, 상태: IDLE)")
+        logger.info(f"🔄 [{symbol}] 무한매수 설정 변경으로 전체 초기화 완료! (예산: ${total_budget_usd:,.0f}, 분할: {division_count}회, 목표수익률: +{target_roi*100:.1f}%, 소진대응: {exhaust_action}, 상태: IDLE)")
         self.save_state()
 
     def start_buying(self, symbol: str):
