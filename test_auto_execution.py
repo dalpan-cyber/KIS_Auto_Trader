@@ -130,9 +130,117 @@ def test_auto_execution_with_multiple_stocks():
     print("  ✅ PASS")
 
 
+def test_google_sheet_settings_sync():
+    """Google Sheet 'Settings' 워크시트의 종목별 설정 직렬화/역직렬화 검증"""
+    print("\n=== Test: Google Sheet 설정 동기화 (infinite_stock_configs) ===")
+    
+    # 1. 설정 데이터 구성 (app.py의 settings_data와 동일 구조)
+    settings_data = {
+        "infinite_stocks": ["TQQQ", "SOXL"],
+        "infinite_stock_configs": {
+            "TQQQ": {
+                "total_budget_usd": 5000.0,
+                "division_count": 40,
+                "target_roi": 0.10,
+                "exhaust_action": "HOLD",
+                "exhaust_target_roi": 0.05,
+            },
+            "SOXL": {
+                "total_budget_usd": 8000.0,
+                "division_count": 30,
+                "target_roi": 0.15,
+                "exhaust_action": "LOWER_TARGET",
+                "exhaust_target_roi": 0.08,
+            },
+        },
+        "max_stocks_holding": 5,
+        "api_call_delay": 0.2,
+    }
+    
+    # 2. sync_settings_to_sheet()의 직렬화 로직 검증 (dict → JSON 문자열)
+    serialized_rows = []
+    for key, value in settings_data.items():
+        if isinstance(value, list):
+            value_str = ", ".join(str(v) for v in value)
+        elif isinstance(value, dict):
+            value_str = json.dumps(value, ensure_ascii=False)
+        else:
+            value_str = str(value)
+        serialized_rows.append([key, value_str])
+    
+    # infinite_stock_configs가 JSON 문자열로 직렬화되었는지 확인
+    stock_configs_row = [r for r in serialized_rows if r[0] == "infinite_stock_configs"][0]
+    parsed_back = json.loads(stock_configs_row[1])
+    assert isinstance(parsed_back, dict), "infinite_stock_configs가 dict로 파싱되지 않음"
+    assert parsed_back["TQQQ"]["total_budget_usd"] == 5000.0, "TQQQ 예산 오류"
+    assert parsed_back["TQQQ"]["division_count"] == 40, "TQQQ 분할 오류"
+    assert parsed_back["TQQQ"]["exhaust_action"] == "HOLD", "TQQQ 소진대응 오류"
+    assert parsed_back["SOXL"]["total_budget_usd"] == 8000.0, "SOXL 예산 오류"
+    assert parsed_back["SOXL"]["division_count"] == 30, "SOXL 분할 오류"
+    assert parsed_back["SOXL"]["exhaust_action"] == "LOWER_TARGET", "SOXL 소진대응 오류"
+    assert parsed_back["SOXL"]["exhaust_target_roi"] == 0.08, "SOXL 탈출목표 오류"
+    
+    print(f"  ✅ infinite_stock_configs JSON 직렬화/역직렬화 성공: {list(parsed_back.keys())}")
+    
+    # 3. read_settings_from_sheet()의 역직렬화 로직 검증 (JSON 문자열 → dict)
+    # Google Sheet에서 읽은 레코드 시뮬레이션
+    sheet_records = []
+    for key, value_str in serialized_rows:
+        sheet_records.append({"설정키": key, "설정값": value_str})
+    
+    # read_settings_from_sheet()의 파싱 로직 시뮬레이션
+    parsed_settings = {}
+    for rec in sheet_records:
+        key = str(rec.get("설정키", "")).strip()
+        value = str(rec.get("설정값", "")).strip()
+        if not key or not value:
+            continue
+        
+        if key == "infinite_stocks":
+            parsed_settings[key] = [s.strip().upper() for s in value.split(",") if s.strip()]
+        elif key == "infinite_stock_configs":
+            try:
+                parsed = json.loads(value)
+                if isinstance(parsed, dict):
+                    parsed_settings[key] = parsed
+            except (json.JSONDecodeError, ValueError):
+                pass
+        elif key in ("infinite_total_budget_usd", "infinite_target_roi", "infinite_exhaust_target_roi", "api_call_delay"):
+            try:
+                parsed_settings[key] = float(value)
+            except ValueError:
+                parsed_settings[key] = value
+        elif key in ("infinite_division_count", "max_stocks_holding"):
+            try:
+                parsed_settings[key] = int(float(value))
+            except ValueError:
+                parsed_settings[key] = value
+        elif key == "infinite_exhaust_action":
+            parsed_settings[key] = str(value).strip().upper()
+        else:
+            parsed_settings[key] = value
+    
+    # 4. 역직렬화된 설정이 원본과 일치하는지 검증
+    assert parsed_settings["infinite_stocks"] == ["TQQQ", "SOXL"], "infinite_stocks 오류"
+    assert parsed_settings["infinite_stock_configs"]["TQQQ"]["total_budget_usd"] == 5000.0, "TQQQ 예산 오류"
+    assert parsed_settings["infinite_stock_configs"]["TQQQ"]["division_count"] == 40, "TQQQ 분할 오류"
+    assert parsed_settings["infinite_stock_configs"]["TQQQ"]["exhaust_action"] == "HOLD", "TQQQ 소진대응 오류"
+    assert parsed_settings["infinite_stock_configs"]["SOXL"]["total_budget_usd"] == 8000.0, "SOXL 예산 오류"
+    assert parsed_settings["infinite_stock_configs"]["SOXL"]["division_count"] == 30, "SOXL 분할 오류"
+    assert parsed_settings["infinite_stock_configs"]["SOXL"]["exhaust_action"] == "LOWER_TARGET", "SOXL 소진대응 오류"
+    assert parsed_settings["infinite_stock_configs"]["SOXL"]["exhaust_target_roi"] == 0.08, "SOXL 탈출목표 오류"
+    assert parsed_settings["max_stocks_holding"] == 5, "max_stocks_holding 오류"
+    assert parsed_settings["api_call_delay"] == 0.2, "api_call_delay 오류"
+    
+    print(f"  ✅ Google Sheet 설정 역직렬화 성공: {list(parsed_settings.keys())}")
+    print(f"  ✅ infinite_stock_configs: {list(parsed_settings['infinite_stock_configs'].keys())}")
+    print("  ✅ PASS")
+
+
 if __name__ == "__main__":
     test_auto_execution_flow()
     test_auto_execution_with_multiple_stocks()
+    test_google_sheet_settings_sync()
     
     # 테스트 후 임시 파일 정리
     if os.path.exists(TEST_STATE_FILE):

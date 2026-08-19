@@ -697,6 +697,8 @@ def render_stock_detail(symbol: str, bot: TraderBot):
                     "매체구분": _disp(h.get("mdia_dvsn_name")),
                     "장외연장요청": _disp(h.get("usa_amk_exts_rqst_yn"))
                 })
+            # 최신 날짜가 위로 오도록 내림차순 정렬 (일시 기준)
+            ccnl_rows.sort(key=lambda r: str(r.get("일시", "")), reverse=True)
             st.dataframe(pd.DataFrame(ccnl_rows), width="stretch", hide_index=True)
         else:
             st.info(f"start_date({ccnl_start}) 이후의 거래요청 이력이 없습니다.")
