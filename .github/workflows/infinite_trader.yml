@@ -6,8 +6,8 @@ on:
    # - cron: '10 13 * * 1-5'
     # 2) 한국시간(KST) 화~토 아침 05:14 (UTC 20:14) - 장 마감 1시간 후 체결 결과 확인 & Google Sheets 동기화
    # - cron: '14 20 * * 1-5'
-  repository_dispatch: # GitHub 웹 UI에서 수동 실행 버튼 제공
-    types: [kis_auto]
+  workflow_dispatch: # GitHub 웹 UI에서 수동 실행 버튼 제공
+
 jobs:
   trade:
     runs-on: ubuntu-latest
