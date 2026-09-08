@@ -8,6 +8,19 @@
     "target_roi": 0.1,
     "status": "BUYING",
     "exhaust_action": "HOLD",
-    "exhaust_target_roi": 0.05
+    "exhaust_target_roi": 0.05,
+    "peak_qty": 34
+  },
+  "SOXL": {
+    "symbol": "SOXL",
+    "start_date": "2026-09-09",
+    "total_budget_usd": 10000.0,
+    "division_count": 40,
+    "current_round": 0,
+    "target_roi": 0.1,
+    "exhaust_action": "HOLD",
+    "exhaust_target_roi": 0.05,
+    "status": "IDLE",
+    "peak_qty": 0
   }
 }
