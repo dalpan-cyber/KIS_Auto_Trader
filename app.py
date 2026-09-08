@@ -555,7 +555,10 @@ def render_stock_detail(symbol: str, bot: TraderBot):
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
         )
 
-        st.plotly_chart(fig, use_container_width=True)
+        try:
+            st.plotly_chart(fig, width="stretch")
+        except TypeError:
+            st.plotly_chart(fig, use_container_width=True)
     else:
         if chart_data:
             df_c = pd.DataFrame(chart_data)

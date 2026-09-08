@@ -567,17 +567,22 @@ def build_stock_dashboard_chart(
 # -----------------------------------------------------------------------------
 # 6. Streamlit 렌더링 헬퍼
 # -----------------------------------------------------------------------------
-def render_chart_in_streamlit(st, figure, use_container_width: bool = True):
+def render_chart_in_streamlit(st, figure, width: str = "stretch", use_container_width: bool = None):
     """
     Streamlit에서 Plotly 차트를 렌더링한다.
 
     Args:
         st: streamlit 모듈
         figure: plotly Figure
-        use_container_width: 컨테이너 폭 사용 여부
+        width: 컨테이너 폭 스타일 ("stretch", "auto" 등)
+        use_container_width: 이전 버전 호환용 파라미터 (None일 경우 width 사용)
     """
     if figure is not None and PLOTLY_AVAILABLE:
-        st.plotly_chart(figure, use_container_width=use_container_width)
+        try:
+            st.plotly_chart(figure, width=width)
+        except TypeError:
+            is_stretch = (use_container_width if use_container_width is not None else (width == "stretch"))
+            st.plotly_chart(figure, use_container_width=is_stretch)
     else:
         st.warning("plotly가 설치되지 않아 차트를 표시할 수 없습니다. `pip install plotly` 실행 필요.")
 
