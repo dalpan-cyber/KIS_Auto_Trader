@@ -58,6 +58,25 @@ class TraderBot:
         self.require_approval = False if is_github_actions else getattr(config, "REQUIRE_USER_APPROVAL", True)
 
         # 계좌 및 상태 데이터
+
+    def reload_settings_from_config(self):
+        """config 모듈에 반영된 최신 설정을 봇 객체에 재동기화"""
+        self.infinite_stocks = getattr(config, "INFINITE_STOCKS", ["TQQQ"])
+        self.target_symbols = getattr(config, "TARGET_STOCKS", self.infinite_stocks)
+        self.infinite_strategy = InfiniteBuyingStrategy(
+            division_count=getattr(config, "INFINITE_DIVISION_COUNT", 40),
+            target_roi=getattr(config, "INFINITE_TARGET_ROI", 0.10),
+            exhaust_action=getattr(config, "INFINITE_EXHAUST_ACTION", "HOLD"),
+            exhaust_target_roi=getattr(config, "INFINITE_EXHAUST_TARGET_ROI", 0.05)
+        )
+        self.strategy = StrategyFactory.create_strategy(
+            getattr(config, "STRATEGY_NAME", "INFINITE_BUYING"),
+            division_count=getattr(config, "INFINITE_DIVISION_COUNT", 40),
+            target_roi=getattr(config, "INFINITE_TARGET_ROI", 0.10),
+            exhaust_action=getattr(config, "INFINITE_EXHAUST_ACTION", "HOLD"),
+            exhaust_target_roi=getattr(config, "INFINITE_EXHAUST_TARGET_ROI", 0.05)
+        )
+        self.logger.info(f"🔄 TraderBot 설정 재동기화 완료 (대상 종목: {self.infinite_stocks})")
         self.total_eval_amount = 0.0
         self.available_cash = 0.0
         self.available_usd_cash = 5000.0  # 외화(USD) 예수금

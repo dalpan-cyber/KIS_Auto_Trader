@@ -9,6 +9,9 @@ import sys
 import json
 import tempfile
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+
 # 테스트용 임시 상태 파일 경로
 TEST_STATE_FILE = os.path.join(tempfile.gettempdir(), "test_infinite_state.json")
 if os.path.exists(TEST_STATE_FILE):

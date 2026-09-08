@@ -593,20 +593,37 @@ class GoogleSheetManager:
             logger.warning(f"Google Sheet CompletedTrades 기록 예외: {e}")
 
 
-    def sync_settings_to_sheet(self, settings: Dict[str, Any]):
+    def sync_settings_to_sheet(self, settings: Dict[str, Any]) -> tuple:
         """
         무한매수 설정값을 'Settings' 워크시트에 저장
         - settings: {"infinite_stocks": [...], "infinite_stock_configs": {...}, ...}
         - UI에서 설정 변경 시 호출되어 Google Sheet에 영속 저장
+        :return: (성공 여부: bool, 결과 메시지: str)
         """
         if not self.is_connected or not self.settings_worksheet:
-            return
+            err_msg = "Google Sheets가 연결되지 않았거나 'Settings' 워크시트를 찾을 수 없습니다."
+            logger.warning(err_msg)
+            return False, err_msg
 
         try:
             now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            headers = ["설정키", "설정값", "설명", "최종갱신시각"]
+
+            # 설정 설명을 위한 매핑 dict
+            key_descriptions = {
+                "infinite_stocks": "무한매수 대상 종목 티커 목록",
+                "infinite_stock_configs": "종목별 상세 매수/매도 파라미터 (JSON)",
+                "max_stocks_holding": "최대 보유 종목 수",
+                "api_call_delay": "API 호출 지연 시간 (초)",
+                "infinite_total_budget_usd": "종목당 총 예산 ($)",
+                "infinite_division_count": "총 분할 횟수",
+                "infinite_target_roi": "전량 익절 목표 수익률",
+                "infinite_exhaust_action": "소진 시 대응 모드",
+                "infinite_exhaust_target_roi": "소진 시 탈출 목표 수익률"
+            }
 
             # 설정값을 문자열로 변환 (리스트는 쉼표 구분 문자열로, dict는 JSON 문자열로)
-            settings_rows = []
+            all_rows = [headers]
             for key, value in settings.items():
                 if isinstance(value, list):
                     value_str = ", ".join(str(v) for v in value)
@@ -614,24 +631,24 @@ class GoogleSheetManager:
                     value_str = json.dumps(value, ensure_ascii=False)
                 else:
                     value_str = str(value)
-                settings_rows.append([key, value_str, "", now_str])
+                desc = key_descriptions.get(key, "")
+                all_rows.append([key, value_str, desc, now_str])
 
-            # 기존 데이터 삭제 (헤더 제외)
-            try:
-                all_records = self.settings_worksheet.get_all_records()
-                if all_records:
-                    self.settings_worksheet.delete_rows(2, len(all_records) + 1)
-            except Exception:
-                pass
-
-            if settings_rows:
-                self.settings_worksheet.append_rows(settings_rows)
-                logger.info(f"📊 Google Sheet 'Settings' 워크시트에 설정값 {len(settings_rows)}건 저장 성공")
+            # 원자적 업데이트: 시트 클리어 후 전체 데이터 일괄 업데이트
+            self.settings_worksheet.clear()
+            self.settings_worksheet.update(all_rows, range_name=f"A1:D{len(all_rows)}")
+            
+            success_msg = f"📊 Google Sheet 'Settings' 워크시트에 설정값 {len(all_rows)-1}건 영속 저장 완료 ({now_str})"
+            logger.info(success_msg)
+            return True, success_msg
         except Exception as e:
+            err_msg = f"Google Sheet Settings 저장 실패: {e}"
             if "429" in str(e) or "Quota exceeded" in str(e):
-                logger.debug("Google Sheet Settings API 호출 할당량 초과 (다음 턴 재시도)")
+                err_msg = "Google Sheet API 호출 한도 초과 (잠시 후 다시 시도하세요)"
+                logger.debug(err_msg)
             else:
-                logger.warning(f"Google Sheet Settings 동기화 예외: {e}")
+                logger.warning(err_msg)
+            return False, err_msg
 
     def read_settings_from_sheet(self) -> Dict[str, Any]:
         """

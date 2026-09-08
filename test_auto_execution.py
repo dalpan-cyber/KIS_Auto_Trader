@@ -7,6 +7,10 @@ import sys
 import json
 import tempfile
 
+# Windows 콘솔 utf-8 출력 설정
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+
 TEST_STATE_FILE = os.path.join(tempfile.gettempdir(), "test_auto_state.json")
 if os.path.exists(TEST_STATE_FILE):
     os.remove(TEST_STATE_FILE)
@@ -237,13 +241,99 @@ def test_google_sheet_settings_sync():
     print("  ✅ PASS")
 
 
+def test_google_sheet_priority_loading():
+    """Google Sheet 설정이 로컬 JSON 설정보다 우선 적용되는지 검증"""
+    print("\n=== Test: Google Sheet 설정 최우선 로딩 검증 ===")
+    
+    # 원본 파일 내용 백업
+    original_settings_content = None
+    if os.path.exists("infinite_settings.json"):
+        with open("infinite_settings.json", "r", encoding="utf-8") as f:
+            original_settings_content = f.read()
+
+    try:
+        # 1. 가상의 로컬 설정
+        local_settings = {
+            "infinite_stocks": ["TQQQ"],
+            "infinite_stock_configs": {
+                "TQQQ": {
+                    "total_budget_usd": 3000.0,
+                    "division_count": 40,
+                    "target_roi": 0.10,
+                    "exhaust_action": "HOLD",
+                    "exhaust_target_roi": 0.05
+                }
+            }
+        }
+        config._apply_settings(local_settings)
+        assert config.get_stock_config("TQQQ")["total_budget_usd"] == 3000.0
+
+        # 2. 구글 시트 Mock 객체 생성
+        class MockGSS:
+            is_connected = True
+            def read_settings_from_sheet(self):
+                return {
+                    "infinite_stocks": ["TQQQ", "SOXL"],
+                    "infinite_stock_configs": {
+                        "TQQQ": {
+                            "total_budget_usd": 7777.0,
+                            "division_count": 50,
+                            "target_roi": 0.12,
+                            "exhaust_action": "REBALANCE_QUARTER",
+                            "exhaust_target_roi": 0.06
+                        },
+                        "SOXL": {
+                            "total_budget_usd": 4000.0,
+                            "division_count": 30,
+                            "target_roi": 0.15,
+                            "exhaust_action": "HOLD",
+                            "exhaust_target_roi": 0.05
+                        }
+                    }
+                }
+
+        # 3. Google Sheet 우선 로딩 호출
+        loaded = config.load_settings_from_google_sheet(gss_instance=MockGSS())
+        assert loaded, "Google Sheet 설정 로드 실패"
+        
+        # 4. config가 로컬 값이 아니라 구글 시트 값으로 완전히 덮어써졌는지 검증
+        assert config.INFINITE_STOCKS == ["TQQQ", "SOXL"], f"종목 목록 불일치: {config.INFINITE_STOCKS}"
+        tqqq_cfg = config.get_stock_config("TQQQ")
+        assert tqqq_cfg["total_budget_usd"] == 7777.0, f"TQQQ 예산 우선 로딩 실패: {tqqq_cfg['total_budget_usd']}"
+        assert tqqq_cfg["division_count"] == 50, f"TQQQ 분할 횟수 우선 로딩 실패: {tqqq_cfg['division_count']}"
+        assert tqqq_cfg["target_roi"] == 0.12, f"TQQQ 목표수익률 우선 로딩 실패: {tqqq_cfg['target_roi']}"
+        assert tqqq_cfg["exhaust_action"] == "REBALANCE_QUARTER", f"TQQQ 소진대응 우선 로딩 실패: {tqqq_cfg['exhaust_action']}"
+
+        soxl_cfg = config.get_stock_config("SOXL")
+        assert soxl_cfg["total_budget_usd"] == 4000.0, f"SOXL 예산 우선 로딩 실패: {soxl_cfg['total_budget_usd']}"
+        print("  ✅ Google Sheet 설정이 로컬 JSON을 성공적으로 오버라이드함")
+        print("  ✅ PASS")
+    finally:
+        # 원본 파일 복원
+        if original_settings_content is not None:
+            with open("infinite_settings.json", "w", encoding="utf-8") as f:
+                f.write(original_settings_content)
+
+
 if __name__ == "__main__":
-    test_auto_execution_flow()
-    test_auto_execution_with_multiple_stocks()
-    test_google_sheet_settings_sync()
+    original_file_content = None
+    if os.path.exists("infinite_settings.json"):
+        with open("infinite_settings.json", "r", encoding="utf-8") as f:
+            original_file_content = f.read()
+
+    try:
+        test_auto_execution_flow()
+        test_auto_execution_with_multiple_stocks()
+        test_google_sheet_settings_sync()
+        test_google_sheet_priority_loading()
+    finally:
+        # 테스트 후 임시 파일 정리
+        if os.path.exists(TEST_STATE_FILE):
+            os.remove(TEST_STATE_FILE)
+        # 설정 파일 및 config 원본 복원
+        if original_file_content is not None:
+            with open("infinite_settings.json", "w", encoding="utf-8") as f:
+                f.write(original_file_content)
+            config._load_persistent_settings()
     
-    # 테스트 후 임시 파일 정리
-    if os.path.exists(TEST_STATE_FILE):
-        os.remove(TEST_STATE_FILE)
-    
-    print("\n🎉 자동 실행 시나리오 테스트 통과!")
+    print("\n🎉 자동 실행 시나리오 테스트 전체 통과!")

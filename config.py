@@ -133,11 +133,60 @@ def _apply_settings(_settings: dict):
         API_CALL_DELAY = float(_settings["api_call_delay"])
 
 
+# --- Google Sheets 동기화 설정 (영속 설정 로드 전에 선언) ---
+GOOGLE_SHEET_ENABLED = os.getenv("GOOGLE_SHEET_ENABLED", "true").lower() == "true"
+GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME", "KIS_무한매수_매매일지")
+GOOGLE_SHEET_KEY = os.getenv("GOOGLE_SHEET_KEY", "")  # 구글 시트 ID/Key
+GCP_SERVICE_ACCOUNT_JSON = os.getenv("GCP_SERVICE_ACCOUNT_JSON", "")  # GCP Service Account JSON
+
+# 리스크 및 시스템 제한 설정 (영속 설정 로드 전에 정의)
+MAX_STOCKS_HOLDING = 5        # 최대 보유 가능 종목 수
+API_CALL_DELAY = 0.2          # API 연속 호출 간 최소 딜레이 (초)
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")  # DEBUG, INFO, WARNING, ERROR
+
+
+def load_settings_from_google_sheet(gss_instance=None) -> dict:
+    """
+    Google Sheet 'Settings' 워크시트에서 최신 설정값을 로드하여 config에 최우선 반영
+    - Streamlit Cloud(streamlit.io) 환경 대응: 로컬 파일보다 구글 시트 설정을 최우선 로딩
+    :param gss_instance: 기존 생성된 GoogleSheetManager 인스턴스 (없으면 새로 생성 시도)
+    :return: 불러온 설정 dict (실패 시 빈 dict)
+    """
+    sheet_settings = {}
+    try:
+        if gss_instance is not None:
+            gss = gss_instance
+        else:
+            from google_sheet_manager import GoogleSheetManager
+            gss = GoogleSheetManager(enabled=True)
+
+        if gss and gss.is_connected:
+            sheet_settings = gss.read_settings_from_sheet()
+            if sheet_settings:
+                _apply_settings(sheet_settings)
+                # 로컬 백업 파일도 최신 구글 시트 값으로 동기화
+                try:
+                    with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+                        json.dump(sheet_settings, f, ensure_ascii=False, indent=2)
+                except Exception:
+                    pass
+
+                stock_cfg_summary = ", ".join(
+                    [f"{s}(예산=${get_stock_config(s)['total_budget_usd']:,.0f}, 분할={get_stock_config(s)['division_count']}회, 목표=+{get_stock_config(s)['target_roi']*100:.1f}%)"
+                     for s in INFINITE_STOCKS]
+                )
+                logging.getLogger("Config").info(f"📊 [Google Sheets 우선 로딩] 설정 동기화 완료: {stock_cfg_summary}")
+    except Exception as e:
+        logging.getLogger("Config").warning(f"Google Sheet 설정 우선 로딩 건너뜀 (로컬 설정 유지): {e}")
+
+    return sheet_settings
+
+
 def _load_persistent_settings():
     """infinite_settings.json 파일 및 Google Sheet에서 영속 설정값을 로드하여 config 모듈 변수에 반영"""
     _settings = {}
 
-    # 1. 로컬 JSON 파일에서 로드
+    # 1. 로컬 JSON 파일에서 로드 (기본값)
     if os.path.exists(SETTINGS_FILE):
         try:
             with open(SETTINGS_FILE, "r", encoding="utf-8") as _f:
@@ -147,42 +196,13 @@ def _load_persistent_settings():
         except Exception as e:
             logging.getLogger("Config").warning(f"영속 설정 파일({SETTINGS_FILE}) 로드 실패: {e}")
 
-    # 2. Google Sheet 'Settings' 워크시트에서 로드 (로컬 JSON보다 우선)
-    #    - 순환 import 방지: google_sheet_manager가 이미 import되고 있는 중이면 건너뜀
-    try:
-        import sys
-        if "google_sheet_manager" in sys.modules and "GoogleSheetManager" in dir(sys.modules["google_sheet_manager"]):
-            from google_sheet_manager import GoogleSheetManager
-            _gss = GoogleSheetManager(enabled=True)
-            if _gss.is_connected:
-                _sheet_settings = _gss.read_settings_from_sheet()
-                if _sheet_settings:
-                    _settings.update(_sheet_settings)
-                    logging.getLogger("Config").info(f"📊 Google Sheet 'Settings'에서 설정값 로드 완료: {list(_sheet_settings.keys())}")
-    except Exception as e:
-        logging.getLogger("Config").warning(f"Google Sheet 설정값 로드 실패: {e}")
-
-    # 3. 설정값 반영
+    # 로컬 설정 1차 적용
     if _settings:
         _apply_settings(_settings)
-        stock_cfg_summary = ", ".join(
-            [f"{s}(예산=${get_stock_config(s)['total_budget_usd']:,.0f}, 분할={get_stock_config(s)['division_count']}회, 목표=+{get_stock_config(s)['target_roi']*100:.1f}%)"
-             for s in INFINITE_STOCKS]
-        )
-        logging.getLogger("Config").info(f"⚙️ 영속 설정 적용 완료: 종목별 설정={stock_cfg_summary}")
 
-# 리스크 및 시스템 제한 설정 (영속 설정 로드 전에 정의)
-MAX_STOCKS_HOLDING = 5        # 최대 보유 가능 종목 수
-API_CALL_DELAY = 0.2          # API 연속 호출 간 최소 딜레이 (초)
+    # 2. Google Sheet 'Settings' 워크시트에서 우선 로드 (구글 시트가 Single Source of Truth)
+    load_settings_from_google_sheet()
+
 
 # 영속 설정 파일 로드 (기본값을 영속 설정으로 오버라이드)
 _load_persistent_settings()
-
-# --- Google Sheets 동기화 설정 ---
-GOOGLE_SHEET_ENABLED = os.getenv("GOOGLE_SHEET_ENABLED", "true").lower() == "true"
-GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME", "KIS_무한매수_매매일지")
-GOOGLE_SHEET_KEY = os.getenv("GOOGLE_SHEET_KEY", "")  # 구글 시트 ID/Key
-GCP_SERVICE_ACCOUNT_JSON = os.getenv("GCP_SERVICE_ACCOUNT_JSON", "")  # GCP Service Account JSON
-
-# --- 리스크 및 시스템 제한 설정 ---
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")  # DEBUG, INFO, WARNING, ERROR

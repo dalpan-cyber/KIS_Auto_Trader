@@ -27,6 +27,42 @@ class InfiniteStateManager:
         self.gss_mgr = GoogleSheetManager(enabled=enable_gss)
         self.load_state()
 
+        # Google Sheets 연동 시 최신 설정 우선 로드 및 전략 상태 동기화
+        if self.gss_mgr and self.gss_mgr.is_connected:
+            try:
+                import config
+                config.load_settings_from_google_sheet(gss_instance=self.gss_mgr)
+                self._sync_states_with_config()
+            except Exception as e:
+                logger.warning(f"구글 시트 설정 동기화 중 예외: {e}")
+
+    def _sync_states_with_config(self):
+        """config에 로드된 최신 종목별 설정값을 전략 상태(self.states)에 동기화 (진행 회차/상태는 유지)"""
+        try:
+            import config
+            modified = False
+            for sym in getattr(config, "INFINITE_STOCKS", []):
+                sym_upper = sym.upper()
+                if sym_upper in self.states:
+                    cfg = config.get_stock_config(sym_upper)
+                    st = self.states[sym_upper]
+                    if (st.get("total_budget_usd") != cfg["total_budget_usd"] or
+                        st.get("division_count") != cfg["division_count"] or
+                        st.get("target_roi") != cfg["target_roi"] or
+                        st.get("exhaust_action") != cfg["exhaust_action"] or
+                        st.get("exhaust_target_roi") != cfg["exhaust_target_roi"]):
+                        st["total_budget_usd"] = cfg["total_budget_usd"]
+                        st["division_count"] = cfg["division_count"]
+                        st["target_roi"] = cfg["target_roi"]
+                        st["exhaust_action"] = cfg["exhaust_action"]
+                        st["exhaust_target_roi"] = cfg["exhaust_target_roi"]
+                        modified = True
+            if modified:
+                self.save_state()
+                logger.info("⚙️ 구글 시트 최신 설정값으로 종목 전략 상태 동기화 완료 (진행 회차 보존)")
+        except Exception as e:
+            logger.debug(f"전략 상태 동기화 예외: {e}")
+
     def load_state(self) -> Dict[str, Dict[str, Any]]:
         """로컬 JSON 파일에서 무한매수 전략 상태 로드 (JSON = Single Source of Truth)"""
         if os.path.exists(self.file_path):

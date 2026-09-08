@@ -831,6 +831,44 @@ def page_config():
     st.subheader("종목별로 무한매수 파라미터를 수정하고 [설정 적용] 버튼을 누르면 변경 사항이 반영됩니다.")
     st.caption("ℹ️ 설정을 변경하여 적용하면 **설정값만 업데이트**되며, 진행 중인 전략 상태(진행 회차, 상태, 시작일)는 유지됩니다.")
 
+    # 직전 설정 저장 결과 피드백 표시
+    if "cfg_save_result" in st.session_state:
+        res_type, res_msg = st.session_state.pop("cfg_save_result")
+        if res_type == "success":
+            st.success(res_msg)
+        else:
+            st.warning(res_msg)
+
+    # Google Sheets 연동 상태 확인 및 상단 배너
+    gss = bot.infinite_state_mgr.gss_mgr if hasattr(bot.infinite_state_mgr, "gss_mgr") else None
+    is_gss_connected = bool(gss and gss.is_connected)
+
+    col_gss_status, col_gss_reload = st.columns([7, 3])
+    with col_gss_status:
+        if is_gss_connected:
+            sheet_title = getattr(gss.spreadsheet, "title", "구글 시트")
+            st.success(f"🟢 **Google Sheets 영속 연동 중** (`{sheet_title}` > `Settings` 워크시트 우선 로딩)")
+        else:
+            st.warning("⚠️ **Google Sheets 미연동**: Streamlit Cloud(streamlit.io)는 재시작 시 로컬 파일이 초기화될 수 있으므로, 영속 저장을 위해 Secrets(`gcp_service_account`) 설정을 권장합니다.")
+    
+    with col_gss_reload:
+        if st.button("🔄 구글 시트에서 설정 다시 불러오기", width="stretch"):
+            if is_gss_connected:
+                loaded = config.load_settings_from_google_sheet(gss)
+                if loaded:
+                    st.session_state.cfg_stocks = list(config.INFINITE_STOCKS)
+                    st.session_state.cfg_stock_configs = {
+                        sym: config.get_stock_config(sym)
+                        for sym in st.session_state.cfg_stocks
+                    }
+                    bot.reload_settings_from_config()
+                    st.success("✅ 구글 시트에서 최신 설정을 성공적으로 불러와 적용했습니다!")
+                    st.rerun()
+                else:
+                    st.info("구글 시트에 저장된 설정이 없어 현재 설정을 유지합니다.")
+            else:
+                st.error("구글 시트에 연결되어 있지 않습니다.")
+
     # 현재 설정값을 세션 상태에 저장 (페이지 리로드 시 유지)
     if "cfg_stocks" not in st.session_state:
         st.session_state.cfg_stocks = list(getattr(config, "INFINITE_STOCKS", ["TQQQ"]))
@@ -1034,16 +1072,19 @@ def page_config():
             logger.error(f"영속 설정 파일({config.SETTINGS_FILE}) 저장 실패: {e}")
             st.error(f"설정 파일 저장 실패: {e}")
 
-        # 4-2. Google Sheet 'Settings' 워크시트에 저장
+        # 4-2. Google Sheet 'Settings' 워크시트에 저장 (영속화)
+        gss_saved = False
+        gss_msg = ""
         try:
             gss = bot.infinite_state_mgr.gss_mgr
             if gss and gss.is_connected:
-                gss.sync_settings_to_sheet(settings_data)
-                logger.info("📊 Google Sheet 'Settings' 워크시트에 설정값 저장 완료")
+                gss_saved, gss_msg = gss.sync_settings_to_sheet(settings_data)
             else:
+                gss_msg = "Google Sheets 미연동 상태 (로컬 파일에만 저장됨)"
                 logger.warning("Google Sheet 미연동 상태 - 설정값은 로컬 파일에만 저장됩니다.")
         except Exception as e:
-            logger.warning(f"Google Sheet 설정값 저장 실패: {e}")
+            gss_msg = f"Google Sheet 저장 예외: {e}"
+            logger.warning(gss_msg)
 
         # 5. 세션 상태에 새 설정값 저장
         st.session_state.cfg_stocks = stocks_list
@@ -1053,7 +1094,11 @@ def page_config():
         for sym in stocks_list:
             cfg = new_stock_configs[sym]
             logger.info(f"  - {sym}: 예산=${cfg['total_budget_usd']:,.0f}, 분할={cfg['division_count']}회, 목표=+{cfg['target_roi']*100:.1f}%, 소진대응={cfg['exhaust_action']}")
-        st.success("✅ 설정이 적용되었습니다. 전략 진행 상태는 유지됩니다.")
+
+        if gss_saved:
+            st.session_state["cfg_save_result"] = ("success", f"✅ 설정이 구글 시트('Settings' 시트) 및 로컬 파일에 성공적으로 영속 저장되었습니다! (진행 상태 유지)")
+        else:
+            st.session_state["cfg_save_result"] = ("warning", f"⚠️ 설정이 로컬에 저장되었으나 구글 시트 동기화 실패: {gss_msg}\nStreamlit Cloud(streamlit.io) 인스턴스 재시작 시 유실될 수 있으니 구글 시트 권한/Secrets를 확인하세요.")
         st.rerun()
 
     # 현재 적용 중인 설정 요약 표시
