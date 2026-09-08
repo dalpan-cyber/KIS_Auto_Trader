@@ -249,10 +249,10 @@ def render_stock_detail(symbol: str, bot: TraderBot):
             bot.current_prices[symbol] = cur_p
 
     status_map = {
-        "BUYING": "🟢 매수 진행 중 (BUYING)",
-        "STOPPED": "🔴 강제 중지됨 (STOPPED)",
-        "IDLE": "🟡 대기 중 (IDLE)",
-        "COMPLETED": "🔵 익절 완료 (COMPLETED)"
+        "BUYING": f"🟢 무한매수 운용 중 (BUYING - {curr_round}/{div_count}회차)",
+        "STOPPED": "🔴 운용 강제 중지됨 (STOPPED)",
+        "IDLE": "🟡 시작 전 대기 (IDLE)",
+        "COMPLETED": "🔵 전량 익절 완료 (COMPLETED - 사이클 종료)"
     }
     status_display = status_map.get(raw_status, raw_status)
 
@@ -286,6 +286,16 @@ def render_stock_detail(symbol: str, bot: TraderBot):
 
     st.caption(f"**상태**: {status_display} | **전략 시작일**: {st_data.get('start_date', '-')} | **총 예산**: ${budget:,.2f} | **소진 시 대응**: {exhaust_name}")
     st.progress(min(1.0, max(0.0, float(curr_round) / float(div_count))))
+
+    # 무한매수 사이클 진행 상태 친절 안내
+    if raw_status == "BUYING" and curr_round > 0:
+        target_roi_pct = st_data.get("target_roi", 0.10) * 100
+        target_p = round(avg_p * (1.0 + st_data.get("target_roi", 0.10)), 2) if avg_p > 0 else 0.0
+        st.info(
+            f"💡 **무한매수 사이클 진행 안내**: 현재 **{curr_round}/{div_count}회차 분할 매수 체결 완료** 상태입니다. "
+            f"(보유 수량: **{total_qty:,}주**, 평단가: **${avg_p:.2f}**, 목표 익절가: **${target_p:.2f}** (+{target_roi_pct:.1f}%))\n\n"
+            f"- **'운용 중(BUYING)'의 의미**: 무한매수법은 1회성 매매가 아니라 총 {div_count}회차에 걸쳐 매일 분할 매수를 누적하는 전략입니다. 목표가 도달 시 **'전량 익절 매도(COMPLETED)'**로 사이클이 종료되며, 그 전까지는 포지션을 보유하며 다음 회차 매수를 준비하는 정상 운용 상태입니다."
+        )
 
     # 40회차 소진 시 대응 모드 상태 배너 표시
     is_exhausted = (curr_round >= div_count)
@@ -801,7 +811,7 @@ def page_main_dashboard():
                         "총 예산 ($)": f"${st_d.get('total_budget_usd', 0.0):,.2f}",
                         "평단가 ($)": f"${avg_p:.2f}" if avg_p > 0 else "-",
                         "보유 수량": f"{total_qty:,} 주",
-                        "상태": st_d.get("status", "IDLE")
+                        "상태": "🟢 운용 중" if st_d.get("status") == "BUYING" else ("🔵 익절 완료" if st_d.get("status") == "COMPLETED" else "🟡 대기 중")
                     })
                 st.dataframe(pd.DataFrame(summary_data), width="stretch", hide_index=True)
         else:
