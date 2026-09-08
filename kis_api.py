@@ -802,11 +802,10 @@ class KISApiClient:
         headers = self._get_headers(tr_id)
         logger.info(f"[해외잔고] API 호출 시작: tr_id={tr_id}, url={url}, mock={self.mock}")
 
-        # 여러 거래소(NAS/NYS/AMS)를 순회하며 보유 종목 통합 조회
-        # KIS API 거래소 코드: NAS=나스닥, NYS=뉴욕, AMS=아멕스
-        # (NMS/NYQ는 NAS/NYS의 대체 코드로, 별도 조회 시 중복 데이터만 발생하므로 제외)
-        exchanges = ["NAS", "NYS", "AMS"]
+        # 해외 거래소 순회하며 보유 종목 통합 조회 (NASD는 미국 전역 통합 조회, AMEX/NYSE로 추가 보완)
+        exchanges = ["NASD", "AMEX", "NYSE"]
         all_holdings = []
+        seen_codes = set()
         last_error = ""
         exchange_results: Dict[str, Dict[str, Any]] = {}
 
@@ -869,8 +868,10 @@ class KISApiClient:
                                 "current_price": cur_p,
                                 "pnl_rate": pnl_rate
                             }
-                            all_holdings.append(holding_item)
                             exch_holdings.append(holding_item)
+                            if code not in seen_codes:
+                                seen_codes.add(code)
+                                all_holdings.append(holding_item)
 
                         # 다음 페이지 확인
                         ctx_fk = (data.get("ctx_area_fk200", "") or "").strip()
@@ -962,10 +963,10 @@ class KISApiClient:
         headers = self._get_headers(tr_id)
         logger.info(f"[해외체결잔고] API 호출 시작: tr_id={tr_id}, url={url}, mock={self.mock}, 기간={start_date}~{end_date}")
 
-        # 여러 거래소(NAS/NYS/AMS)를 순회하며 체결기준 보유 종목 통합 조회
-        # KIS API 거래소 코드: NAS=나스닥, NYS=뉴욕, AMS=아멕스 (TTTS3012R 기준)
-        exchanges = ["NAS", "NYS", "AMS"]
+        # 여러 거래소 순회하며 체결기준 보유 종목 통합 조회 (NASD는 미국 전역 통합 조회, AMEX/NYSE로 추가 보완)
+        exchanges = ["NASD", "AMEX", "NYSE"]
         all_holdings = []
+        seen_codes = set()
         last_error = ""
         exchange_results: Dict[str, Dict[str, Any]] = {}
 
@@ -1045,8 +1046,10 @@ class KISApiClient:
                                 "current_price": cur_p,
                                 "pnl_rate": pnl_rate
                             }
-                            all_holdings.append(holding_item)
                             exch_holdings.append(holding_item)
+                            if code not in seen_codes:
+                                seen_codes.add(code)
+                                all_holdings.append(holding_item)
 
                         # 다음 페이지 확인
                         ctx_fk = (data.get("ctx_area_fk200", "") or "").strip()

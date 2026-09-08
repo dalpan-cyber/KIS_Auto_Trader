@@ -324,9 +324,17 @@ class TraderBot:
                 prev_round = st.get("current_round", 0.0)
                 held_qty = int(self.holdings.get(symbol, {}).get("qty", 0))
 
-                # 실제 보유 수량이 확인되면 peak_qty 갱신 (전량 매도 판별 기준)
+                # 실제 보유 수량이 확인되면 peak_qty 갱신 및 상태/회차 자동 보정
                 if held_qty > 0:
                     self.infinite_state_mgr.update_peak_qty(symbol, held_qty)
+                    if prev_status == "IDLE":
+                        self.logger.info(f"▶ [{symbol}] 실계좌 보유 수량({held_qty}주) 확인: 상태를 IDLE -> BUYING으로 자동 활성화합니다.")
+                        self.infinite_state_mgr.start_buying(symbol)
+                        st = self.infinite_state_mgr.get_symbol_state(symbol)
+                    if prev_round == 0:
+                        self.logger.info(f"▶ [{symbol}] 실계좌 보유 수량({held_qty}주) 확인: 진행 회차를 0에서 1.0회차로 자동 보정합니다.")
+                        st["current_round"] = 1.0
+                        self.infinite_state_mgr.save_state()
 
                 # 진행 중(BUYING 상태이면서 1회차 이상 진행)이고,
                 # 이전에 실제 매수 체결 수량이 존재했었는데(peak_qty > 0) 실제 보유 수량이 0이 된 경우에만
@@ -440,7 +448,6 @@ class TraderBot:
                     )
                 self.risk_mgr.reset_error()
                 self.logger.info(f"🎉 [{symbol}] 해외주식 무한매수 {prop['action_kr']} 주문 성공!")
-                self.fetch_account_balance()
                 self.sync_holdings_to_state()
                 return True
             else:

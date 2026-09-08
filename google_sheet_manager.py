@@ -139,6 +139,14 @@ class GoogleSheetManager:
                 headers = ["설정키", "설정값", "설명", "최종갱신시각"]
                 self.settings_worksheet.append_row(headers)
 
+            # 3. 'State' 워크시트 준비 (무한매수 전략 진행 상태 - 회차, 상태 등)
+            try:
+                self.state_worksheet = self.spreadsheet.worksheet("State")
+            except Exception:
+                self.state_worksheet = self.spreadsheet.add_worksheet(title="State", rows="50", cols="10")
+                headers = ["티커", "시작일", "진행회차", "총예산($)", "목표수익률(%)", "상태", "최종갱신시각"]
+                self.state_worksheet.append_row(headers)
+
             self.is_connected = True
             logger.info(f"🟢 Google Sheets 연동 성공! (서비스 계정: {sa_email} | 시트: {self.spreadsheet.title})")
             return True

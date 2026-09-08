@@ -33,8 +33,25 @@ class InfiniteStateManager:
                 import config
                 config.load_settings_from_google_sheet(gss_instance=self.gss_mgr)
                 self._sync_states_with_config()
+                # 구글 시트 State 워크시트에서 진행 회차/상태 복원 (Streamlit Cloud 컨테이너 재시작 시 보존)
+                sheet_states = self.gss_mgr.read_states_from_sheet()
+                if sheet_states:
+                    modified = False
+                    for sym, s_st in sheet_states.items():
+                        if sym in self.states:
+                            if s_st.get("current_round", 0) > 0 and self.states[sym].get("current_round", 0) == 0:
+                                self.states[sym]["current_round"] = s_st["current_round"]
+                                modified = True
+                            if s_st.get("status") and s_st.get("status") != "IDLE" and self.states[sym].get("status") == "IDLE":
+                                self.states[sym]["status"] = s_st["status"]
+                                modified = True
+                        else:
+                            self.states[sym] = s_st
+                            modified = True
+                    if modified:
+                        self.save_state()
             except Exception as e:
-                logger.warning(f"구글 시트 설정 동기화 중 예외: {e}")
+                logger.warning(f"구글 시트 설정/상태 동기화 중 예외: {e}")
 
     def _sync_states_with_config(self):
         """config에 로드된 최신 종목별 설정값을 전략 상태(self.states)에 동기화 (진행 회차/상태는 유지)"""
@@ -79,13 +96,20 @@ class InfiniteStateManager:
         return self.states
 
     def save_state(self):
-        """현재 무한매수 전략 상태를 로컬 JSON 파일로 저장"""
+        """현재 무한매수 전략 상태를 로컬 JSON 파일로 저장 및 구글 시트 State 워크시트 백업"""
         try:
             with open(self.file_path, "w", encoding="utf-8") as f:
                 json.dump(self.states, f, ensure_ascii=False, indent=2)
             logger.debug("무한매수 상태 파일 저장 완료")
         except Exception as e:
             logger.error(f"무한매수 상태 파일 저장 실패: {e}")
+
+        # 구글 시트 연동 시 State 워크시트에 진행 회차/전략 상태 실시간 동기화
+        if hasattr(self, "gss_mgr") and self.gss_mgr and getattr(self.gss_mgr, "is_connected", False):
+            try:
+                self.gss_mgr.sync_all_states(self.states)
+            except Exception as e:
+                logger.debug(f"구글 시트 State 동기화 예외: {e}")
 
     def get_symbol_state(
         self,
