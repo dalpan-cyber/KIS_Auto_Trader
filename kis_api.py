@@ -41,8 +41,38 @@ class KISApiClient:
         self._mock_usd_deposit = 5000.0       # 가상 외화(USD) 예수금 ($5,000)
         self._mock_holdings: Dict[str, Dict[str, Any]] = {}
 
+        # 해외 주요 ETF/주식 거래소 매핑 및 런타임 캐시 (SOXL/SPXL 등 아멕스 종목 오주문 방지)
+        self._symbol_exchange_cache: Dict[str, str] = {
+            "TQQQ": "NAS", "QQQ": "NAS", "SQQQ": "NAS", "AAPL": "NAS", "MSFT": "NAS",
+            "NVDA": "NAS", "TSLA": "NAS", "GOOGL": "NAS", "AMZN": "NAS", "TSLL": "NAS", "NVDL": "NAS",
+            "SOXL": "AMS", "SOXS": "AMS", "SPY": "AMS", "SPXL": "AMS", "UPRO": "AMS",
+            "TECL": "AMS", "FNGU": "AMS", "BULZ": "AMS", "LABU": "AMS", "LABD": "AMS",
+            "TNA": "AMS", "TZA": "AMS", "FAS": "AMS", "FAZ": "AMS", "DPST": "AMS",
+            "BNKU": "AMS", "YINN": "AMS", "YANG": "AMS", "CWEB": "AMS"
+        }
+
         # 저장된 기존 토큰 파일 로드 시도
         self._load_token_file()
+
+    def get_symbol_exchange(self, symbol: str) -> str:
+        """
+        해외 종목의 상장 거래소 코드 반환 (NAS: 나스닥, AMS: 아멕스/NYSE Arca, NYS: 뉴욕)
+        - SOXL, SPXL 등은 아멕스(AMS/AMEX) 상장으로, 나스닥(NASD)으로 주문 시 API 거부됨
+        """
+        sym_upper = str(symbol).strip().upper()
+        if sym_upper in self._symbol_exchange_cache:
+            return self._symbol_exchange_cache[sym_upper]
+
+        # 캐시에 없으면 시세 조회를 통해 거래소 자동 감지
+        try:
+            price_res = self.get_overseas_stock_price(sym_upper)
+            if price_res.get("success") and price_res.get("exchange"):
+                self._symbol_exchange_cache[sym_upper] = price_res["exchange"]
+                return price_res["exchange"]
+        except Exception:
+            pass
+
+        return "NAS"
 
     def _rate_limit(self):
         """API 연쇄 호출 제한 안전 딜레이"""
@@ -164,8 +194,22 @@ class KISApiClient:
         """
         try:
             if res.status_code != 200:
+                # KIS API는 에러 시(장외 시간, 권한 부족 등) HTTP 400/500과 함께 JSON 본문으로 상세 사유 전달
+                try:
+                    err_json = res.json()
+                    if isinstance(err_json, dict):
+                        if "rt_cd" not in err_json:
+                            err_json["rt_cd"] = "1"
+                        if "msg_cd" not in err_json:
+                            err_json["msg_cd"] = f"HTTP_{res.status_code}"
+                        err_json["_http_status"] = res.status_code
+                        logger.warning(f"[{context}] HTTP {res.status_code} KIS API 에러 응답: {err_json.get('msg1', '')} (코드: {err_json.get('msg_cd')})")
+                        return err_json
+                except Exception:
+                    pass
+
                 body_preview = res.text[:300] if res.text else "(empty body)"
-                logger.warning(f"[{context}] HTTP {res.status_code} 응답 (JSON 아님 가능): {body_preview}")
+                logger.warning(f"[{context}] HTTP {res.status_code} 응답 (JSON 아님): {body_preview}")
                 return {
                     "rt_cd": "1",
                     "msg1": f"HTTP {res.status_code} 응답",
@@ -599,6 +643,7 @@ class KISApiClient:
                         last_price = float(last_str)
                         diff_val = float(output.get("diff", 0) or 0)
                         rate_val = float(output.get("rate", 0) or 0)
+                        self._symbol_exchange_cache[symbol_upper] = ex
                         return {
                             "success": True,
                             "code": symbol_upper,
@@ -1075,6 +1120,13 @@ class KISApiClient:
             logger.info(f"[시뮬레이션] 해외주식 {symbol_upper} {ord_name}{action_str} {qty}주 완료 (가격: ${price:.2f}, 외화잔고: ${self._mock_usd_deposit:.2f})")
             return {"success": True, "msg": f"[시뮬레이션] 해외 {symbol_upper} {ord_name}{action_str} 성공"}
 
+        # 종목별 상장 거래소 자동 판별 (exchange가 미지정이거나 NAS 기본값일 때 자동 보정)
+        target_exchange = exchange
+        if not target_exchange or target_exchange.upper() == "NAS":
+            auto_exch = self.get_symbol_exchange(symbol_upper)
+            if auto_exch:
+                target_exchange = auto_exch
+
         # 시세 조회 코드를 해외주식 주문 전용 거래소 코드로 자동 변환 (NAS->NASD, NYS->NYSE, AMS->AMEX)
         exchange_map = {
             "NAS": "NASD",
@@ -1084,7 +1136,8 @@ class KISApiClient:
             "NYSE": "NYSE",
             "AMEX": "AMEX"
         }
-        ovrs_excg_cd = exchange_map.get(exchange.upper(), "NASD")
+        ovrs_excg_cd = exchange_map.get(target_exchange.upper() if target_exchange else "NAS", "NASD")
+        logger.info(f"[{symbol_upper}] 해외주식 주문 거래소 결정: {target_exchange} -> {ovrs_excg_cd}")
 
         url = f"{self.url_base}/uapi/overseas-stock/v1/trading/order"
         tr_id = ("TTTT1002U" if buy else "TTTT1006U") if not self.mock else ("VTTT1002U" if buy else "VTTT1006U")

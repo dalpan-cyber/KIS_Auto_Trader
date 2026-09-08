@@ -315,6 +315,21 @@ def render_stock_detail(symbol: str, bot: TraderBot):
 
     # 2. 당일 주문 제안 + 즉시 실행 (제안/실행 통합 UI)
     st.markdown("#### ⚡ 당일 주문 제안 및 즉시 실행")
+
+    # 직전 주문 실행 결과 알림 표시 (리런 후에도 피드백 유지)
+    order_res_key = f"order_result_{symbol}"
+    if order_res_key in st.session_state:
+        prev_res = st.session_state.pop(order_res_key)
+        if prev_res.get("success") and prev_res.get("executed", 0) > 0:
+            st.success(f"🎉 [{symbol}] 주문이 정상 접수되었습니다! (성공: {prev_res['executed']}건)")
+        elif prev_res.get("failed", 0) > 0:
+            st.error(f"❌ [{symbol}] 주문 실행 실패! (성공: {prev_res.get('executed', 0)}건, 실패: {prev_res.get('failed', 0)}건)")
+        else:
+            st.info(f"ℹ️ [{symbol}] 실행된 주문이 없습니다.")
+        for msg in prev_res.get("messages", []):
+            st.write(f"- {msg}")
+        st.divider()
+
     s_orders = [o for o in orders if o["action"] == "SELL"]
     b_orders = [o for o in orders if o["action"] == "BUY"]
 
@@ -327,14 +342,7 @@ def render_stock_detail(symbol: str, bot: TraderBot):
         with btn_col1:
             if st.button("매도 실행", key=f"exec_sell_{symbol}", type="primary", width="stretch"):
                 result = bot.execute_daily_orders(symbol, action_filter="SELL")
-                if result["success"] and result["executed"] > 0:
-                    st.success(f"🎉 [{symbol}] 익절 매도 주문이 즉시 실행되었습니다! ({result['executed']}건)")
-                elif result["failed"] > 0:
-                    st.error(f"❌ [{symbol}] 익절 매도 주문 실행 중 오류 발생! (성공: {result['executed']}건, 실패: {result['failed']}건)")
-                else:
-                    st.info(f"ℹ️ [{symbol}] 실행할 익절 매도 주문이 없습니다.")
-                for msg in result["messages"]:
-                    st.caption(msg)
+                st.session_state[order_res_key] = result
                 st.rerun()
 
         if s_orders:
@@ -351,19 +359,13 @@ def render_stock_detail(symbol: str, bot: TraderBot):
         with btn_col2:
             if st.button("매수 실행", key=f"exec_buy_{symbol}", type="primary", width="stretch"):
                 result = bot.execute_daily_orders(symbol, action_filter="BUY")
-                if result["success"] and result["executed"] > 0:
-                    st.success(f"🎉 [{symbol}] 분할 매수 주문이 즉시 실행되었습니다! ({result['executed']}건)")
-                elif result["failed"] > 0:
-                    st.error(f"❌ [{symbol}] 분할 매수 주문 실행 중 오류 발생! (성공: {result['executed']}건, 실패: {result['failed']}건)")
-                else:
-                    st.info(f"ℹ️ [{symbol}] 실행할 분할 매수 주문이 없습니다.")
-                for msg in result["messages"]:
-                    st.caption(msg)
+                st.session_state[order_res_key] = result
                 st.rerun()
 
         if b_orders:
             for b in b_orders:
                 st.success(f"**LOC 매수**: ${b['price']:.2f} 이하 (수량: {b['qty']:,}주)")
+            st.caption("ℹ️ **LOC 주문 안내**: 장 마감 시점(새벽)에 체결되므로, 접수 직후에는 체결이 아닌 '미체결 접수' 상태로 유지됩니다. 하단 '거래요청 이력(미체결)'에서 접수 현황을 확인하실 수 있습니다.")
         else:
             st.write("매수 조건 미충족 또는 최대 회차 도달")
 

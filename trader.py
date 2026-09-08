@@ -58,6 +58,17 @@ class TraderBot:
         self.require_approval = False if is_github_actions else getattr(config, "REQUIRE_USER_APPROVAL", True)
 
         # 계좌 및 상태 데이터
+        self.total_eval_amount = 0.0
+        self.available_cash = 0.0
+        self.available_usd_cash = 5000.0  # 외화(USD) 예수금
+        self.exchange_rate = 1428.20       # 미국 원/달러 환율
+        self.holdings: Dict[str, Dict[str, Any]] = {}  # {symbol: {qty, avg_price, current_price, pnl_rate}}
+        self.current_prices: Dict[str, float] = {}
+
+        # 승인 대기 중인 매매 제안 목록 {proposal_id: proposal_dict}
+        self.pending_proposals: Dict[str, Dict[str, Any]] = {}
+
+        self.is_running = False
 
     def reload_settings_from_config(self):
         """config 모듈에 반영된 최신 설정을 봇 객체에 재동기화"""
@@ -77,17 +88,6 @@ class TraderBot:
             exhaust_target_roi=getattr(config, "INFINITE_EXHAUST_TARGET_ROI", 0.05)
         )
         self.logger.info(f"🔄 TraderBot 설정 재동기화 완료 (대상 종목: {self.infinite_stocks})")
-        self.total_eval_amount = 0.0
-        self.available_cash = 0.0
-        self.available_usd_cash = 5000.0  # 외화(USD) 예수금
-        self.exchange_rate = 1428.20       # 미국 원/달러 환율
-        self.holdings: Dict[str, Dict[str, Any]] = {}  # {symbol: {qty, avg_price, current_price, pnl_rate}}
-        self.current_prices: Dict[str, float] = {}
-
-        # 승인 대기 중인 매매 제안 목록 {proposal_id: proposal_dict}
-        self.pending_proposals: Dict[str, Dict[str, Any]] = {}
-
-        self.is_running = False
 
     def initialize_account(self) -> bool:
         """계좌 및 KIS Open API 인증 검증"""
@@ -324,12 +324,21 @@ class TraderBot:
                 prev_round = st.get("current_round", 0.0)
                 held_qty = int(self.holdings.get(symbol, {}).get("qty", 0))
 
-                # 진행 중(BUYING 상태이면서 1회차 이상 진행)이었는데 실제 보유 수량이 0이 된 경우 (전량 익절 매도 체결 완료)
-                if prev_status == "BUYING" and prev_round > 0 and held_qty == 0:
+                # 실제 보유 수량이 확인되면 peak_qty 갱신 (전량 매도 판별 기준)
+                if held_qty > 0:
+                    self.infinite_state_mgr.update_peak_qty(symbol, held_qty)
+
+                # 진행 중(BUYING 상태이면서 1회차 이상 진행)이고,
+                # 이전에 실제 매수 체결 수량이 존재했었는데(peak_qty > 0) 실제 보유 수량이 0이 된 경우에만
+                # 실제 전량 익절 매도 체결 완료로 판단! (당일 LOC 매수 주문 직후 held_qty=0인 신규 회차는 제외)
+                peak_qty = st.get("peak_qty", 0)
+                if prev_status == "BUYING" and prev_round > 0 and peak_qty > 0 and held_qty == 0:
                     self.logger.info(
-                        f"🎊 [{symbol}] 전량 익절 매도 체결 확인! 무한매수 {prev_round}회차 사이클 완료 처리합니다."
+                        f"🎊 [{symbol}] 전량 익절 매도 체결 확인! (보유: {peak_qty}주 -> 0주) 무한매수 {prev_round}회차 사이클 완료 처리합니다."
                     )
-                    self.infinite_state_mgr.complete_round(symbol, avg_price=0.0, sell_price=0.0, qty=0)
+                    avg_p = float(self.holdings.get(symbol, {}).get("avg_price", 0.0))
+                    cur_p = self.current_prices.get(symbol, 0.0)
+                    self.infinite_state_mgr.complete_round(symbol, avg_price=avg_p, sell_price=cur_p, qty=peak_qty)
 
     def start_infinite_buying(self, symbol: str):
         """특정 종목의 무한매수 수동 시작"""
@@ -499,6 +508,12 @@ class TraderBot:
             exhaust_action=stock_cfg["exhaust_action"],
             exhaust_target_roi=stock_cfg["exhaust_target_roi"]
         )
+        # 신규 등록 종목이 IDLE 상태인 경우, 매수 주문 실행 시 자동으로 BUYING 상태로 전환
+        if action_filter in ("ALL", "BUY") and state.get("status") == "IDLE":
+            self.logger.info(f"▶ [{symbol}] 매수 주문 실행에 따라 상태를 IDLE -> BUYING으로 활성화합니다.")
+            self.infinite_state_mgr.start_buying(symbol)
+            state = self.infinite_state_mgr.get_symbol_state(symbol)
+
         actual_held_qty = int(self.holdings.get(symbol, {}).get("qty", 0))
         actual_avg_p = float(self.holdings.get(symbol, {}).get("avg_price", 0.0))
 
@@ -571,7 +586,6 @@ class TraderBot:
 
         # 주문 실행 후 계좌/구글시트 동기화
         if result["executed"] > 0:
-            self.fetch_account_balance()
             self.sync_holdings_to_state()
 
         result["success"] = (result["failed"] == 0)

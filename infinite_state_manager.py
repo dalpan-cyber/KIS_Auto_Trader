@@ -114,13 +114,16 @@ class InfiniteStateManager:
                 "exhaust_action": str(exhaust_action).strip().upper(),
                 "exhaust_target_roi": exhaust_target_roi,
                 "status": "IDLE",  # IDLE, BUYING, COMPLETED, PAUSED_MAX
+                "peak_qty": 0,
             }
             self.save_state()
-        # 기존 상태에 exhaust_action/exhaust_target_roi가 없으면 기본값 추가 (하위 호환성)
+        # 기존 상태에 exhaust_action/exhaust_target_roi/peak_qty가 없으면 기본값 추가 (하위 호환성)
         if "exhaust_action" not in self.states[symbol_upper]:
             self.states[symbol_upper]["exhaust_action"] = str(exhaust_action).strip().upper()
         if "exhaust_target_roi" not in self.states[symbol_upper]:
             self.states[symbol_upper]["exhaust_target_roi"] = exhaust_target_roi
+        if "peak_qty" not in self.states[symbol_upper]:
+            self.states[symbol_upper]["peak_qty"] = 0
         return self.states[symbol_upper]
 
     def update_budget(self, symbol: str, total_budget_usd: float):
@@ -204,6 +207,7 @@ class InfiniteStateManager:
         state["exhaust_target_roi"] = exhaust_target_roi
         state["current_round"] = 0
         state["status"] = "IDLE"
+        state["peak_qty"] = 0
         state["start_date"] = datetime.now().strftime("%Y-%m-%d")
         logger.info(f"🔄 [{symbol}] 무한매수 설정 변경으로 전체 초기화 완료! (예산: ${total_budget_usd:,.0f}, 분할: {division_count}회, 목표수익률: +{target_roi*100:.1f}%, 소진대응: {exhaust_action}, 상태: IDLE)")
         self.save_state()
@@ -227,8 +231,16 @@ class InfiniteStateManager:
         state = self.get_symbol_state(symbol)
         state["current_round"] = 0
         state["status"] = "IDLE"
+        state["peak_qty"] = 0
         logger.info(f"🔄 [{symbol}] 무한매수 회차 초기화 완료! (상태: IDLE)")
         self.save_state()
+
+    def update_peak_qty(self, symbol: str, held_qty: int):
+        """실제 보유 수량 발생 시 peak_qty 갱신 (전량 매도 판별용)"""
+        state = self.get_symbol_state(symbol)
+        if held_qty > state.get("peak_qty", 0):
+            state["peak_qty"] = held_qty
+            self.save_state()
 
     def advance_round(self, symbol: str, round_inc: float = 0.5):
         """매수 주문 접수/체결 시 진행 회차 증가"""
@@ -268,4 +280,5 @@ class InfiniteStateManager:
 
         state["current_round"] = 0
         state["status"] = "COMPLETED"
+        state["peak_qty"] = 0
         self.save_state()

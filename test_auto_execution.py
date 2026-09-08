@@ -315,6 +315,92 @@ def test_google_sheet_priority_loading():
                 f.write(original_settings_content)
 
 
+def test_soxl_exchange_and_execution():
+    """SOXL 등 아멕스(AMEX) 상장 종목 거래소 자동 감지 및 주문 실행 검증"""
+    print("\n=== Test: SOXL 등 종목별 거래소 자동 감지 및 매수 실행 ===")
+    from kis_api import KISApiClient
+    from trader import TraderBot
+
+    api = KISApiClient(mock=True)
+    
+    # 1. 거래소 자동 감지 검증
+    assert api.get_symbol_exchange("SOXL") == "AMS", f"SOXL 거래소 오류: {api.get_symbol_exchange('SOXL')}"
+    assert api.get_symbol_exchange("TQQQ") == "NAS", f"TQQQ 거래소 오류: {api.get_symbol_exchange('TQQQ')}"
+    assert api.get_symbol_exchange("SPXL") == "AMS", f"SPXL 거래소 오류: {api.get_symbol_exchange('SPXL')}"
+    print("  ✅ 종목별 거래소 자동 매핑 정상: SOXL->AMS, TQQQ->NAS, SPXL->AMS")
+
+    # 2. TraderBot의 execute_daily_orders(SOXL) 시뮬레이션
+    bot = TraderBot(api)
+    from infinite_state_manager import InfiniteStateManager
+    bot.infinite_state_mgr = InfiniteStateManager(file_path=TEST_STATE_FILE, enable_gss=False)
+    bot.fetch_account_balance = lambda: None  # 테스트 중 불필요한 네트워크 API 호출 방지
+    bot.holdings["SOXL"] = {"qty": 0, "avg_price": 0.0}
+    bot.current_prices["SOXL"] = 25.0
+
+    # 주문 호출 캡처용 mock
+    order_calls = []
+    def mock_order(symbol, qty, price=0, buy=True, exchange="NAS", ord_type="00", **kwargs):
+        eff_exch = api.get_symbol_exchange(symbol) if exchange == "NAS" else exchange
+        exchange_map = {"NAS": "NASD", "NYS": "NYSE", "AMS": "AMEX", "NASD": "NASD", "NYSE": "NYSE", "AMEX": "AMEX"}
+        ovrs_excg_cd = exchange_map.get(eff_exch.upper(), "NASD")
+        order_calls.append({
+            "symbol": symbol, "qty": qty, "price": price, "buy": buy,
+            "exchange": eff_exch, "ovrs_excg_cd": ovrs_excg_cd, "ord_type": ord_type
+        })
+        return {"success": True, "msg": "주문 성공", "data": {"ODNO": "MOCK_9999"}}
+    api.order_overseas_cash = mock_order
+
+    # SOXL 상태를 IDLE로 시작
+    bot.infinite_state_mgr.states["SOXL"] = {
+        "symbol": "SOXL",
+        "start_date": "2026-09-08",
+        "total_budget_usd": 5000.0,
+        "division_count": 40,
+        "current_round": 0,
+        "target_roi": 0.10,
+        "exhaust_action": "HOLD",
+        "exhaust_target_roi": 0.05,
+        "status": "IDLE",
+        "peak_qty": 0
+    }
+
+    # 매수 실행
+    res = bot.execute_daily_orders("SOXL", action_filter="BUY")
+    assert res["success"], f"주문 실행 실패: {res}"
+    assert res["executed"] == 2, f"0.5회차 매수 2건 미실행: {res['executed']}"
+    assert len(order_calls) == 2, f"주문 호출 수 오류: {len(order_calls)}"
+    
+    # 두 주문 모두 거래소 코드가 AMEX(AMS)로 전달되었는지 검증
+    for call in order_calls:
+        assert call["exchange"] == "AMS", f"거래소 불일치: {call['exchange']}"
+        assert call["ovrs_excg_cd"] == "AMEX", f"OVRS_EXCG_CD 불일치: {call['ovrs_excg_cd']}"
+    print(f"  ✅ SOXL 주문 거래소 AMEX(AMS) 매핑 검증 완료: {[c['ovrs_excg_cd'] for c in order_calls]}")
+
+    # IDLE 상태에서 BUYING 상태로 자동 전환되었는지 검증 (held_qty=0임에도 조기 COMPLETED되지 않고 BUYING 유지)
+    soxl_st = bot.infinite_state_mgr.get_symbol_state("SOXL")
+    assert soxl_st["status"] == "BUYING", f"상태가 BUYING으로 전환되지 않음: {soxl_st['status']}"
+    assert soxl_st["current_round"] == 1.0, f"회차가 1.0으로 증가하지 않음: {soxl_st['current_round']}"
+    print("  ✅ SOXL IDLE -> BUYING 자동 전환 및 2건 분할 매수 접수 성공 (회차: 1.0, 상태: BUYING 유지)")
+
+    # 3. 체결 후 실제 매수 수량 반영 시뮬레이션 (held_qty: 10주)
+    bot.holdings["SOXL"] = {"qty": 10, "avg_price": 25.0}
+    bot.sync_holdings_to_state()
+    soxl_st = bot.infinite_state_mgr.get_symbol_state("SOXL")
+    assert soxl_st["peak_qty"] == 10, f"peak_qty 갱신 실패: {soxl_st.get('peak_qty')}"
+    assert soxl_st["status"] == "BUYING", f"체결 보유 중 상태 오류: {soxl_st['status']}"
+    print("  ✅ SOXL 실계좌 체결 반영: peak_qty=10 갱신 및 BUYING 유지 확인")
+
+    # 4. 전량 익절 매도 체결 시뮬레이션 (held_qty: 0주)
+    bot.holdings["SOXL"] = {"qty": 0, "avg_price": 0.0}
+    bot.sync_holdings_to_state()
+    soxl_st = bot.infinite_state_mgr.get_symbol_state("SOXL")
+    assert soxl_st["status"] == "COMPLETED", f"전량 매도 후 COMPLETED 미전환: {soxl_st['status']}"
+    assert soxl_st["current_round"] == 0, f"전량 매도 후 회차 리셋 실패: {soxl_st['current_round']}"
+    assert soxl_st["peak_qty"] == 0, f"전량 매도 후 peak_qty 리셋 실패: {soxl_st.get('peak_qty')}"
+    print("  ✅ SOXL 전량 매도 체결 감지: COMPLETED 전환 및 회차/peak_qty 리셋 검증 완료")
+    print("  ✅ PASS")
+
+
 if __name__ == "__main__":
     original_file_content = None
     if os.path.exists("infinite_settings.json"):
@@ -326,6 +412,7 @@ if __name__ == "__main__":
         test_auto_execution_with_multiple_stocks()
         test_google_sheet_settings_sync()
         test_google_sheet_priority_loading()
+        test_soxl_exchange_and_execution()
     finally:
         # 테스트 후 임시 파일 정리
         if os.path.exists(TEST_STATE_FILE):
