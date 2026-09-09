@@ -199,9 +199,22 @@ class InfiniteBuyingStrategy(BaseStrategy):
 
         is_exhausted = (curr_round >= division)
 
-        # 1. 익절 매도 주문 제안 (보유 수량이 있는 경우)
+        status = state.get("status", "IDLE")
+        paused_sell_price = float(state.get("paused_sell_price", 0.0) or 0.0)
+
+        # 1. 익절/지정 매도 주문 제안 (보유 수량이 있는 경우)
         if total_qty > 0 and avg_price > 0:
-            if is_exhausted and exhaust_action == "LOWER_TARGET":
+            if status == "PAUSED" and paused_sell_price > 0:
+                sell_target_price = round(paused_sell_price, 2)
+                orders.append({
+                    "action": "SELL",
+                    "symbol": symbol,
+                    "qty": total_qty,
+                    "price": sell_target_price,
+                    "ord_type": "00",  # 지정가 매도
+                    "desc": f"전량 매도 (투자 일시중지 지정가: ${sell_target_price:.2f})"
+                })
+            elif is_exhausted and exhaust_action == "LOWER_TARGET":
                 eff_roi = exhaust_target_roi
                 sell_target_price = round(avg_price * (1.0 + eff_roi), 2)
                 orders.append({
@@ -223,9 +236,8 @@ class InfiniteBuyingStrategy(BaseStrategy):
                     "desc": f"전량 익절 매도 (목표가: ${sell_target_price:.2f}, +{target_roi*100:.1f}%)"
                 })
 
-        status = state.get("status", "IDLE")
         if status in ["STOPPED", "PAUSED"]:
-            self.logger.info(f"[{symbol}] 무한매수 강제 중지 상태({status})입니다. 매수 주문 생성을 생략합니다.")
+            self.logger.info(f"[{symbol}] 무한매수 일시/강제 중지 상태({status})입니다. 매수 주문 생성을 생략합니다.")
             return orders
 
         # 2. 매수 및 40회차 소진 대응 주문 제안

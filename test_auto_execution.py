@@ -401,6 +401,96 @@ def test_soxl_exchange_and_execution():
     print("  ✅ PASS")
 
 
+def test_pause_and_resume_flow():
+    """종목별 투자 일시중지(PAUSED) 및 재개(BUYING), 지정 매도가 매도 검증"""
+    print("\n=== Test: 투자 일시중지 / 재개 및 지정 매도가 동작 ===")
+    from unittest.mock import MagicMock
+    from trader import TraderBot
+    from kis_api import KISApiClient
+    from infinite_state_manager import InfiniteStateManager
+
+    mgr = InfiniteStateManager(file_path=TEST_STATE_FILE, enable_gss=False)
+    api = KISApiClient()
+    api.is_overseas_symbol = MagicMock(return_value=True)
+    api.get_stock_price = MagicMock(return_value={"success": True, "price": "28.50"})
+
+    order_calls = []
+    def mock_order(symbol, qty, price=0.0, buy=True, ord_type="00"):
+        order_calls.append({"symbol": symbol, "qty": qty, "price": price, "buy": buy, "ord_type": ord_type})
+        return {"success": True, "msg": "주문 성공", "data": {"ODNO": "MOCK_7777"}}
+    api.order_overseas_cash = mock_order
+
+    bot = TraderBot(api=api)
+    bot.infinite_state_mgr = mgr
+    bot.holdings["SOXL"] = {"qty": 10, "avg_price": 25.0}
+
+    # 1. 초기 운용 상태 (BUYING)
+    mgr.states["SOXL"] = {
+        "symbol": "SOXL",
+        "start_date": "2026-09-08",
+        "total_budget_usd": 5000.0,
+        "division_count": 40,
+        "current_round": 2.0,
+        "target_roi": 0.10,
+        "exhaust_action": "HOLD",
+        "exhaust_target_roi": 0.05,
+        "status": "BUYING",
+        "peak_qty": 10,
+        "paused_sell_price": 0.0
+    }
+
+    # 2. 투자 일시중지 설정 (지정 매도가 $32.00)
+    bot.pause_infinite_buying("SOXL", sell_price=32.0)
+    st = mgr.get_symbol_state("SOXL")
+    assert st["status"] == "PAUSED", f"상태가 PAUSED가 아님: {st['status']}"
+    assert st["paused_sell_price"] == 32.0, f"paused_sell_price 오류: {st['paused_sell_price']}"
+    print("  ✅ 1. SOXL 투자 일시중지 설정 완료 (status: PAUSED, paused_sell_price: $32.00)")
+
+    # 3. 일시중지 상태에서 당일 주문 생성 시 매수 주문은 0건, 매도 주문은 지정가 $32.00로 생성되는지 검증
+    orders = bot.infinite_strategy.generate_daily_orders("SOXL", 28.50, st, avg_price=25.0, total_qty=10)
+    buy_orders = [o for o in orders if o["action"] == "BUY"]
+    sell_orders = [o for o in orders if o["action"] == "SELL"]
+    assert len(buy_orders) == 0, f"일시중지 상태인데 매수 주문이 생성됨: {buy_orders}"
+    assert len(sell_orders) == 1, f"일시중지 상태 지정 매도 주문 누락: {sell_orders}"
+    assert sell_orders[0]["price"] == 32.0, f"지정 매도가 불일치: {sell_orders[0]['price']}"
+    assert sell_orders[0]["qty"] == 10, f"매도 수량 불일치: {sell_orders[0]['qty']}"
+    print("  ✅ 2. 주문 생성 검증: 매수 주문 0건 차단 확인, 전량 매도 주문 $32.00(10주) 확인")
+
+    # 4. 일시중지 상태에서 매수 주문 실행(BUY) 시도 시 즉시 차단 검증
+    res_buy = bot.execute_daily_orders("SOXL", action_filter="BUY")
+    assert res_buy["executed"] == 0, f"일시중지 중 매수 주문이 실행됨: {res_buy}"
+    assert any("차단" in m for m in res_buy["messages"]), f"차단 메시지 누락: {res_buy['messages']}"
+    print("  ✅ 3. execute_daily_orders(BUY) 호출 시 매수 발주 차단 검증 완료")
+
+    # 5. 일시중지 상태에서 매도 주문 실행(SELL) 시 지정가 $32.00로 정상 발주 검증
+    order_calls.clear()
+    res_sell = bot.execute_daily_orders("SOXL", action_filter="SELL")
+    assert res_sell["executed"] == 1, f"매도 주문 실행 실패: {res_sell}"
+    assert len(order_calls) == 1
+    assert order_calls[0]["price"] == 32.0
+    assert order_calls[0]["buy"] is False
+    print("  ✅ 4. execute_daily_orders(SELL) 호출 시 지정 매도가 $32.00 발주 검증 완료")
+
+    # 6. 실계좌 동기화(sync_holdings_to_state) 시 PAUSED 상태가 BUYING으로 풀리지 않는지 검증
+    bot.sync_holdings_to_state()
+    st_after_sync = mgr.get_symbol_state("SOXL")
+    assert st_after_sync["status"] == "PAUSED", f"sync_holdings_to_state 후 PAUSED 상태 훼손됨: {st_after_sync['status']}"
+    print("  ✅ 5. sync_holdings_to_state 실행 후에도 PAUSED 상태 보존 검증 완료")
+
+    # 7. 투자 재개 (resume_infinite_buying) 검증
+    bot.resume_infinite_buying("SOXL")
+    st_resumed = mgr.get_symbol_state("SOXL")
+    assert st_resumed["status"] == "BUYING", f"재개 후 BUYING 미복원: {st_resumed['status']}"
+    assert st_resumed["paused_sell_price"] == 0.0, f"재개 후 paused_sell_price 초기화 실패: {st_resumed['paused_sell_price']}"
+
+    # 재개 후 주문 생성 시 분할 매수 주문이 다시 정상 생성되는지 확인
+    resumed_orders = bot.infinite_strategy.generate_daily_orders("SOXL", 28.50, st_resumed, avg_price=25.0, total_qty=10)
+    resumed_buy_orders = [o for o in resumed_orders if o["action"] == "BUY"]
+    assert len(resumed_buy_orders) > 0, f"재개 후 매수 주문 미생성: {resumed_orders}"
+    print("  ✅ 6. resume_infinite_buying 후 BUYING 상태 복원 및 매수 주문 재개 검증 완료")
+    print("  ✅ PASS")
+
+
 if __name__ == "__main__":
     original_file_content = None
     if os.path.exists("infinite_settings.json"):
@@ -413,6 +503,7 @@ if __name__ == "__main__":
         test_google_sheet_settings_sync()
         test_google_sheet_priority_loading()
         test_soxl_exchange_and_execution()
+        test_pause_and_resume_flow()
     finally:
         # 테스트 후 임시 파일 정리
         if os.path.exists(TEST_STATE_FILE):

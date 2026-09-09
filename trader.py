@@ -357,6 +357,14 @@ class TraderBot:
         """특정 종목의 무한매수 강제 중지"""
         self.infinite_state_mgr.stop_buying(symbol)
 
+    def pause_infinite_buying(self, symbol: str, sell_price: float = 0.0):
+        """특정 종목의 투자 일시중지 (매수 차단, 지정 매도가 설정 시 매도만 허용)"""
+        self.infinite_state_mgr.pause_buying(symbol, sell_price=sell_price)
+
+    def resume_infinite_buying(self, symbol: str):
+        """특정 종목의 투자 재개 (정상 매수/매도 재개)"""
+        self.infinite_state_mgr.resume_buying(symbol)
+
     def create_proposal(
         self,
         symbol: str,
@@ -520,6 +528,13 @@ class TraderBot:
             self.logger.info(f"▶ [{symbol}] 매수 주문 실행에 따라 상태를 IDLE -> BUYING으로 활성화합니다.")
             self.infinite_state_mgr.start_buying(symbol)
             state = self.infinite_state_mgr.get_symbol_state(symbol)
+
+        # 투자 일시중지(PAUSED) 상태일 때 매수 주문 요청(BUY)이면 즉시 차단
+        if state.get("status") == "PAUSED" and action_filter == "BUY":
+            msg = f"⏸ [{symbol}] 현재 '투자 일시중지' 상태입니다. 매수 주문이 차단되었습니다."
+            self.logger.info(msg)
+            result["messages"].append(msg)
+            return result
 
         actual_held_qty = int(self.holdings.get(symbol, {}).get("qty", 0))
         actual_avg_p = float(self.holdings.get(symbol, {}).get("avg_price", 0.0))

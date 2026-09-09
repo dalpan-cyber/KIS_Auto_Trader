@@ -139,15 +139,18 @@ class InfiniteStateManager:
                 "exhaust_target_roi": exhaust_target_roi,
                 "status": "IDLE",  # IDLE, BUYING, COMPLETED, PAUSED_MAX
                 "peak_qty": 0,
+                "paused_sell_price": 0.0,
             }
             self.save_state()
-        # 기존 상태에 exhaust_action/exhaust_target_roi/peak_qty가 없으면 기본값 추가 (하위 호환성)
+        # 기존 상태에 exhaust_action/exhaust_target_roi/peak_qty/paused_sell_price가 없으면 기본값 추가 (하위 호환성)
         if "exhaust_action" not in self.states[symbol_upper]:
             self.states[symbol_upper]["exhaust_action"] = str(exhaust_action).strip().upper()
         if "exhaust_target_roi" not in self.states[symbol_upper]:
             self.states[symbol_upper]["exhaust_target_roi"] = exhaust_target_roi
         if "peak_qty" not in self.states[symbol_upper]:
             self.states[symbol_upper]["peak_qty"] = 0
+        if "paused_sell_price" not in self.states[symbol_upper]:
+            self.states[symbol_upper]["paused_sell_price"] = 0.0
         return self.states[symbol_upper]
 
     def update_budget(self, symbol: str, total_budget_usd: float):
@@ -232,6 +235,7 @@ class InfiniteStateManager:
         state["current_round"] = 0
         state["status"] = "IDLE"
         state["peak_qty"] = 0
+        state["paused_sell_price"] = 0.0
         state["start_date"] = datetime.now().strftime("%Y-%m-%d")
         logger.info(f"🔄 [{symbol}] 무한매수 설정 변경으로 전체 초기화 완료! (예산: ${total_budget_usd:,.0f}, 분할: {division_count}회, 목표수익률: +{target_roi*100:.1f}%, 소진대응: {exhaust_action}, 상태: IDLE)")
         self.save_state()
@@ -247,7 +251,25 @@ class InfiniteStateManager:
         """무한매수 강제 중지 (상태를 STOPPED로 설정)"""
         state = self.get_symbol_state(symbol)
         state["status"] = "STOPPED"
+        state["paused_sell_price"] = 0.0
         logger.info(f"⏹ [{symbol}] 무한매수 강제 중지 완료! (상태: STOPPED)")
+        self.save_state()
+
+    def pause_buying(self, symbol: str, sell_price: float = 0.0):
+        """투자 일시중지 (상태를 PAUSED로 설정, 지정 매도가 설정 시 매도만 가능)"""
+        state = self.get_symbol_state(symbol)
+        state["status"] = "PAUSED"
+        state["paused_sell_price"] = float(sell_price) if sell_price else 0.0
+        sell_msg = f", 지정 매도가: ${sell_price:.2f}" if sell_price > 0 else " (매수 중단, 기본 익절 매도 유지)"
+        logger.info(f"⏸ [{symbol}] 투자 일시중지 설정 완료!{sell_msg} (상태: PAUSED)")
+        self.save_state()
+
+    def resume_buying(self, symbol: str):
+        """투자 재개 (상태를 BUYING으로 복원, 분할 매수 재개)"""
+        state = self.get_symbol_state(symbol)
+        state["status"] = "BUYING"
+        state["paused_sell_price"] = 0.0
+        logger.info(f"▶ [{symbol}] 투자 재개 완료! (상태: BUYING, 매수/매도 정상 가동)")
         self.save_state()
 
     def reset_round(self, symbol: str):
@@ -256,6 +278,7 @@ class InfiniteStateManager:
         state["current_round"] = 0
         state["status"] = "IDLE"
         state["peak_qty"] = 0
+        state["paused_sell_price"] = 0.0
         logger.info(f"🔄 [{symbol}] 무한매수 회차 초기화 완료! (상태: IDLE)")
         self.save_state()
 
@@ -305,4 +328,5 @@ class InfiniteStateManager:
         state["current_round"] = 0
         state["status"] = "COMPLETED"
         state["peak_qty"] = 0
+        state["paused_sell_price"] = 0.0
         self.save_state()

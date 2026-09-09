@@ -248,8 +248,10 @@ def render_stock_detail(symbol: str, bot: TraderBot):
             cur_p = float(p_res["price"])
             bot.current_prices[symbol] = cur_p
 
+    paused_sp = float(st_data.get("paused_sell_price", 0.0))
     status_map = {
         "BUYING": f"🟢 무한매수 운용 중 (BUYING - {curr_round}/{div_count}회차)",
+        "PAUSED": f"⏸ 투자 일시중지 (PAUSED{f' - 지정 매도가: ${paused_sp:.2f}' if paused_sp > 0 else ' - 매수 중단'})",
         "STOPPED": "🔴 운용 강제 중지됨 (STOPPED)",
         "IDLE": "🟡 시작 전 대기 (IDLE)",
         "COMPLETED": "🔵 전량 익절 완료 (COMPLETED - 사이클 종료)"
@@ -286,6 +288,53 @@ def render_stock_detail(symbol: str, bot: TraderBot):
 
     st.caption(f"**상태**: {status_display} | **전략 시작일**: {st_data.get('start_date', '-')} | **총 예산**: ${budget:,.2f} | **소진 시 대응**: {exhaust_name}")
     st.progress(min(1.0, max(0.0, float(curr_round) / float(div_count))))
+
+    # 종목 제어 버튼 (투자 일시중지 / 재개, 시작일 변경)
+    c_btn1, c_btn2, c_btn_space = st.columns([1.5, 1.5, 5])
+    with c_btn1:
+        if raw_status == "PAUSED":
+            if st.button("▶ 투자 재개", key=f"resume_btn_{symbol}", type="primary", width="stretch"):
+                bot.resume_infinite_buying(symbol)
+                st.success(f"[{symbol}] 투자가 정상 재개되었습니다.")
+                st.rerun()
+        else:
+            with st.popover("⏸ 투자 일시중지", width="stretch"):
+                st.markdown(f"**[{symbol}] 투자 일시중지 설정**")
+                st.caption("일시중지 시 자동/수동 매수가 차단되며, 지정 매도가로 매도 주문만 가능합니다.")
+                default_sp = float(round(avg_p * 1.10, 2)) if avg_p > 0 else float(round(cur_p, 2))
+                pause_sp_input = st.number_input(
+                    "지정 매도가 ($)",
+                    min_value=0.0,
+                    value=default_sp,
+                    step=0.1,
+                    key=f"pause_price_input_{symbol}",
+                    help="일시중지 중 발주할 전량 매도 목표가 (0 입력 시 기본 익절가 유지)"
+                )
+                if st.button("일시중지 적용", key=f"confirm_pause_{symbol}", type="primary", width="stretch"):
+                    bot.pause_infinite_buying(symbol, sell_price=pause_sp_input)
+                    st.success(f"[{symbol}] 투자가 일시중지되었습니다.")
+                    st.rerun()
+    with c_btn2:
+        with st.popover("⚙️ 시작일 변경", width="stretch"):
+            curr_sd_str = st_data.get("start_date", datetime.date.today().strftime("%Y-%m-%d"))
+            try:
+                curr_sd_obj = datetime.datetime.strptime(curr_sd_str, "%Y-%m-%d").date()
+            except Exception:
+                curr_sd_obj = datetime.date.today()
+            new_sd = st.date_input("전략 시작일 지정", value=curr_sd_obj, key=f"sd_input_{symbol}")
+            if st.button("시작일 저장", key=f"sd_save_{symbol}", width="stretch"):
+                new_sd_str = new_sd.strftime("%Y-%m-%d")
+                bot.infinite_state_mgr.update_start_date(symbol, new_sd_str)
+                st.success(f"전략 시작일이 {new_sd_str}로 변경되었습니다.")
+                st.rerun()
+
+    # 일시중지 상태 안내 배너
+    if raw_status == "PAUSED":
+        paused_sp_display = f"${paused_sp:.2f}" if paused_sp > 0 else "기본 익절가(+10%)"
+        st.warning(
+            f"⏸ **[{symbol}] 투자 일시중지 상태**: 매수 주문이 원천 차단됩니다. "
+            f"전량 매도는 지정 매도가({paused_sp_display})로 주문 가능합니다."
+        )
 
     # 40회차 소진 시 대응 모드 상태 배너 표시
     is_exhausted = (curr_round >= div_count)
@@ -338,7 +387,7 @@ def render_stock_detail(symbol: str, bot: TraderBot):
         # 헤더 + 실행 버튼을 같은 라인에 배치
         hdr_col1, btn_col1 = st.columns([3, 1])
         with hdr_col1:
-            st.markdown("#### 🔴 당일 전량 익절 매도 주문 (지정가)")
+            st.markdown("#### 🔴 당일 전량 매도 주문 (지정가)")
         with btn_col1:
             if st.button("매도 실행", key=f"exec_sell_{symbol}", type="primary", width="stretch"):
                 result = bot.execute_daily_orders(symbol, action_filter="SELL")
@@ -347,9 +396,10 @@ def render_stock_detail(symbol: str, bot: TraderBot):
 
         if s_orders:
             for s in s_orders:
-                st.info(f"**익절 매도**: ${s['price']:.2f} (수량: {s['qty']:,}주 / +10% 익절)")
+                desc_str = s.get('desc', '')
+                st.info(f"**매도 주문**: ${s['price']:.2f} (수량: {s['qty']:,}주 | {desc_str})")
         else:
-            st.write("보유 수량이 없거나 익절 조건 미충족")
+            st.write("보유 수량이 없거나 매도 조건 미충족")
 
     with col_det2:
         # 헤더 + 실행 버튼을 같은 라인에 배치
@@ -357,33 +407,20 @@ def render_stock_detail(symbol: str, bot: TraderBot):
         with hdr_col2:
             st.markdown("#### 🟢 당일 분할 매수 주문 (LOC)")
         with btn_col2:
-            if st.button("매수 실행", key=f"exec_buy_{symbol}", type="primary", width="stretch"):
+            is_paused = (raw_status == "PAUSED")
+            if st.button("매수 실행", key=f"exec_buy_{symbol}", type="primary" if not is_paused else "secondary", width="stretch", disabled=is_paused):
                 result = bot.execute_daily_orders(symbol, action_filter="BUY")
                 st.session_state[order_res_key] = result
                 st.rerun()
 
-        if b_orders:
+        if is_paused:
+            st.info("⏸ 투자 일시중지 상태로 매수 주문이 비활성화되었습니다.")
+        elif b_orders:
             for b in b_orders:
                 st.success(f"**LOC 매수**: ${b['price']:.2f} 이하 (수량: {b['qty']:,}주)")
             st.caption("ℹ️ **LOC 주문 안내**: 장 마감 시점(새벽)에 체결되므로, 접수 직후에는 체결이 아닌 '미체결 접수' 상태로 유지됩니다. 하단 '거래요청 이력(미체결)'에서 접수 현황을 확인하실 수 있습니다.")
         else:
             st.write("매수 조건 미충족 또는 최대 회차 도달")
-
-    st.markdown("---")
-
-    # 3. 전략 시작일 변경
-    with st.popover("⚙️ 전략 시작일 변경"):
-        curr_sd_str = st_data.get("start_date", datetime.date.today().strftime("%Y-%m-%d"))
-        try:
-            curr_sd_obj = datetime.datetime.strptime(curr_sd_str, "%Y-%m-%d").date()
-        except Exception:
-            curr_sd_obj = datetime.date.today()
-        new_sd = st.date_input("전략 시작일 지정", value=curr_sd_obj, key=f"sd_input_{symbol}")
-        if st.button("시작일 저장", key=f"sd_save_{symbol}"):
-            new_sd_str = new_sd.strftime("%Y-%m-%d")
-            bot.infinite_state_mgr.update_start_date(symbol, new_sd_str)
-            st.success(f"전략 시작일이 {new_sd_str}로 변경되었습니다.")
-            st.rerun()
 
     st.markdown("---")
 
