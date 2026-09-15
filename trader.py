@@ -323,9 +323,70 @@ class TraderBot:
                 prev_status = st.get("status", "IDLE")
                 prev_round = st.get("current_round", 0.0)
                 held_qty = int(self.holdings.get(symbol, {}).get("qty", 0))
+                peak_qty = st.get("peak_qty", 0)
 
-                # 실제 보유 수량이 확인되면 peak_qty 및 평단가 갱신 및 상태/회차 자동 보정
-                if held_qty > 0:
+                # 케이스 A: 전량 매도 체결 후 잔고가 0주인 경우 (LOC 매수 미체결)
+                if prev_status in ("BUYING", "PAUSED") and prev_round > 0 and peak_qty > 0 and held_qty == 0:
+                    self.logger.info(
+                        f"🎊 [{symbol}] 전량 매도 체결 확인! ({prev_status} 상태, 보유: {peak_qty}주 -> 0주) 무한매수 {prev_round}회차 사이클 완료 처리합니다."
+                    )
+                    avg_p = float(self.holdings.get(symbol, {}).get("avg_price", 0.0))
+                    cur_p = self.current_prices.get(symbol, 0.0)
+                    self.infinite_state_mgr.complete_round(symbol, avg_price=avg_p, sell_price=cur_p, qty=peak_qty)
+
+                # 케이스 B: 장중 전량 매도 후 장 마감 LOC 매수가 체결되어 잔고가 다시 생긴 경우 (held_qty > 0)
+                elif prev_status in ("BUYING", "PAUSED") and prev_round > 0 and peak_qty > 0 and held_qty > 0:
+                    # 최근 체결 이력 조회하여 직전 보유 수량(peak_qty) 이상의 매도 체결이 있었는지 점검
+                    recent_sell_found = False
+                    sell_exec_qty = 0
+                    sell_exec_price = 0.0
+                    try:
+                        today_dt = datetime.datetime.now().date()
+                        start_dt = today_dt - datetime.timedelta(days=2)
+                        start_fmt = start_dt.strftime("%Y%m%d")
+                        end_fmt = today_dt.strftime("%Y%m%d")
+                        hist = self.api.get_overseas_execution_history(symbol=symbol, start_date=start_fmt, end_date=end_fmt)
+                        for h in hist:
+                            o_type = str(h.get("order_type", "")).strip()
+                            e_qty = int(h.get("executed_qty", h.get("qty", 0)) or 0)
+                            e_price = float(h.get("executed_price", h.get("price", 0.0)) or 0.0)
+                            if o_type == "매도" and e_qty >= peak_qty and e_qty > 0:
+                                recent_sell_found = True
+                                sell_exec_qty = e_qty
+                                sell_exec_price = e_price
+                                break
+                    except Exception as e:
+                        self.logger.debug(f"[{symbol}] 체결 이력 매도 확인 중 예외: {e}")
+
+                    if recent_sell_found:
+                        self.logger.info(
+                            f"🎊 [{symbol}] 장중 전량 매도 체결 확인! (매도: {sell_exec_qty}주 @ ${sell_exec_price:.2f}) "
+                            f"직전 {prev_round}회차 사이클 완료 처리 후, 신규 체결 잔고({held_qty}주)로 새 사이클 1.0회차를 자동 시작합니다."
+                        )
+                        # 1. 직전 사이클 완료 기록
+                        cur_p = self.current_prices.get(symbol, sell_exec_price)
+                        self.infinite_state_mgr.complete_round(
+                            symbol,
+                            avg_price=st.get("last_avg_price", 0.0),
+                            sell_price=sell_exec_price or cur_p,
+                            qty=sell_exec_qty
+                        )
+                        # 2. 신규 체결분을 새 사이클 1.0회차로 자동 인계
+                        st = self.infinite_state_mgr.get_symbol_state(symbol)
+                        actual_avg_p = float(self.holdings.get(symbol, {}).get("avg_price", 0.0))
+                        st["current_round"] = 1.0
+                        st["status"] = "BUYING"
+                        st["peak_qty"] = held_qty
+                        st["last_avg_price"] = actual_avg_p
+                        st["start_date"] = datetime.datetime.now().strftime("%Y-%m-%d")
+                        self.infinite_state_mgr.save_state()
+                    else:
+                        # 정상 보유 수량 증가 (일반 분할 매수 진행 중)
+                        avg_p = float(self.holdings.get(symbol, {}).get("avg_price", 0.0))
+                        self.infinite_state_mgr.update_peak_qty(symbol, held_qty, avg_price=avg_p)
+
+                # 케이스 C: 초기 IDLE 종목 실계좌 잔고 확인 또는 일반 보유 갱신
+                elif held_qty > 0:
                     avg_p = float(self.holdings.get(symbol, {}).get("avg_price", 0.0))
                     self.infinite_state_mgr.update_peak_qty(symbol, held_qty, avg_price=avg_p)
                     if prev_status == "IDLE":
@@ -336,18 +397,6 @@ class TraderBot:
                         self.logger.info(f"▶ [{symbol}] 실계좌 보유 수량({held_qty}주) 확인: 진행 회차를 0에서 1.0회차로 자동 보정합니다.")
                         st["current_round"] = 1.0
                         self.infinite_state_mgr.save_state()
-
-                # 진행 중(BUYING 또는 PAUSED 상태이면서 1회차 이상 진행)이고,
-                # 이전에 실제 매수 체결 수량이 존재했었는데(peak_qty > 0) 실제 보유 수량이 0이 된 경우에만
-                # 실제 전량 익절 매도 체결 완료로 판단! (당일 LOC 매수 주문 직후 held_qty=0인 신규 회차는 제외)
-                peak_qty = st.get("peak_qty", 0)
-                if prev_status in ("BUYING", "PAUSED") and prev_round > 0 and peak_qty > 0 and held_qty == 0:
-                    self.logger.info(
-                        f"🎊 [{symbol}] 전량 매도 체결 확인! ({prev_status} 상태, 보유: {peak_qty}주 -> 0주) 무한매수 {prev_round}회차 사이클 완료 처리합니다."
-                    )
-                    avg_p = float(self.holdings.get(symbol, {}).get("avg_price", 0.0))
-                    cur_p = self.current_prices.get(symbol, 0.0)
-                    self.infinite_state_mgr.complete_round(symbol, avg_price=avg_p, sell_price=cur_p, qty=peak_qty)
 
     def start_infinite_buying(self, symbol: str):
         """특정 종목의 무한매수 수동 시작"""

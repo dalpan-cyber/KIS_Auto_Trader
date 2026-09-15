@@ -636,6 +636,87 @@ def test_auto_exhaust_action_selection():
     print("  ✅ PASS")
 
 
+def test_intraday_sell_and_loc_rebuy_cycle_completion():
+    """장중 전량 매도 체결 후 당일 LOC 매수 체결로 잔고가 생겨도 직전 사이클 완료 및 새 사이클 인계 검증"""
+    print("\n=== Test: 장중 전량 매도 후 LOC 재체결 시 사이클 완료 & 새 사이클 인계 ===")
+    from unittest.mock import MagicMock
+    from trader import TraderBot
+    from kis_api import KISApiClient
+    from infinite_state_manager import InfiniteStateManager
+    import datetime
+
+    mgr = InfiniteStateManager(file_path=TEST_STATE_FILE, enable_gss=False)
+    api = KISApiClient()
+    api.is_overseas_symbol = MagicMock(return_value=True)
+
+    # 최근 체결 이력: 20주 @ $30.00 매도 체결 모의
+    mock_history = [
+        {
+            "symbol": "SOXL",
+            "order_type": "매도",
+            "executed_qty": 20,
+            "executed_price": 30.00,
+            "status": "체결",
+            "order_time": "2026-09-15 23:45:00"
+        }
+    ]
+    api.get_overseas_execution_history = MagicMock(return_value=mock_history)
+
+    bot = TraderBot(api=api)
+    bot.infinite_state_mgr = mgr
+    bot.infinite_stocks = ["SOXL"]
+    bot.fetch_account_balance = lambda: None  # API 실호출 방지
+
+    # 1. 직전 상태: 5.0회차, 20주 보유, 평단가 $25.00
+    mgr.states["SOXL"] = {
+        "symbol": "SOXL",
+        "start_date": "2026-09-01",
+        "current_round": 5.0,
+        "division_count": 40,
+        "total_budget_usd": 5000.0,
+        "target_roi": 0.10,
+        "status": "BUYING",
+        "peak_qty": 20,
+        "last_avg_price": 25.00,
+        "paused_sell_price": 0.0
+    }
+
+    # complete_round 호출 여부 캡처
+    complete_round_calls = []
+    original_complete_round = mgr.complete_round
+    def mock_complete(symbol, avg_price=0.0, sell_price=0.0, qty=0):
+        complete_round_calls.append({"symbol": symbol, "avg_price": avg_price, "sell_price": sell_price, "qty": qty})
+        return original_complete_round(symbol, avg_price=avg_price, sell_price=sell_price, qty=qty)
+    mgr.complete_round = mock_complete
+
+    # 2. 장 마감 후 잔고: LOC로 2주 @ $26.00가 체결되어 잔고가 2주 있는 상황
+    bot.holdings["SOXL"] = {"qty": 2, "avg_price": 26.00}
+    bot.current_prices["SOXL"] = 26.00
+
+    # 3. 잔고 동기화 실행
+    bot.sync_holdings_to_state()
+
+    # 4. 검증 1: 직전 5.0회차 20주 @ $30.00 매도에 대해 complete_round가 정상 호출되었는지 확인
+    assert len(complete_round_calls) == 1, f"complete_round 미호출: {complete_round_calls}"
+    c_call = complete_round_calls[0]
+    assert c_call["symbol"] == "SOXL"
+    assert c_call["qty"] == 20, f"완료 수량 불일치: {c_call['qty']}"
+    assert c_call["avg_price"] == 25.00, f"직전 평단가 불일치: {c_call['avg_price']}"
+    assert c_call["sell_price"] == 30.00, f"체결 매도가 불일치: {c_call['sell_price']}"
+    print(f"  ✅ 1. 직전 사이클 완료 기록 정상 호출 확인 (매도: {c_call['qty']}주 @ ${c_call['sell_price']:.2f}, 평단: ${c_call['avg_price']:.2f})")
+
+    # 5. 검증 2: 새로 체결된 2주가 새 사이클의 1.0회차로 정상 인계되었는지 확인
+    st_new = mgr.get_symbol_state("SOXL")
+    assert st_new["current_round"] == 1.0, f"새 사이클 회차가 1.0이 아님: {st_new['current_round']}"
+    assert st_new["status"] == "BUYING", f"상태가 BUYING이 아님: {st_new['status']}"
+    assert st_new["peak_qty"] == 2, f"peak_qty가 2가 아님: {st_new['peak_qty']}"
+    assert st_new["last_avg_price"] == 26.00, f"새 평단가가 26.00이 아님: {st_new['last_avg_price']}"
+    today_str = datetime.datetime.now().strftime("%Y-%m-%d")
+    assert st_new["start_date"] == today_str, f"시작일이 오늘 날짜가 아님: {st_new['start_date']}"
+    print(f"  ✅ 2. 신규 체결분(2주 @ $26.00)으로 새 사이클 1.0회차 자동 인계 완료 (시작일: {st_new['start_date']})")
+    print("  ✅ PASS")
+
+
 if __name__ == "__main__":
     original_file_content = None
     if os.path.exists("infinite_settings.json"):
@@ -651,6 +732,7 @@ if __name__ == "__main__":
         test_pause_and_resume_flow()
         test_cycle_completion_and_rebalance_fixes()
         test_auto_exhaust_action_selection()
+        test_intraday_sell_and_loc_rebuy_cycle_completion()
     finally:
         # 테스트 후 임시 파일 정리
         if os.path.exists(TEST_STATE_FILE):
