@@ -540,10 +540,21 @@ class TraderBot:
         actual_held_qty = int(self.holdings.get(symbol, {}).get("qty", 0))
         actual_avg_p = float(self.holdings.get(symbol, {}).get("avg_price", 0.0))
 
+        # 40회차 소진 시 이동평균선 분석을 위한 일봉 데이터 조회 (AUTO 모드 지원)
+        daily_candles = None
+        curr_round = state.get("current_round", 0)
+        div_count = state.get("division_count", 40)
+        if curr_round >= div_count or state.get("exhaust_action") == "AUTO":
+            try:
+                daily_candles = self.api.get_daily_chart(symbol, count=30)
+            except Exception as e:
+                self.logger.debug(f"[{symbol}] 일봉 데이터 조회 예외 (손실률 기반 자동 판별): {e}")
+
         # 당일 주문 목록 생성
         orders = self.infinite_strategy.generate_daily_orders(
             symbol, cur_price, state,
-            avg_price=actual_avg_p, total_qty=actual_held_qty
+            avg_price=actual_avg_p, total_qty=actual_held_qty,
+            daily_candles=daily_candles
         )
 
         # 필터 적용
@@ -664,10 +675,19 @@ class TraderBot:
                     f"누적 수량: {tot_qty}주 | 평단가: {avg_p_str} | 현재가: ${cur_price:.2f}"
                 )
 
+                # 40회차 소진 시 이동평균선 분석을 위한 일봉 데이터 조회 (AUTO 모드 지원)
+                daily_candles = None
+                if curr_round >= div_count or state.get("exhaust_action") == "AUTO":
+                    try:
+                        daily_candles = self.api.get_daily_chart(symbol, count=30)
+                    except Exception as e:
+                        self.logger.debug(f"[{symbol}] 일봉 데이터 조회 예외 (손실률 기반 자동 판별): {e}")
+
                 # 보유 수량/평단가는 KIS API 실계좌가 Source of Truth (JSON에는 저장하지 않음)
                 orders = self.infinite_strategy.generate_daily_orders(
                     symbol, cur_price, state,
-                    avg_price=actual_avg_p, total_qty=actual_held_qty
+                    avg_price=actual_avg_p, total_qty=actual_held_qty,
+                    daily_candles=daily_candles
                 )
                 orders_sent = False
 

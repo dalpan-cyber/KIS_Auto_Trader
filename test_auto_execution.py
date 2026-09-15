@@ -573,6 +573,69 @@ def test_cycle_completion_and_rebalance_fixes():
     print("  ✅ PASS")
 
 
+def test_auto_exhaust_action_selection():
+    """40회차 소진 시 AUTO(주가 흐름 자동 판단) 모드 검증"""
+    print("\n=== Test: 40회차 소진 시 AUTO 주가 흐름 자동 판단 모드 ===")
+    from strategy import InfiniteBuyingStrategy
+    import pandas as pd
+
+    strategy = InfiniteBuyingStrategy(division_count=40, target_roi=0.10, exhaust_action="AUTO", exhaust_target_roi=0.05)
+
+    base_state = {
+        "symbol": "TQQQ",
+        "current_round": 40,
+        "division_count": 40,
+        "total_budget_usd": 4000.0,
+        "target_roi": 0.10,
+        "exhaust_action": "AUTO",
+        "exhaust_target_roi": 0.05,
+        "status": "BUYING"
+    }
+
+    # Case 1: 손실률 -3% (경미한 손실) -> HOLD 자동 선택 (기존 +10% 목표가 $55.00 익절 매도만 발주)
+    act1, reason1 = strategy.determine_exhaust_action_auto("TQQQ", current_price=48.5, avg_price=50.0)
+    assert act1 == "HOLD", f"Case 1 예상 HOLD != 실제 {act1}"
+    orders1 = strategy.generate_daily_orders("TQQQ", 48.5, base_state, avg_price=50.0, total_qty=100)
+    sell_orders1 = [o for o in orders1 if o["action"] == "SELL"]
+    buy_orders1 = [o for o in orders1 if o["action"] == "BUY"]
+    assert len(buy_orders1) == 0, "HOLD 모드인데 매수 주문 생성됨"
+    assert len(sell_orders1) == 1, "HOLD 모드 익절 매도 주문 누락"
+    assert sell_orders1[0]["price"] == 55.0, f"목표가 불일치: {sell_orders1[0]['price']}"
+    print(f"  ✅ Case 1: 손실률 -3.0% -> HOLD 자동 선택 확인 ({reason1})")
+
+    # Case 2: 손실률 -10% (박스권 횡보/조정) -> LOWER_TARGET 자동 선택 (+5% 목표가 $45.00 익절 매도)
+    act2, reason2 = strategy.determine_exhaust_action_auto("TQQQ", current_price=45.0, avg_price=50.0)
+    assert act2 == "LOWER_TARGET", f"Case 2 예상 LOWER_TARGET != 실제 {act2}"
+    orders2 = strategy.generate_daily_orders("TQQQ", 45.0, base_state, avg_price=50.0, total_qty=100)
+    sell_orders2 = [o for o in orders2 if o["action"] == "SELL"]
+    buy_orders2 = [o for o in orders2 if o["action"] == "BUY"]
+    assert len(buy_orders2) == 0, "LOWER_TARGET 모드인데 매수 주문 생성됨"
+    assert len(sell_orders2) == 1, "LOWER_TARGET 모드 익절 매도 주문 누락"
+    assert sell_orders2[0]["price"] == 52.5, f"하향 목표가 불일치 ($50 * 1.05 = $52.50): {sell_orders2[0]['price']}"
+    print(f"  ✅ Case 2: 손실률 -10.0% -> LOWER_TARGET 자동 선택 확인 ({reason2})")
+
+    # Case 3: 손실률 -20% (깊은 침체) -> REBALANCE_QUARTER 자동 선택 (순환 매도 + LOC 재매수)
+    act3, reason3 = strategy.determine_exhaust_action_auto("TQQQ", current_price=40.0, avg_price=50.0)
+    assert act3 == "REBALANCE_QUARTER", f"Case 3 예상 REBALANCE_QUARTER != 실제 {act3}"
+    orders3 = strategy.generate_daily_orders("TQQQ", 40.0, base_state, avg_price=50.0, total_qty=100)
+    sell_orders3 = [o for o in orders3 if o["action"] == "SELL"]
+    buy_orders3 = [o for o in orders3 if o["action"] == "BUY"]
+    assert len(buy_orders3) == 1, "REBALANCE_QUARTER 모드 LOC 재매수 누락"
+    assert len(sell_orders3) == 2, "REBALANCE_QUARTER 모드 (순환매도+잔여매도) 2건 분리 누락"
+    total_sell_qty = sum(o["qty"] for o in sell_orders3)
+    assert total_sell_qty == 100, f"매도 총 수량 불일치: {total_sell_qty} != 100"
+    print(f"  ✅ Case 3: 손실률 -20.0% -> REBALANCE_QUARTER 자동 선택 확인 ({reason3})")
+
+    # Case 4: 손실률 -8%이지만 5일선 > 20일선 단기 골든크로스 반등세 감지 시 -> HOLD 자동 선택
+    fake_candles = pd.DataFrame({
+        "close": [40.0] * 15 + [44.0, 45.0, 46.0, 47.0, 48.0]  # 최근 5일 급반등: MA5=46, MA20=42
+    })
+    act4, reason4 = strategy.determine_exhaust_action_auto("TQQQ", current_price=48.0, avg_price=52.0, daily_candles=fake_candles)
+    assert act4 == "HOLD", f"Case 4 골든크로스 반등 시 예상 HOLD != 실제 {act4}"
+    print(f"  ✅ Case 4: 손실률 -7.7%라도 골든크로스 반등세 감지 시 HOLD 자동 선택 확인 ({reason4})")
+    print("  ✅ PASS")
+
+
 if __name__ == "__main__":
     original_file_content = None
     if os.path.exists("infinite_settings.json"):
@@ -587,6 +650,7 @@ if __name__ == "__main__":
         test_soxl_exchange_and_execution()
         test_pause_and_resume_flow()
         test_cycle_completion_and_rebalance_fixes()
+        test_auto_exhaust_action_selection()
     finally:
         # 테스트 후 임시 파일 정리
         if os.path.exists(TEST_STATE_FILE):

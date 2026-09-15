@@ -3,7 +3,7 @@
 자동 투자 알고리즘 (이동평균 교차, 변동성 돌파, RSI/볼린저밴드 등)
 """
 from abc import ABC, abstractmethod
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 import pandas as pd
 import numpy as np
 import logging
@@ -168,13 +168,71 @@ class InfiniteBuyingStrategy(BaseStrategy):
             return Signal.BUY
         return Signal.HOLD
 
+    def determine_exhaust_action_auto(
+        self,
+        symbol: str,
+        current_price: float,
+        avg_price: float,
+        daily_candles: Optional[pd.DataFrame] = None
+    ) -> Tuple[str, str]:
+        """
+        40회차 소진 시 현재 손실률 및 일봉 차트(이동평균선)를 기반으로
+        가장 적합한 대응 모드(HOLD, LOWER_TARGET, REBALANCE_QUARTER)를 자동 선택
+        :return: (선택된_액션: str, 사유_설명: str)
+        """
+        if avg_price <= 0:
+            return "HOLD", "평단가 미확인으로 안전 대기(HOLD) 선택"
+
+        pnl_rate = (current_price - avg_price) / avg_price
+
+        # 일봉 데이터 기반 단기/중기 이동평균선 산출
+        ma5 = None
+        ma20 = None
+        if daily_candles is not None and isinstance(daily_candles, pd.DataFrame) and len(daily_candles) >= 5:
+            try:
+                df = daily_candles.copy()
+                close_col = None
+                for c in ["close", "stck_clpr", "stck_prpr", "Close"]:
+                    if c in df.columns:
+                        close_col = c
+                        break
+                if close_col is None:
+                    close_col = df.columns[-1]
+
+                df["c_num"] = pd.to_numeric(df[close_col], errors="coerce")
+                df_valid = df.dropna(subset=["c_num"])
+                if len(df_valid) >= 5:
+                    ma5 = float(df_valid["c_num"].tail(5).mean())
+                if len(df_valid) >= 20:
+                    ma20 = float(df_valid["c_num"].tail(20).mean())
+            except Exception as e:
+                self.logger.debug(f"이동평균선 계산 중 예외: {e}")
+
+        # 1. HOLD (무한 대기 / +10% 목표 익절 완주)
+        # 조건: 손실률이 -5% 이내이거나, 단기 반등 추세(골든크로스 & 현재가 >= 5일선)
+        is_rebounding = (ma5 is not None and ma20 is not None and ma5 > ma20 and current_price >= ma5)
+        if pnl_rate >= -0.05:
+            return "HOLD", f"손실률 경미({pnl_rate*100:+.1f}%)로 원금 회복 근접 -> HOLD(기존 목표가 완주) 선택"
+        if is_rebounding:
+            return "HOLD", f"단기 골든크로스 반등세(MA5: ${ma5:.2f} > MA20: ${ma20:.2f}) 감지 -> HOLD(기존 목표가 완주) 선택"
+
+        # 2. LOWER_TARGET (목표가 하향 탈출)
+        # 조건: 손실률 -5% ~ -15% 박스권 횡보/조정 구간
+        if pnl_rate >= -0.15:
+            return "LOWER_TARGET", f"박스권 횡보/조정 구간(손실률: {pnl_rate*100:+.1f}%) -> LOWER_TARGET(빠른 원금 회수) 선택"
+
+        # 3. REBALANCE_QUARTER (쿼터 순환 매매)
+        # 조건: 손실률 -15% 초과 심한 침체/하락세
+        return "REBALANCE_QUARTER", f"깊은 하락/침체 추세(손실률: {pnl_rate*100:+.1f}%) -> REBALANCE_QUARTER(평단가 적극 인하) 선택"
+
     def generate_daily_orders(
         self,
         symbol: str,
         current_price: float,
         state: Dict[str, Any],
         avg_price: float = 0.0,
-        total_qty: int = 0
+        total_qty: int = 0,
+        daily_candles: Optional[pd.DataFrame] = None
     ) -> List[Dict[str, Any]]:
         """
         무한매수법 당일 매수/매도 상세 주문 제안 리스트 생성
@@ -183,6 +241,7 @@ class InfiniteBuyingStrategy(BaseStrategy):
         :param state: InfiniteStateManager에서 가져온 종목 상태 dict (전략 상태만)
         :param avg_price: 보유 평단가 ($) - KIS API 실계좌에서 조회 (Source of Truth = API)
         :param total_qty: 보유 수량 (주) - KIS API 실계좌에서 조회 (Source of Truth = API)
+        :param daily_candles: 일봉 캔들 데이터 (선택, AUTO 모드 시 이평선 분석용)
         :return: 생성할 주문 리스트 [{action: 'SELL'/'BUY', qty: int, price: float, ord_type: '00'/'34', desc: str}]
         """
         orders = []
@@ -202,6 +261,16 @@ class InfiniteBuyingStrategy(BaseStrategy):
         status = state.get("status", "IDLE")
         paused_sell_price = float(state.get("paused_sell_price", 0.0) or 0.0)
 
+        # 40회차 소진 시 유효 대응 모드 판별 (AUTO 모드 동적 선택 지원)
+        effective_exhaust_action = exhaust_action
+        auto_desc_tag = ""
+        if is_exhausted and exhaust_action == "AUTO":
+            effective_exhaust_action, auto_reason = self.determine_exhaust_action_auto(
+                symbol, current_price, avg_price, daily_candles=daily_candles
+            )
+            auto_desc_tag = f"[AUTO: {effective_exhaust_action}] "
+            self.logger.info(f"🤖 [{symbol} 40회차 소진] {auto_reason}")
+
         # 1. 익절/지정 매도 주문 제안 (보유 수량이 있는 경우)
         if total_qty > 0 and avg_price > 0:
             if status == "PAUSED" and paused_sell_price > 0:
@@ -214,7 +283,7 @@ class InfiniteBuyingStrategy(BaseStrategy):
                     "ord_type": "00",  # 지정가 매도
                     "desc": f"전량 매도 (투자 일시중지 지정가: ${sell_target_price:.2f})"
                 })
-            elif is_exhausted and exhaust_action == "LOWER_TARGET":
+            elif is_exhausted and effective_exhaust_action == "LOWER_TARGET":
                 eff_roi = exhaust_target_roi
                 sell_target_price = round(avg_price * (1.0 + eff_roi), 2)
                 orders.append({
@@ -223,9 +292,9 @@ class InfiniteBuyingStrategy(BaseStrategy):
                     "qty": total_qty,
                     "price": sell_target_price,
                     "ord_type": "00",  # 지정가 매도
-                    "desc": f"전량 익절 매도 (40회차 소진 - 목표가 하향: ${sell_target_price:.2f}, +{eff_roi*100:.1f}%)"
+                    "desc": f"{auto_desc_tag}전량 익절 매도 (40회차 소진 - 목표가 하향: ${sell_target_price:.2f}, +{eff_roi*100:.1f}%)"
                 })
-            elif is_exhausted and exhaust_action == "REBALANCE_QUARTER":
+            elif is_exhausted and effective_exhaust_action == "REBALANCE_QUARTER":
                 # 쿼터 순환 매매: 1회차 분량은 하단에서 현재가 순환 매도하므로, 잔여 수량만 목표가 익절 매도로 발주 (수량 초과 방지)
                 rebalance_qty = max(1, int(total_qty / division)) if total_qty > 0 else 0
                 main_sell_qty = total_qty - rebalance_qty
@@ -237,7 +306,7 @@ class InfiniteBuyingStrategy(BaseStrategy):
                         "qty": main_sell_qty,
                         "price": sell_target_price,
                         "ord_type": "00",
-                        "desc": f"잔여 익절 매도 (쿼터순환 제외 {main_sell_qty}주, 목표가: ${sell_target_price:.2f}, +{target_roi*100:.1f}%)"
+                        "desc": f"{auto_desc_tag}잔여 익절 매도 (쿼터순환 제외 {main_sell_qty}주, 목표가: ${sell_target_price:.2f}, +{target_roi*100:.1f}%)"
                     })
             else:
                 sell_target_price = round(avg_price * (1.0 + target_roi), 2)
@@ -247,7 +316,7 @@ class InfiniteBuyingStrategy(BaseStrategy):
                     "qty": total_qty,
                     "price": sell_target_price,
                     "ord_type": "00",  # 지정가 매도
-                    "desc": f"전량 익절 매도 (목표가: ${sell_target_price:.2f}, +{target_roi*100:.1f}%)"
+                    "desc": f"{auto_desc_tag}전량 익절 매도 (목표가: ${sell_target_price:.2f}, +{target_roi*100:.1f}%)"
                 })
 
         if status in ["STOPPED", "PAUSED"]:
@@ -288,8 +357,8 @@ class InfiniteBuyingStrategy(BaseStrategy):
                 "desc": f"0.5회차 상향 LOC 매수 (${loc2_price:.2f}, {qty2}주)"
             })
         else:
-            # 40회차 소진 시 3가지 대응 모드 분기
-            if exhaust_action == "REBALANCE_QUARTER":
+            # 40회차 소진 시 3가지 대응 모드 분기 (effective_exhaust_action 기준)
+            if effective_exhaust_action == "REBALANCE_QUARTER":
                 # 옵션 2: 쿼터 순환 매매 (1회차 분량 매도 후 당일 LOC 재매수로 평단가 인하)
                 one_round_budget = total_budget / division
                 rebalance_qty = max(1, int(total_qty / division)) if total_qty > 0 else max(1, int(one_round_budget / current_price))
@@ -297,7 +366,7 @@ class InfiniteBuyingStrategy(BaseStrategy):
                 buy_qty = max(1, int(one_round_budget / loc_price))
 
                 self.logger.info(
-                    f"[{symbol}] 무한매수 {division}회차 소진 -> 쿼터 순환 모드 (1회차 분량 {rebalance_qty}주 매도 + LOC {buy_qty}주 재매수)"
+                    f"[{symbol}] 무한매수 {division}회차 소진 {auto_desc_tag}-> 쿼터 순환 모드 (1회차 분량 {rebalance_qty}주 매도 + LOC {buy_qty}주 재매수)"
                 )
                 orders.append({
                     "action": "SELL",
@@ -306,7 +375,7 @@ class InfiniteBuyingStrategy(BaseStrategy):
                     "price": round(current_price, 2),
                     "ord_type": "00",
                     "round_inc": 0.0,
-                    "desc": f"순환 매도 ({division}회차 소진 - 평단가 인하용 {rebalance_qty}주 매도)"
+                    "desc": f"{auto_desc_tag}순환 매도 ({division}회차 소진 - 평단가 인하용 {rebalance_qty}주 매도)"
                 })
                 orders.append({
                     "action": "BUY",
@@ -315,17 +384,17 @@ class InfiniteBuyingStrategy(BaseStrategy):
                     "price": loc_price,
                     "ord_type": "34",
                     "round_inc": 0.0,
-                    "desc": f"순환 LOC 재매수 ({division}회차 소진 - 평단가 인하용 ${loc_price:.2f}, {buy_qty}주)"
+                    "desc": f"{auto_desc_tag}순환 LOC 재매수 ({division}회차 소진 - 평단가 인하용 ${loc_price:.2f}, {buy_qty}주)"
                 })
-            elif exhaust_action == "LOWER_TARGET":
+            elif effective_exhaust_action == "LOWER_TARGET":
                 eff_roi = exhaust_target_roi
                 self.logger.warning(
-                    f"[{symbol}] 무한매수 소진 ({curr_round}/{division}회차) - 목표수익률 하향(+{eff_roi*100:.1f}%) 빠른 탈출 대기 중"
+                    f"[{symbol}] 무한매수 소진 ({curr_round}/{division}회차) {auto_desc_tag}- 목표수익률 하향(+{eff_roi*100:.1f}%) 빠른 탈출 대기 중"
                 )
             else:
                 # 옵션 1: HOLD (무한 대기)
                 self.logger.warning(
-                    f"[{symbol}] 무한매수 소진 ({curr_round}/{division}회차) - 무한 대기 모드 (추가 매수 중단, +{target_roi*100:.1f}% 익절 매도 대기)"
+                    f"[{symbol}] 무한매수 소진 ({curr_round}/{division}회차) {auto_desc_tag}- 무한 대기 모드 (추가 매수 중단, +{target_roi*100:.1f}% 익절 매도 대기)"
                 )
 
         return orders

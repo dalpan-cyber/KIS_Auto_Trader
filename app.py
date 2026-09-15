@@ -280,6 +280,7 @@ def render_stock_detail(symbol: str, bot: TraderBot):
     exhaust_act = str(st_data.get("exhaust_action", stock_cfg["exhaust_action"])).upper()
     exhaust_roi = float(st_data.get("exhaust_target_roi", stock_cfg["exhaust_target_roi"]))
     exhaust_name_map = {
+        "AUTO": "🤖 주가 흐름 자동 판단",
         "HOLD": "🛡️ 1. 무한 대기 (존버)",
         "REBALANCE_QUARTER": "✂️ 2. 쿼터 순환 매매",
         "LOWER_TARGET": f"🎯 3. 목표가 하향 (+{exhaust_roi*100:.1f}%)"
@@ -339,7 +340,21 @@ def render_stock_detail(symbol: str, bot: TraderBot):
     # 40회차 소진 시 대응 모드 상태 배너 표시
     is_exhausted = (curr_round >= div_count)
     if is_exhausted:
-        if exhaust_act == "LOWER_TARGET":
+        if exhaust_act == "AUTO":
+            effective_act, reason = bot.infinite_strategy.determine_exhaust_action_auto(
+                symbol, cur_p if cur_p > 0 else avg_p, avg_p, daily_candles=None
+            )
+            act_names = {
+                "HOLD": "🛡️ 1. 무한 대기 (존버)",
+                "LOWER_TARGET": f"🎯 3. 목표가 하향 (+{exhaust_roi*100:.1f}%)",
+                "REBALANCE_QUARTER": "✂️ 2. 쿼터 순환 매매"
+            }
+            st.info(
+                f"🤖 **[{div_count}회차 최대치 도달 - AUTO 주가 흐름 자동 판단 가동]**\n\n"
+                f"- **주가 흐름 분석**: {reason}\n"
+                f"- **당일 결정 전략**: **{act_names.get(effective_act, effective_act)}**"
+            )
+        elif exhaust_act == "LOWER_TARGET":
             st.warning(
                 f"🚨 **[{div_count}회차 최대치 도달 - 목표수익률 하향 탈출 모드 가동]** "
                 f"목표 수익률이 **+{exhaust_roi*100:.1f}%**로 하향 조정되어 빠른 원금 회수 익절 매도 주문이 발주됩니다."
@@ -357,9 +372,17 @@ def render_stock_detail(symbol: str, bot: TraderBot):
 
     # 2. 당일 주문 제안 생성
     calc_price = cur_p if cur_p > 0 else (avg_p if avg_p > 0 else 50.0)
+    candles_df = None
+    if is_exhausted or exhaust_act == "AUTO":
+        try:
+            candles_df = bot.api.get_daily_chart(symbol, count=30)
+        except Exception:
+            pass
+
     orders = bot.infinite_strategy.generate_daily_orders(
         symbol, calc_price, st_data,
-        avg_price=avg_p, total_qty=total_qty
+        avg_price=avg_p, total_qty=total_qty,
+        daily_candles=candles_df
     )
 
     # 2. 당일 주문 제안 + 즉시 실행 (제안/실행 통합 UI)
@@ -1011,6 +1034,7 @@ def page_config():
 
                 # 40회차 소진 대응 옵션 - 종목별 선택
                 exhaust_options = [
+                    ("AUTO", "🤖 0. 주가 흐름 자동 판단 (추천: 손실률/이평선 분석 후 최적 전략 자동 가동)"),
                     ("HOLD", "🛡️ 1. 무한 대기 (추가 매수 중단, +10% 익절 매도 대기)"),
                     ("REBALANCE_QUARTER", "✂️ 2. 쿼터 손절 & 순환 매매 (1회차 매도 + LOC 재매수로 평단가 인하)"),
                     ("LOWER_TARGET", "🎯 3. 목표수익률 하향 빠른 탈출 (도달 시 목표 수익률 자동 하향)"),
@@ -1028,7 +1052,7 @@ def page_config():
                 )
                 new_exhaust_action = selected_action_tuple[0]
 
-                if new_exhaust_action == "LOWER_TARGET":
+                if new_exhaust_action in ("LOWER_TARGET", "AUTO"):
                     new_exhaust_roi = st.number_input(
                         f"{sym} - 40회차 소진 시 탈출 목표 수익률 (%)",
                         min_value=0.5,
@@ -1036,7 +1060,7 @@ def page_config():
                         value=float(cfg.get("exhaust_target_roi", 0.05)) * 100.0,
                         step=0.5,
                         key=f"cfg_input_exhaust_roi_{sym}",
-                        help="이 종목이 40회차에 도달 시 적용할 하향 목표 수익률 (예: 5 = +5.0%)"
+                        help="40회차 도달 시 목표가 하향 적용할 수익률 (AUTO 모드 선택 시에도 목표가 하향 채택 시 이 수치 사용, 예: 5 = +5.0%)"
                     )
                 else:
                     new_exhaust_roi = float(cfg.get("exhaust_target_roi", 0.05)) * 100.0
@@ -1149,6 +1173,7 @@ def page_config():
         cfg = config.get_stock_config(sym)
         cur_ex = cfg["exhaust_action"]
         cur_ex_name = {
+            "AUTO": "🤖 자동판단",
             "HOLD": "🛡️ 무한대기",
             "REBALANCE_QUARTER": "✂️ 쿼터순환",
             "LOWER_TARGET": f"🎯 하향(+{cfg['exhaust_target_roi']*100:.0f}%)"
