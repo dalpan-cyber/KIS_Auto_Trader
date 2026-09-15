@@ -9,9 +9,9 @@
     "status": "BUYING",
     "exhaust_action": "AUTO",
     "exhaust_target_roi": 0.05,
-    "peak_qty": 42,
+    "peak_qty": 44,
     "paused_sell_price": 0.0,
-    "last_avg_price": 71.6364
+    "last_avg_price": 71.4666
   },
   "SOXL": {
     "symbol": "SOXL",
@@ -23,8 +23,8 @@
     "exhaust_action": "AUTO",
     "exhaust_target_roi": 0.05,
     "status": "BUYING",
-    "peak_qty": 8,
+    "peak_qty": 10,
     "paused_sell_price": 0.0,
-    "last_avg_price": 116.0012
+    "last_avg_price": 113.265
   }
 }
