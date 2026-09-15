@@ -422,6 +422,8 @@ def test_pause_and_resume_flow():
 
     bot = TraderBot(api=api)
     bot.infinite_state_mgr = mgr
+    bot.infinite_stocks = ["SOXL"]
+    bot.fetch_account_balance = lambda: None  # 네트워크 API 호출 방지
     bot.holdings["SOXL"] = {"qty": 10, "avg_price": 25.0}
 
     # 1. 초기 운용 상태 (BUYING)
@@ -491,6 +493,86 @@ def test_pause_and_resume_flow():
     print("  ✅ PASS")
 
 
+def test_cycle_completion_and_rebalance_fixes():
+    """4가지 보완 사항 검증: 쿼터순환 매도 수량 분리, PAUSED 완료 처리, last_avg_price 보존, 새 사이클 시작일 갱신"""
+    print("\n=== Test: 4가지 보완 사항 검증 (쿼터순환, PAUSED 완료, 평단가 보존, 시작일 갱신) ===")
+    from unittest.mock import MagicMock
+    from trader import TraderBot
+    from kis_api import KISApiClient
+    from infinite_state_manager import InfiniteStateManager
+    from strategy import InfiniteBuyingStrategy
+    import datetime
+
+    mgr = InfiniteStateManager(file_path=TEST_STATE_FILE, enable_gss=False)
+    strategy = InfiniteBuyingStrategy(division_count=40, target_roi=0.10, exhaust_action="REBALANCE_QUARTER")
+
+    # 1. 쿼터 순환 매매(REBALANCE_QUARTER) 총 매도 수량 초과 방지 검증
+    state_40 = {
+        "symbol": "TQQQ",
+        "current_round": 40,
+        "division_count": 40,
+        "total_budget_usd": 4000.0,
+        "target_roi": 0.10,
+        "exhaust_action": "REBALANCE_QUARTER",
+        "status": "BUYING"
+    }
+    total_held = 100
+    orders = strategy.generate_daily_orders("TQQQ", 50.0, state_40, avg_price=45.0, total_qty=total_held)
+    sell_orders = [o for o in orders if o["action"] == "SELL"]
+    total_sell_qty = sum(o["qty"] for o in sell_orders)
+    assert total_sell_qty == total_held, f"매도 주문 총 수량 불일치! 매도주문: {total_sell_qty} != 보유: {total_held}"
+    assert len(sell_orders) == 2, f"순환 매도 + 잔여 익절 매도 2건 분리 미적용: {len(sell_orders)}"
+    print(f"  ✅ 1. REBALANCE_QUARTER 매도 수량 안전 분리 검증 완료 (총 매도: {total_sell_qty}주 == 보유: {total_held}주)")
+
+    # 2. PAUSED 상태에서 전량 매도 완료 시 감지 및 complete_round 호출 검증 + last_avg_price 보존 검증
+    api = KISApiClient()
+    api.is_overseas_symbol = MagicMock(return_value=True)
+    api.get_stock_price = MagicMock(return_value={"success": True, "price": "60.00"})
+    bot = TraderBot(api=api)
+    bot.infinite_state_mgr = mgr
+    bot.infinite_stocks = ["TQQQ"]
+    bot.fetch_account_balance = lambda: None  # 네트워크 API 호출 방지
+
+    # 이전 사이클 시작일 과거 날짜로 설정
+    mgr.states["TQQQ"] = {
+        "symbol": "TQQQ",
+        "start_date": "2025-01-01",
+        "current_round": 10.0,
+        "division_count": 40,
+        "total_budget_usd": 4000.0,
+        "target_roi": 0.10,
+        "status": "PAUSED",
+        "peak_qty": 50,
+        "last_avg_price": 0.0,
+        "paused_sell_price": 55.0
+    }
+
+    # 보유 중 평단가 48.00 갱신 시뮬레이션
+    bot.holdings["TQQQ"] = {"qty": 50, "avg_price": 48.00}
+    bot.sync_holdings_to_state()
+    st_check = mgr.get_symbol_state("TQQQ")
+    assert st_check["last_avg_price"] == 48.00, f"last_avg_price 갱신 실패: {st_check['last_avg_price']}"
+    print("  ✅ 2. 보유 중 평단가 last_avg_price 백업 검증 완료 ($48.00)")
+
+    # 전량 매도 체결 시뮬레이션 (held_qty: 0)
+    bot.holdings["TQQQ"] = {"qty": 0, "avg_price": 0.0}
+    bot.sync_holdings_to_state()
+    st_completed = mgr.get_symbol_state("TQQQ")
+    assert st_completed["status"] == "COMPLETED", f"PAUSED 상태에서 매도 후 COMPLETED 미전환: {st_completed['status']}"
+    assert st_completed["current_round"] == 0, f"회차 리셋 실패: {st_completed['current_round']}"
+    assert st_completed["peak_qty"] == 0, f"peak_qty 리셋 실패: {st_completed['peak_qty']}"
+    print("  ✅ 3. PAUSED 상태에서 전량 매도 완료 시 COMPLETED 전환 및 회차 리셋 검증 완료")
+
+    # 3. COMPLETED 후 새 사이클 첫 매수 시 start_date 오늘 날짜 자동 갱신 검증
+    today_str = datetime.datetime.now().strftime("%Y-%m-%d")
+    mgr.advance_round("TQQQ", round_inc=0.5)
+    st_new_cycle = mgr.get_symbol_state("TQQQ")
+    assert st_new_cycle["status"] == "BUYING", f"새 사이클 BUYING 미전환: {st_new_cycle['status']}"
+    assert st_new_cycle["start_date"] == today_str, f"start_date 오늘 날짜로 미갱신: {st_new_cycle['start_date']} != {today_str}"
+    print(f"  ✅ 4. 새 사이클 첫 매수 시 start_date 최신화 검증 완료 ({st_new_cycle['start_date']})")
+    print("  ✅ PASS")
+
+
 if __name__ == "__main__":
     original_file_content = None
     if os.path.exists("infinite_settings.json"):
@@ -504,6 +586,7 @@ if __name__ == "__main__":
         test_google_sheet_priority_loading()
         test_soxl_exchange_and_execution()
         test_pause_and_resume_flow()
+        test_cycle_completion_and_rebalance_fixes()
     finally:
         # 테스트 후 임시 파일 정리
         if os.path.exists(TEST_STATE_FILE):

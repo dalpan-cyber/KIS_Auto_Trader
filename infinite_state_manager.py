@@ -140,9 +140,10 @@ class InfiniteStateManager:
                 "status": "IDLE",  # IDLE, BUYING, COMPLETED, PAUSED_MAX
                 "peak_qty": 0,
                 "paused_sell_price": 0.0,
+                "last_avg_price": 0.0,
             }
             self.save_state()
-        # 기존 상태에 exhaust_action/exhaust_target_roi/peak_qty/paused_sell_price가 없으면 기본값 추가 (하위 호환성)
+        # 기존 상태에 exhaust_action/exhaust_target_roi/peak_qty/paused_sell_price/last_avg_price가 없으면 기본값 추가 (하위 호환성)
         if "exhaust_action" not in self.states[symbol_upper]:
             self.states[symbol_upper]["exhaust_action"] = str(exhaust_action).strip().upper()
         if "exhaust_target_roi" not in self.states[symbol_upper]:
@@ -151,6 +152,8 @@ class InfiniteStateManager:
             self.states[symbol_upper]["peak_qty"] = 0
         if "paused_sell_price" not in self.states[symbol_upper]:
             self.states[symbol_upper]["paused_sell_price"] = 0.0
+        if "last_avg_price" not in self.states[symbol_upper]:
+            self.states[symbol_upper]["last_avg_price"] = 0.0
         return self.states[symbol_upper]
 
     def update_budget(self, symbol: str, total_budget_usd: float):
@@ -241,10 +244,12 @@ class InfiniteStateManager:
         self.save_state()
 
     def start_buying(self, symbol: str):
-        """수동 무한매수 시작 (상태를 BUYING으로 설정)"""
+        """수동 무한매수 시작 (상태를 BUYING으로 설정, 0회차 시 시작일 자동 갱신)"""
         state = self.get_symbol_state(symbol)
+        if state.get("current_round", 0) == 0:
+            state["start_date"] = datetime.now().strftime("%Y-%m-%d")
         state["status"] = "BUYING"
-        logger.info(f"▶ [{symbol}] 무한매수 매매 루프 수동 시작! (상태: BUYING)")
+        logger.info(f"▶ [{symbol}] 무한매수 매매 루프 수동 시작! (상태: BUYING, 시작일: {state.get('start_date')})")
         self.save_state()
 
     def stop_buying(self, symbol: str):
@@ -279,19 +284,29 @@ class InfiniteStateManager:
         state["status"] = "IDLE"
         state["peak_qty"] = 0
         state["paused_sell_price"] = 0.0
+        state["last_avg_price"] = 0.0
+        state["start_date"] = datetime.now().strftime("%Y-%m-%d")
         logger.info(f"🔄 [{symbol}] 무한매수 회차 초기화 완료! (상태: IDLE)")
         self.save_state()
 
-    def update_peak_qty(self, symbol: str, held_qty: int):
-        """실제 보유 수량 발생 시 peak_qty 갱신 (전량 매도 판별용)"""
+    def update_peak_qty(self, symbol: str, held_qty: int, avg_price: float = 0.0):
+        """실제 보유 수량 및 평단가 발생 시 peak_qty 및 last_avg_price 갱신"""
         state = self.get_symbol_state(symbol)
+        modified = False
         if held_qty > state.get("peak_qty", 0):
             state["peak_qty"] = held_qty
+            modified = True
+        if avg_price > 0:
+            state["last_avg_price"] = float(avg_price)
+            modified = True
+        if modified:
             self.save_state()
 
     def advance_round(self, symbol: str, round_inc: float = 0.5):
-        """매수 주문 접수/체결 시 진행 회차 증가"""
+        """매수 주문 접수/체결 시 진행 회차 증가 (새 사이클 시작 시 시작일 자동 최신화)"""
         state = self.get_symbol_state(symbol)
+        if state.get("current_round", 0) == 0:
+            state["start_date"] = datetime.now().strftime("%Y-%m-%d")
         state["current_round"] = min(state.get("division_count", 40), state.get("current_round", 0) + round_inc)
         state["status"] = "BUYING"
         self.save_state()
@@ -309,6 +324,8 @@ class InfiniteStateManager:
         start_date = state.get("start_date", "")
         end_date = datetime.now().strftime("%Y-%m-%d")
 
+        eff_avg_p = avg_price if avg_price > 0 else state.get("last_avg_price", 0.0)
+
         # Google Sheets 매매 완료 일지 기록
         if hasattr(self, "gss_mgr") and self.gss_mgr:
             try:
@@ -318,7 +335,7 @@ class InfiniteStateManager:
                     end_date=end_date,
                     completed_round=completed_round,
                     qty=qty,
-                    avg_price=avg_price,
+                    avg_price=eff_avg_p,
                     sell_price=sell_price,
                     status="COMPLETED"
                 )
@@ -329,4 +346,5 @@ class InfiniteStateManager:
         state["status"] = "COMPLETED"
         state["peak_qty"] = 0
         state["paused_sell_price"] = 0.0
+        state["last_avg_price"] = 0.0
         self.save_state()

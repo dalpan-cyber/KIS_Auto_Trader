@@ -225,6 +225,20 @@ class InfiniteBuyingStrategy(BaseStrategy):
                     "ord_type": "00",  # 지정가 매도
                     "desc": f"전량 익절 매도 (40회차 소진 - 목표가 하향: ${sell_target_price:.2f}, +{eff_roi*100:.1f}%)"
                 })
+            elif is_exhausted and exhaust_action == "REBALANCE_QUARTER":
+                # 쿼터 순환 매매: 1회차 분량은 하단에서 현재가 순환 매도하므로, 잔여 수량만 목표가 익절 매도로 발주 (수량 초과 방지)
+                rebalance_qty = max(1, int(total_qty / division)) if total_qty > 0 else 0
+                main_sell_qty = total_qty - rebalance_qty
+                sell_target_price = round(avg_price * (1.0 + target_roi), 2)
+                if main_sell_qty > 0:
+                    orders.append({
+                        "action": "SELL",
+                        "symbol": symbol,
+                        "qty": main_sell_qty,
+                        "price": sell_target_price,
+                        "ord_type": "00",
+                        "desc": f"잔여 익절 매도 (쿼터순환 제외 {main_sell_qty}주, 목표가: ${sell_target_price:.2f}, +{target_roi*100:.1f}%)"
+                    })
             else:
                 sell_target_price = round(avg_price * (1.0 + target_roi), 2)
                 orders.append({

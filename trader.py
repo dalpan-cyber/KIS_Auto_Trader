@@ -324,9 +324,10 @@ class TraderBot:
                 prev_round = st.get("current_round", 0.0)
                 held_qty = int(self.holdings.get(symbol, {}).get("qty", 0))
 
-                # 실제 보유 수량이 확인되면 peak_qty 갱신 및 상태/회차 자동 보정
+                # 실제 보유 수량이 확인되면 peak_qty 및 평단가 갱신 및 상태/회차 자동 보정
                 if held_qty > 0:
-                    self.infinite_state_mgr.update_peak_qty(symbol, held_qty)
+                    avg_p = float(self.holdings.get(symbol, {}).get("avg_price", 0.0))
+                    self.infinite_state_mgr.update_peak_qty(symbol, held_qty, avg_price=avg_p)
                     if prev_status == "IDLE":
                         self.logger.info(f"▶ [{symbol}] 실계좌 보유 수량({held_qty}주) 확인: 상태를 IDLE -> BUYING으로 자동 활성화합니다.")
                         self.infinite_state_mgr.start_buying(symbol)
@@ -336,13 +337,13 @@ class TraderBot:
                         st["current_round"] = 1.0
                         self.infinite_state_mgr.save_state()
 
-                # 진행 중(BUYING 상태이면서 1회차 이상 진행)이고,
+                # 진행 중(BUYING 또는 PAUSED 상태이면서 1회차 이상 진행)이고,
                 # 이전에 실제 매수 체결 수량이 존재했었는데(peak_qty > 0) 실제 보유 수량이 0이 된 경우에만
                 # 실제 전량 익절 매도 체결 완료로 판단! (당일 LOC 매수 주문 직후 held_qty=0인 신규 회차는 제외)
                 peak_qty = st.get("peak_qty", 0)
-                if prev_status == "BUYING" and prev_round > 0 and peak_qty > 0 and held_qty == 0:
+                if prev_status in ("BUYING", "PAUSED") and prev_round > 0 and peak_qty > 0 and held_qty == 0:
                     self.logger.info(
-                        f"🎊 [{symbol}] 전량 익절 매도 체결 확인! (보유: {peak_qty}주 -> 0주) 무한매수 {prev_round}회차 사이클 완료 처리합니다."
+                        f"🎊 [{symbol}] 전량 매도 체결 확인! ({prev_status} 상태, 보유: {peak_qty}주 -> 0주) 무한매수 {prev_round}회차 사이클 완료 처리합니다."
                     )
                     avg_p = float(self.holdings.get(symbol, {}).get("avg_price", 0.0))
                     cur_p = self.current_prices.get(symbol, 0.0)
@@ -523,9 +524,9 @@ class TraderBot:
             exhaust_action=stock_cfg["exhaust_action"],
             exhaust_target_roi=stock_cfg["exhaust_target_roi"]
         )
-        # 신규 등록 종목이 IDLE 상태인 경우, 매수 주문 실행 시 자동으로 BUYING 상태로 전환
-        if action_filter in ("ALL", "BUY") and state.get("status") == "IDLE":
-            self.logger.info(f"▶ [{symbol}] 매수 주문 실행에 따라 상태를 IDLE -> BUYING으로 활성화합니다.")
+        # 신규 등록 종목이 IDLE 또는 COMPLETED 상태인 경우, 매수 주문 실행 시 자동으로 BUYING 상태로 전환 (새 사이클 시작)
+        if action_filter in ("ALL", "BUY") and state.get("status") in ("IDLE", "COMPLETED"):
+            self.logger.info(f"▶ [{symbol}] 매수 주문 실행에 따라 상태를 {state.get('status')} -> BUYING으로 활성화합니다.")
             self.infinite_state_mgr.start_buying(symbol)
             state = self.infinite_state_mgr.get_symbol_state(symbol)
 

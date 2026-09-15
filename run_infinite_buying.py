@@ -92,8 +92,8 @@ def main():
             exhaust_action=stock_cfg["exhaust_action"],
             exhaust_target_roi=stock_cfg["exhaust_target_roi"]
         )
-        if st_data.get("status") == "IDLE":
-            logger.info(f"▶ [{symbol}] 무한매수 상태가 IDLE입니다. 자동 매수 진행(BUYING) 상태로 전환합니다.")
+        if st_data.get("status") in ("IDLE", "COMPLETED"):
+            logger.info(f"▶ [{symbol}] 무한매수 상태가 {st_data.get('status')}입니다. 자동 매수 진행(BUYING) 상태로 전환하여 새 사이클을 시작합니다.")
             bot.infinite_state_mgr.start_buying(symbol)
 
     logger.info("🚀 [주문 발주 모드] 무한매수 당일 LOC 매수 & 익절 매도 주문 생성/제출 실행...")
