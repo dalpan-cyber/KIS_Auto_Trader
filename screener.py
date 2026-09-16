@@ -833,3 +833,6 @@ class StockScreener:
         data.setdefault("holdings_count", 0)
         data.setdefault("status", "READY" if (data.get("buy_proposals") or data.get("last_recommended_proposals") or data.get("top_candidates")) else "EMPTY")
         return data
+
+    get_latest_proposals = load_proposals
+

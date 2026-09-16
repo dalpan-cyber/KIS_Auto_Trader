@@ -131,53 +131,57 @@ with st.sidebar:
     st.divider()
     st.caption("KIS Auto Trading Engine • Unified Terminal v3.0")
 
+# 계좌 및 제안서 데이터 조회
+balance_data = api.get_account_balance()
+summary = balance_data.get("summary", {})
+holdings = balance_data.get("holdings", [])
+
+is_zero_balance = (
+    balance_data.get("rt_cd") != "0" or
+    (summary.get("tot_asset", 0) == 0 and summary.get("cash_balance", 0) == 0)
+)
+if is_zero_balance:
+    time.sleep(0.3)
+    retry_balance = api.get_account_balance()
+    if retry_balance.get("rt_cd") == "0" and (
+        retry_balance.get("summary", {}).get("tot_asset", 0) > 0 or
+        retry_balance.get("summary", {}).get("cash_balance", 0) > 0
+    ):
+        balance_data = retry_balance
+        summary = balance_data.get("summary", {})
+        holdings = balance_data.get("holdings", [])
+
+# 정상 수신된 잔고 데이터는 세션에 캐싱 (이후 일시적 API 지연 시 0원 노출 방지 fallback)
+if summary.get("tot_asset", 0) > 0 or summary.get("cash_balance", 0) > 0 or len(holdings) > 0:
+    st.session_state["cached_summary"] = summary
+    st.session_state["cached_holdings"] = holdings
+elif "cached_summary" in st.session_state:
+    summary = st.session_state["cached_summary"]
+    holdings = st.session_state.get("cached_holdings", holdings)
+
+proposals = screener.load_proposals()
+
+# 매도 추천에서 이미 매도 완료된 종목 제외
+holding_codes = {h.get("code") for h in holdings if isinstance(h, dict) and h.get("code")}
+if proposals.get("sell_proposals"):
+    proposals["sell_proposals"] = [
+        s for s in proposals["sell_proposals"]
+        if isinstance(s, dict) and s.get("code") in holding_codes
+    ]
+
 # ==============================================================================
 # 메인 뷰 라우팅
 # ==============================================================================
 current_page = st.session_state["nav_page"]
 
 if current_page == "dashboard":
-    # 계좌 및 제안서 데이터 조회
-    balance_data = api.get_account_balance()
-    summary = balance_data.get("summary", {})
-    holdings = balance_data.get("holdings", [])
-
-    is_zero_balance = (
-        balance_data.get("rt_cd") != "0" or
-        (summary.get("tot_asset", 0) == 0 and summary.get("cash_balance", 0) == 0)
-    )
-    if is_zero_balance:
-        time.sleep(0.3)
-        retry_balance = api.get_account_balance()
-        if retry_balance.get("rt_cd") == "0" and (
-            retry_balance.get("summary", {}).get("tot_asset", 0) > 0 or
-            retry_balance.get("summary", {}).get("cash_balance", 0) > 0
-        ):
-            balance_data = retry_balance
-            summary = balance_data.get("summary", {})
-            holdings = balance_data.get("holdings", [])
-
-    proposals_data = screener.get_latest_proposals()
-    buy_proposals = proposals_data.get("proposals", [])
-    sell_proposals = proposals_data.get("sell_proposals", [])
-
-    render_dashboard(
-        api=api,
-        screener=screener,
-        summary=summary,
-        holdings=holdings,
-        buy_proposals=buy_proposals,
-        sell_proposals=sell_proposals
-    )
-
+    render_dashboard(api, screener, summary, holdings, proposals, holding_codes, realtime_detection_fragment)
 elif current_page == "infinite":
     render_infinite()
-
 elif current_page == "screener":
-    render_screener(api=api, screener=screener)
-
+    render_screener(api, screener, proposals, holding_codes)
 elif current_page == "backtest":
     render_backtest()
-
 elif current_page == "settings":
-    render_settings(api=api)
+    render_settings()
+
