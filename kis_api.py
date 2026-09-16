@@ -1628,3 +1628,539 @@ class KISApiClient:
 
         logger.info(f"[주문체결내역] inquire-ccnl 조회 완료: {len(normalized)}건 (symbol={symbol or '전체'}, 기간={start_date}~{end_date})")
         return normalized
+
+
+    # ===========================================================================
+    # [국내 퀀트 및 선물 매매 확장 API (Merged from KIS_Auto2)]
+    # ===========================================================================
+
+    @classmethod
+    def get_session(cls) -> requests.Session:
+        """연결 재사용을 위한 싱글톤 requests.Session 반환"""
+        with cls._session_lock:
+            if cls._shared_session is None:
+                s = requests.Session()
+                adapter = HTTPAdapter(pool_connections=20, pool_maxsize=20, max_retries=0)
+                s.mount("https://", adapter)
+                s.mount("http://", adapter)
+                cls._shared_session = s
+            return cls._shared_session
+
+
+    def _request_with_retry(
+        self,
+        method: str,
+        url: str,
+        headers: Optional[Dict[str, str]] = None,
+        params: Optional[Dict[str, Any]] = None,
+        json_data: Optional[Dict[str, Any]] = None,
+        max_retries: int = 3,
+        timeout: float = 8.0
+    ) -> requests.Response:
+        """429 Too Many Requests 및 일시적 네트워크 장애에 대한 지수 백오프 재시도 요청"""
+        session = self.get_session()
+        last_resp = None
+
+        for attempt in range(1, max_retries + 1):
+            self._rate_limit()
+            try:
+                conn_timeout = max(7.0, min(timeout, 10.0))
+                read_timeout = max(timeout, 8.0)
+                if method.upper() == "GET":
+                    resp = session.get(url, headers=headers, params=params, timeout=(conn_timeout, read_timeout))
+                else:
+                    resp = session.post(url, headers=headers, json=json_data, timeout=(conn_timeout, read_timeout))
+
+                if resp.status_code == 200:
+                    return resp
+
+                last_resp = resp
+                if resp.status_code in (429, 500, 502, 503, 504):
+                    wait_sec = attempt * 0.5
+                    self.logger.warning(f"[{method}] {url} HTTP {resp.status_code} 감지 - {wait_sec:.1f}초 후 재시도 ({attempt}/{max_retries})")
+                    time.sleep(wait_sec)
+                else:
+                    return resp
+            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+                wait_sec = attempt * 0.5
+                self.logger.warning(f"[{method}] {url} 통신 예외 ({e}) - {wait_sec:.1f}초 후 재시도 ({attempt}/{max_retries})")
+                time.sleep(wait_sec)
+            except Exception as e:
+                self.logger.error(f"[{method}] {url} 요청 중 예외: {e}")
+                raise KISApiError(f"HTTP 요청 예외: {e}")
+
+        return last_resp if last_resp is not None else requests.Response()
+
+
+    def get_stock_futures_price(self, stock_code: str) -> Dict[str, Any]:
+        """
+        개별주식선물 최근월물 시세 조회 (FHMIF10000000)
+        - stock_code: 기초자산 주식 종목코드 (예: '005930')
+        """
+        try:
+            from core.futures_manager import futures_manager
+            fut_code = futures_manager.get_futures_code(stock_code)
+            if not fut_code:
+                return {"has_futures": False, "stock_code": stock_code}
+
+            url = f"{self.url_base}/uapi/domestic-futureoption/v1/quotations/inquire-price"
+            headers = self._get_headers("FHMIF10000000")
+            params = {
+                "FID_COND_MRKT_DIV_CODE": "JF",
+                "FID_INPUT_ISCD": fut_code
+            }
+            res = self._request_with_retry("GET", url, headers=headers, params=params, timeout=5)
+            data = res.json()
+            out1 = data.get("output1", {})
+            if out1:
+                prpr = float(out1.get("futs_prpr", 0.0))
+                mrkt_basis = float(out1.get("mrkt_basis", 0.0))
+                basis = float(out1.get("basis", 0.0))
+                oi = int(out1.get("hts_otst_stpl_qty", 0))
+                oi_change = int(out1.get("otst_stpl_qty_icdc", 0))
+                change_rate = float(out1.get("futs_prdy_ctrt", 0.0))
+                vol = int(out1.get("acml_vol", 0))
+                return {
+                    "has_futures": True,
+                    "stock_code": stock_code,
+                    "futures_code": fut_code,
+                    "futures_name": out1.get("hts_kor_isnm", ""),
+                    "price": prpr,
+                    "change_rate": change_rate,
+                    "basis": basis,
+                    "market_basis": mrkt_basis,
+                    "open_interest": oi,
+                    "oi_change": oi_change,
+                    "volume": vol,
+                    "is_contango": mrkt_basis > 0
+                }
+            return {"has_futures": False, "stock_code": stock_code}
+        except Exception as e:
+            self.logger.warning(f"[{stock_code}] 주식선물 시세 조회 실패: {e}")
+            return {"has_futures": False, "stock_code": stock_code}
+
+
+    def get_index_futures_price(self, iscd: str = "10100000") -> Dict[str, Any]:
+        """
+        코스피200 지수선물 시세 조회 (FHMIF10000000)
+        - iscd: 선물 종목코드 (기본 '10100000' 코스피200 연결선물)
+        """
+        url = f"{self.url_base}/uapi/domestic-futureoption/v1/quotations/inquire-price"
+        headers = self._get_headers("FHMIF10000000")
+        params = {
+            "FID_COND_MRKT_DIV_CODE": "F",
+            "FID_INPUT_ISCD": iscd
+        }
+        try:
+            res = self._request_with_retry("GET", url, headers=headers, params=params, timeout=5)
+            data = res.json()
+            out1 = data.get("output1", {})
+            if out1:
+                mrkt_basis = float(out1.get("mrkt_basis", 0.0))
+                return {
+                    "success": True,
+                    "name": out1.get("hts_kor_isnm", ""),
+                    "price": float(out1.get("futs_prpr", 0.0)),
+                    "change_rate": float(out1.get("futs_prdy_ctrt", 0.0)),
+                    "basis": float(out1.get("basis", 0.0)),
+                    "market_basis": mrkt_basis,
+                    "open_interest": int(out1.get("hts_otst_stpl_qty", 0)),
+                    "oi_change": int(out1.get("otst_stpl_qty_icdc", 0)),
+                    "volume": int(out1.get("acml_vol", 0)),
+                    "is_contango": mrkt_basis > 0
+                }
+        except Exception as e:
+            self.logger.warning(f"지수선물({iscd}) 시세 조회 실패: {e}")
+        return {"success": False}
+
+
+    def get_investor_trend(self, stock_code: str) -> Dict[str, Any]:
+        """
+        종목별 투자자 매매동향 조회 (FHKST01010900)
+        - 당일 외국인/기관/개인 순매수 수량 및 거래대금 반환
+        """
+        try:
+            url = f"{self.url_base}/uapi/domestic-stock/v1/quotations/inquire-investor"
+            headers = self._get_headers("FHKST01010900")
+            params = {
+                "FID_COND_MRKT_DIV_CODE": "J",
+                "FID_INPUT_ISCD": stock_code
+            }
+            res = self._request_with_retry("GET", url, headers=headers, params=params, timeout=5)
+            data = res.json()
+            output = data.get("output", [])
+            if output and isinstance(output, list):
+                today_data = output[0]
+                frgn_qty = int(today_data.get("frgn_ntby_qty", 0) or 0)
+                orgn_qty = int(today_data.get("orgn_ntby_qty", 0) or 0)
+                prsn_qty = int(today_data.get("prsn_ntby_qty", 0) or 0)
+                frgn_pbmn = int(today_data.get("frgn_ntby_tr_pbmn", 0) or 0)
+                orgn_pbmn = int(today_data.get("orgn_ntby_tr_pbmn", 0) or 0)
+                prsn_pbmn = int(today_data.get("prsn_ntby_tr_pbmn", 0) or 0)
+                return {
+                    "success": True,
+                    "stock_code": stock_code,
+                    "date": today_data.get("stck_bsop_date", ""),
+                    "foreign_net_buy_qty": frgn_qty,
+                    "institution_net_buy_qty": orgn_qty,
+                    "individual_net_buy_qty": prsn_qty,
+                    "foreign_net_buy_amount": frgn_pbmn,
+                    "institution_net_buy_amount": orgn_pbmn,
+                    "individual_net_buy_amount": prsn_pbmn,
+                    "is_double_buying": frgn_qty > 0 and orgn_qty > 0,
+                    "is_double_selling": frgn_qty < 0 and orgn_qty < 0,
+                }
+        except Exception as e:
+            self.logger.warning(f"[{stock_code}] 투자자 매매동향 조회 실패: {e}")
+        return {
+            "success": False,
+            "stock_code": stock_code,
+            "foreign_net_buy_qty": 0,
+            "institution_net_buy_qty": 0,
+            "individual_net_buy_qty": 0,
+            "foreign_net_buy_amount": 0,
+            "institution_net_buy_amount": 0,
+            "individual_net_buy_amount": 0,
+            "is_double_buying": False,
+            "is_double_selling": False
+        }
+
+
+    def get_top_traded_stocks(self, count: int = 30) -> List[Dict[str, Any]]:
+        """
+        당일 거래대금 상위 종목 조회 (FHPST01710000, FID_BLNG_CLS_CODE='3')
+        - ETF, ETN, SPAC, 우선주를 제외한 일반 보통주 위주 필터링
+        """
+        results = []
+        try:
+            url = f"{self.url_base}/uapi/domestic-stock/v1/quotations/volume-rank"
+            headers = self._get_headers("FHPST01710000")
+            params = {
+                "FID_COND_MRKT_DIV_CODE": "J",
+                "FID_COND_SCR_DIV_CODE": "20171",
+                "FID_INPUT_ISCD": "0000",
+                "FID_DIV_CLS_CODE": "1",  # 보통주
+                "FID_BLNG_CLS_CODE": "3", # 거래대금순
+                "FID_TRGT_CLS_CODE": "111111111",
+                "FID_TRGT_EXLS_CLS_CODE": "000000",
+                "FID_INPUT_PRICE_1": "",
+                "FID_INPUT_PRICE_2": "",
+                "FID_VOL_CNT": "",
+                "FID_INPUT_DATE_1": ""
+            }
+            res = self._request_with_retry("GET", url, headers=headers, params=params, timeout=5)
+            data = res.json()
+            output = data.get("output", [])
+
+            etf_keywords = [
+                "KODEX", "TIGER", "ACE", "RISE", "SOL", "KOSEF", "PLUS", "KBSTAR",
+                "HANARO", "TIMEFOLIO", "WOORI", "WON", "HERO", "ETN", "스팩"
+            ]
+
+            for item in output:
+                code = item.get("mksc_shrn_iscd", "")
+                name = item.get("hts_kor_isnm", "")
+                if not code or not name:
+                    continue
+                # 우선주 제외 (코드 끝자리 0이 아닌 경우 제외)
+                if not code.endswith("0"):
+                    continue
+                # ETF/ETN/스팩 제외
+                if any(kw in name for kw in etf_keywords):
+                    continue
+
+                pbmn = int(item.get("acml_tr_pbmn", 0) or 0)
+                vol = int(item.get("acml_vol", 0) or 0)
+                price = float(item.get("stck_prpr", 0.0) or 0.0)
+                change_rate = float(item.get("prdy_ctrt", 0.0) or 0.0)
+
+                results.append({
+                    "code": code,
+                    "name": name,
+                    "price": price,
+                    "change_rate": change_rate,
+                    "volume": vol,
+                    "trade_amount": pbmn,
+                })
+                if len(results) >= count:
+                    break
+        except Exception as e:
+            self.logger.warning(f"거래대금 상위 종목 조회 실패: {e}")
+        return results
+
+
+    def get_execution_strength(self, stock_code: str) -> Optional[float]:
+        """
+        당일 실시간 체결강도 조회 (FHKST01010300)
+        - 체결강도 (%): 100% 초과시 매수세 우세
+        """
+        try:
+            url = f"{self.url_base}/uapi/domestic-stock/v1/quotations/inquire-ccnl"
+            headers = self._get_headers("FHKST01010300")
+            params = {
+                "FID_COND_MRKT_DIV_CODE": "J",
+                "FID_INPUT_ISCD": stock_code
+            }
+            res = self._request_with_retry("GET", url, headers=headers, params=params, timeout=5)
+            data = res.json()
+            output = data.get("output", [])
+            if output and isinstance(output, list):
+                val = output[0].get("tday_rltv")
+                if val is not None:
+                    return float(val)
+        except Exception as e:
+            self.logger.warning(f"[{stock_code}] 당일 체결강도 조회 실패: {e}")
+        return None
+
+
+    def get_monthly_chart(self, stock_code: str, count: int = 20) -> List[Dict[str, Any]]:
+        """월별 차트/시세 데이터 조회 (OHLCV, FID_PERIOD_DIV_CODE='M')"""
+        end_date = today().strftime("%Y%m%d")
+        # count 개월 이상의 충분한 기간 확보 (1개월당 약 35일 여유)
+        start_date = (today() - datetime.timedelta(days=count * 35)).strftime("%Y%m%d")
+
+        url = f"{self.url_base}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
+        headers = self._get_headers("FHKST03010100")
+        params = {
+            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_INPUT_ISCD": stock_code,
+            "FID_INPUT_DATE_1": start_date,
+            "FID_INPUT_DATE_2": end_date,
+            "FID_PERIOD_DIV_CODE": "M",
+            "FID_ORG_ADJ_PRC": "0"
+        }
+        try:
+            res = self._request_with_retry("GET", url, headers=headers, params=params, timeout=7)
+            data = res.json()
+            output2 = data.get("output2", [])
+            results = []
+            for item in output2[:count]:
+                try:
+                    results.append({
+                        "date": item.get("stck_bsop_date"),
+                        "close": float(item.get("stck_clpr", 0)),
+                        "open": float(item.get("stck_oprc", 0)),
+                        "high": float(item.get("stck_hgpr", 0)),
+                        "low": float(item.get("stck_lwpr", 0)),
+                        "volume": int(item.get("acml_vol", 0)),
+                        "change_rate": float(item.get("prdy_ctrt", 0)) if "prdy_ctrt" in item else 0.0
+                    })
+                except (ValueError, TypeError):
+                    continue
+            results.reverse()
+            return results
+        except Exception as e:
+            self.logger.error(f"[{stock_code}] 월봉 차트 조회 에러: {e}")
+            return []
+
+
+    def order_stock(
+        self,
+        code: str,
+        qty: int,
+        buy_sell: str = "매수",
+        order_type: str = "01",
+        price: int = 0
+    ) -> Dict[str, Any]:
+        """order_cash의 친화적 래퍼 메서드"""
+        action = "BUY" if buy_sell in ("매수", "BUY") else "SELL"
+        return self.order_cash(
+            stock_code=code,
+            qty=qty,
+            price=price,
+            buy_sell=action,
+            ord_dv=order_type
+        )
+
+
+    def get_order_history(self, start_date: Optional[str] = None, end_date: Optional[str] = None) -> List[Dict[str, Any]]:
+        """주문 및 체결 내역 조회 (TTTC8001R / VTTC8001R)"""
+        url = f"{self.url_base}/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
+        tr_id = "VTTC8001R" if self.is_mock else "TTTC8001R"
+        headers = self._get_headers(tr_id)
+        start_str = start_date or today().strftime("%Y%m%d")
+        end_str = end_date or today().strftime("%Y%m%d")
+        params = {
+            "CANO": self.cano,
+            "ACNT_PRDT_CD": self.acnt_prdt_cd,
+            "INQR_STRT_DT": start_str,
+            "INQR_END_DT": end_str,
+            "SLL_BUY_DVSN_CD": "00",
+            "INQR_DVSN": "00",
+            "PDNO": "",
+            "CCLD_DVSN": "00",
+            "ORD_GNO_BRNO": "",
+            "ODNO": "",
+            "INQR_DVSN_3": "00",
+            "INQR_DVSN_1": "",
+            "CTX_AREA_FK100": "",
+            "CTX_AREA_NK100": ""
+        }
+        try:
+            res = self._request_with_retry("GET", url, headers=headers, params=params, timeout=7)
+            data = res.json()
+            output1 = data.get("output1", [])
+            orders = []
+            for item in output1:
+                orders.append({
+                    "order_no": item.get("odno"),
+                    "code": item.get("pdno"),
+                    "name": item.get("prdt_name"),
+                    "buy_sell": "매수" if item.get("sll_buy_dvsn_cd") == "02" else "매도",
+                    "order_qty": int(item.get("ord_qty", 0)),
+                    "order_price": float(item.get("ord_unpr", 0)),
+                    "ccld_qty": int(item.get("tot_ccld_qty", 0)),
+                    "ccld_price": float(item.get("avg_prvs", 0)),
+                    "order_time": item.get("ord_tmd"),
+                    "order_date": item.get("ord_dt", ""),
+                    "status": "체결완료" if int(item.get("ord_qty", 0)) == int(item.get("tot_ccld_qty", 0)) and int(item.get("ord_qty", 0)) > 0 else "미체결/부분체결"
+                })
+            return orders
+        except Exception as e:
+            self.logger.error(f"주문내역 조회 에러: {e}")
+            return []
+
+
+    def get_trade_history_with_profit(self, start_date: Optional[str] = None, end_date: Optional[str] = None) -> Dict[str, Any]:
+        """매수/매도 이력 조회 및 실현 손익 계산 (FIFO 선입선출 매칭)"""
+        orders = self.get_order_history(start_date, end_date)
+        if not orders:
+            return {
+                "orders": [],
+                "realized_profit": 0.0,
+                "buy_total": 0.0,
+                "sell_total": 0.0,
+                "buy_count": 0,
+                "sell_count": 0,
+                "profit_by_stock": {}
+            }
+
+        orders.sort(key=lambda o: (
+            o.get("order_date", "") or "",
+            o.get("order_time", "") or ""
+        ))
+
+        buy_total = 0.0
+        sell_total = 0.0
+        buy_count = 0
+        sell_count = 0
+        stock_orders = {}
+
+        for o in orders:
+            code = o["code"]
+            if code not in stock_orders:
+                stock_orders[code] = []
+            stock_orders[code].append({
+                "buy_sell": o["buy_sell"],
+                "qty": o.get("ccld_qty", 0),
+                "price": o.get("ccld_price", 0)
+            })
+
+            ccld_qty = o.get("ccld_qty", 0)
+            ccld_price = o.get("ccld_price", 0)
+            amount = ccld_qty * ccld_price
+
+            if o["buy_sell"] == "매수":
+                buy_total += amount
+                buy_count += 1
+            else:
+                sell_total += amount
+                sell_count += 1
+
+        realized_profit = 0.0
+        realized_buy_total = 0.0
+        realized_sell_total = 0.0
+        profit_by_stock = {}
+
+        for code, stock_orders_list in stock_orders.items():
+            stock_name = ""
+            for o in orders:
+                if o["code"] == code:
+                    stock_name = o["name"]
+                    break
+
+            buy_queue = []
+            sell_amount = 0.0
+            sell_qty = 0
+            buy_amount_matched = 0.0
+            buy_qty_matched = 0
+
+            for so in stock_orders_list:
+                if so["buy_sell"] == "매수":
+                    buy_queue.append(so)
+                else:
+                    sell_qty_remaining = so["qty"]
+                    sell_amount += so["qty"] * so["price"]
+                    sell_qty += so["qty"]
+
+                    while sell_qty_remaining > 0 and buy_queue:
+                        buy_order = buy_queue[0]
+                        match_qty = min(buy_order["qty"], sell_qty_remaining)
+                        buy_amount_matched += match_qty * buy_order["price"]
+                        buy_qty_matched += match_qty
+                        sell_qty_remaining -= match_qty
+                        buy_order["qty"] -= match_qty
+                        if buy_order["qty"] <= 0:
+                            buy_queue.pop(0)
+
+            if sell_qty > 0:
+                profit = sell_amount - buy_amount_matched
+                profit_by_stock[code] = {
+                    "name": stock_name,
+                    "buy_amount": buy_amount_matched,
+                    "sell_amount": sell_amount,
+                    "buy_qty": buy_qty_matched,
+                    "sell_qty": sell_qty,
+                    "profit": profit
+                }
+                realized_profit += profit
+                realized_buy_total += buy_amount_matched
+                realized_sell_total += sell_amount
+            else:
+                profit_by_stock[code] = {
+                    "name": stock_name,
+                    "buy_amount": 0.0,
+                    "sell_amount": 0.0,
+                    "buy_qty": 0,
+                    "sell_qty": 0,
+                    "profit": 0.0
+                }
+
+        return {
+            "orders": orders,
+            "realized_profit": realized_profit,
+            "buy_total": realized_buy_total,
+            "sell_total": realized_sell_total,
+            "buy_count": buy_count,
+            "sell_count": sell_count,
+            "profit_by_stock": profit_by_stock
+        }
+
+
+    def get_unrealized_profit(self) -> Dict[str, Any]:
+        """현재 보유 종목의 미실현 손익(평가손익) 계산"""
+        balance = self.get_account_balance()
+        holdings = balance.get("holdings", [])
+        unrealized_profit = 0.0
+        unrealized_by_stock = {}
+
+        for h in holdings:
+            code = h["code"]
+            profit = h.get("profit_loss", 0.0)
+            unrealized_profit += profit
+            unrealized_by_stock[code] = {
+                "name": h.get("name", ""),
+                "code": code,
+                "quantity": h.get("quantity", 0),
+                "avg_buy_price": h.get("avg_buy_price", 0),
+                "current_price": h.get("current_price", 0),
+                "profit_loss": profit,
+                "profit_rate": h.get("profit_rate", 0)
+            }
+
+        return {
+            "unrealized_profit": unrealized_profit,
+            "unrealized_by_stock": unrealized_by_stock
+        }
+
+

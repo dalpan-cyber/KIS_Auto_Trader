@@ -135,8 +135,10 @@ def _apply_settings(_settings: dict):
 
 # --- Google Sheets 동기화 설정 (영속 설정 로드 전에 선언) ---
 GOOGLE_SHEET_ENABLED = os.getenv("GOOGLE_SHEET_ENABLED", "true").lower() == "true"
-GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME", "KIS_무한매수_매매일지")
-GOOGLE_SHEET_KEY = os.getenv("GOOGLE_SHEET_KEY", "")  # 구글 시트 ID/Key
+INFINITE_GOOGLE_SHEET_NAME = os.getenv("INFINITE_GOOGLE_SHEET_NAME", os.getenv("GOOGLE_SHEET_NAME", "KIS_무한매수_매매일지"))
+INFINITE_GOOGLE_SHEET_KEY = os.getenv("INFINITE_GOOGLE_SHEET_KEY", os.getenv("GOOGLE_SHEET_KEY", ""))
+GOOGLE_SHEET_NAME = INFINITE_GOOGLE_SHEET_NAME
+GOOGLE_SHEET_KEY = INFINITE_GOOGLE_SHEET_KEY
 GCP_SERVICE_ACCOUNT_JSON = os.getenv("GCP_SERVICE_ACCOUNT_JSON", "")  # GCP Service Account JSON
 
 # 리스크 및 시스템 제한 설정 (영속 설정 로드 전에 정의)

@@ -19,6 +19,7 @@ service_account.json
 kis-auto-trader-*.json
 *service_account*.json
 *gcp*.json
+*_backup.py
 
 
 # Temp & IDE Files
