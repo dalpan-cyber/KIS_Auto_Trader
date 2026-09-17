@@ -58,3 +58,11 @@ def get_url_base() -> str:
 
 def sync_settings_from_google_sheet() -> bool:
     return _domestic.sync_settings_from_google_sheet()
+
+
+def __getattr__(name: str) -> Any:
+    if name == "CURRENT_SETTINGS":
+        return _domestic.CURRENT_SETTINGS
+    if hasattr(_domestic, name):
+        return getattr(_domestic, name)
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")

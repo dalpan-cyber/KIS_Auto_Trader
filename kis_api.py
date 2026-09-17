@@ -313,6 +313,7 @@ class KISApiClient:
             # API키 없을 시 가상 테스트 시세 반환
             return {
                 "success": True,
+                "rt_cd": "0",
                 "code": stock_code,
                 "name": f"종목_{stock_code}",
                 "price": 70000 if stock_code == "005930" else 120000,
@@ -321,7 +322,9 @@ class KISApiClient:
                 "volume": 1000000,
                 "high": 71000,
                 "low": 69500,
-                "open": 69800
+                "open": 69800,
+                "stck_prpr": 70000 if stock_code == "005930" else 120000,
+                "acml_vol": 1000000
             }
 
         url = f"{self.url_base}/uapi/domestic-stock/v1/quotations/inquire-price"
@@ -338,21 +341,38 @@ class KISApiClient:
 
             if res.status_code == 200 and data.get("rt_cd") == "0":
                 output = data.get("output", {})
+                price = int(output.get("stck_prpr", 0))
+                open_p = int(output.get("stck_oprc", price))
+                high_p = int(output.get("stck_hgpr", price))
+                low_p = int(output.get("stck_lwpr", price))
+                vol = int(output.get("acml_vol", 0))
+                diff = int(output.get("prdy_vrss", 0))
+                rate = float(output.get("prdy_ctrt", 0.0))
+                d250 = float(output.get("d250_hgpr", 0.0) or 0.0)
                 return {
                     "success": True,
+                    "rt_cd": "0",
                     "code": stock_code,
                     "name": output.get("hts_kor_isnm", f"종목_{stock_code}"),
-                    "price": int(output.get("stck_prpr", 0)),
-                    "diff": int(output.get("prdy_vrss", 0)),
-                    "rate": float(output.get("prdy_ctrt", 0.0)),
-                    "volume": int(output.get("acml_vol", 0)),
-                    "high": int(output.get("stck_hgpr", 0)),
-                    "low": int(output.get("stck_lwpr", 0)),
-                    "open": int(output.get("stck_oprc", 0))
+                    "price": price,
+                    "diff": diff,
+                    "rate": rate,
+                    "volume": vol,
+                    "high": high_p,
+                    "low": low_p,
+                    "open": open_p,
+                    "stck_prpr": price,
+                    "stck_oprc": open_p,
+                    "stck_hgpr": high_p,
+                    "stck_lwpr": low_p,
+                    "acml_vol": vol,
+                    "prdy_ctrt": rate,
+                    "prdy_vrss": diff,
+                    "d250_hgpr": d250
                 }
             else:
                 logger.error(f"[{stock_code}] 시세 조회 실패: {data.get('msg1')}")
-                return {"success": False, "msg": data.get("msg1", "시세 조회 실패")}
+                return {"success": False, "rt_cd": data.get("rt_cd", "-1"), "msg": data.get("msg1", "시세 조회 실패")}
         except Exception as e:
             logger.error(f"[{stock_code}] 시세 조회 예외 발생: {e}")
             return {"success": False, "msg": str(e)}
