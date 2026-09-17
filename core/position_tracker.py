@@ -22,30 +22,53 @@ class PositionTracker:
         self._cooldown_api_cache: Dict[str, Any] = {}
 
     # =========================================================================
+    # =========================================================================
     # 라이브 포지션 상태 (최고가 & 1차 50% 분할 익절 상태) 관리
     # =========================================================================
+    def _normalize_state_keys(self, state: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        """종목 코드를 6자리 문자열로 정규화하여 딕셔너리 키 일관성 보장"""
+        normalized: Dict[str, Dict[str, Any]] = {}
+        for k, v in state.items():
+            k_str = str(k).strip().lstrip("'")
+            code_6 = k_str.zfill(6) if k_str.isdigit() and len(k_str) < 6 else k_str
+            if isinstance(v, dict):
+                v["code"] = code_6
+            normalized[code_6] = v
+        return normalized
+
     def load_positions_state(self) -> Dict[str, Dict[str, Any]]:
         """라이브 보유 종목별 최고가 및 1차 익절 상태 로드 (로컬 JSON + Google Sheet 동기화)"""
         local_state = safe_load_json(self.positions_file, default={})
+        local_state = self._normalize_state_keys(local_state)
         try:
             from google_sheet_manager import get_sheet_manager
             sheet_mgr = get_sheet_manager()
             if sheet_mgr.is_connected:
                 sheet_state = sheet_mgr.read_positions_state_from_sheet()
                 if sheet_state:
-                    local_state.update(sheet_state)
+                    sheet_state = self._normalize_state_keys(sheet_state)
+                    for c_key, s_val in sheet_state.items():
+                        if c_key in local_state:
+                            loc_val = local_state[c_key]
+                            s_val["highest_price"] = max(loc_val.get("highest_price", 0.0), s_val.get("highest_price", 0.0))
+                            s_val["is_partial_sold"] = loc_val.get("is_partial_sold", False) or s_val.get("is_partial_sold", False)
+                            if "strategy" not in s_val or not s_val["strategy"]:
+                                s_val["strategy"] = loc_val.get("strategy", "momentum")
+                                s_val["strategy_display_name"] = loc_val.get("strategy_display_name", loc_val.get("strategy", "momentum"))
+                        local_state[c_key] = s_val
         except Exception as e:
             logger.debug(f"Google Sheet 포지션 상태 읽기 생략: {e}")
         return local_state
 
     def save_positions_state(self, state: Dict[str, Dict[str, Any]]) -> bool:
         """라이브 보유 종목별 최고가 및 1차 익절 상태 저장 (로컬 JSON + Google Sheet)"""
-        ok = atomic_save_json(self.positions_file, state)
+        norm_state = self._normalize_state_keys(state)
+        ok = atomic_save_json(self.positions_file, norm_state)
         try:
             from google_sheet_manager import get_sheet_manager
             sheet_mgr = get_sheet_manager()
             if sheet_mgr.is_connected:
-                sheet_mgr.sync_positions_state_to_sheet(state)
+                sheet_mgr.sync_positions_state_to_sheet(norm_state)
         except Exception as e:
             logger.debug(f"Google Sheet 포지션 상태 동기화 생략: {e}")
         return ok
@@ -60,9 +83,11 @@ class PositionTracker:
         strategy_display_name: Optional[str] = None
     ) -> Dict[str, Any]:
         """신규 매수 체결 종목의 포지션 정보 및 진입 전략 기록"""
+        c_str = str(code).strip().lstrip("'")
+        code_6 = c_str.zfill(6) if c_str.isdigit() and len(c_str) < 6 else c_str
         state = self.load_positions_state()
-        pos = state.get(code, {})
-        pos["code"] = code
+        pos = state.get(code_6, {})
+        pos["code"] = code_6
         pos["name"] = name
         pos["avg_buy_price"] = price
         pos["highest_price"] = max(pos.get("highest_price", price), price)
@@ -71,15 +96,17 @@ class PositionTracker:
         pos["strategy_display_name"] = strategy_display_name or strategy
         pos["buy_date"] = today().strftime("%Y%m%d")
         pos["last_updated"] = now_str()
-        state[code] = pos
+        state[code_6] = pos
         self.save_positions_state(state)
-        logger.info(f"[{name}({code})] 포지션 등록: 매수전략='{strategy}', 단가={price:,.0f}원, 수량={qty}주")
+        logger.info(f"[{name}({code_6})] 포지션 등록: 매수전략='{strategy}', 단가={price:,.0f}원, 수량={qty}주")
         return pos
 
     def get_position_strategy(self, code: str) -> Optional[str]:
         """보유 종목의 매수 진입 전략 반환"""
+        c_str = str(code).strip().lstrip("'")
+        code_6 = c_str.zfill(6) if c_str.isdigit() and len(c_str) < 6 else c_str
         state = self.load_positions_state()
-        pos = state.get(code)
+        pos = state.get(code_6) or state.get(c_str)
         if pos and pos.get("strategy"):
             return pos["strategy"]
         return None
@@ -93,25 +120,34 @@ class PositionTracker:
         strategy: Optional[str] = None
     ) -> Dict[str, Any]:
         """라이브 종목별 최고가 갱신 및 상태 반환"""
+        c_str = str(code).strip().lstrip("'")
+        code_6 = c_str.zfill(6) if c_str.isdigit() and len(c_str) < 6 else c_str
         state = self.load_positions_state()
-        pos = state.get(code, {})
+        pos = state.get(code_6, {})
         highest_price = max(pos.get("highest_price", avg_buy_price or current_price), current_price)
         is_partial_sold = pos.get("is_partial_sold", False) or is_partial_take
 
+        pos["code"] = code_6
         pos["highest_price"] = highest_price
         pos["is_partial_sold"] = is_partial_sold
-        if strategy and "strategy" not in pos:
+        if strategy and ("strategy" not in pos or not pos["strategy"]):
             pos["strategy"] = strategy
         pos["last_updated"] = now_str()
-        state[code] = pos
+        state[code_6] = pos
         self.save_positions_state(state)
         return pos
 
     def clear_position_state(self, code: str) -> None:
         """전량 매도된 종목의 포지션 상태 정리"""
+        c_str = str(code).strip().lstrip("'")
+        code_6 = c_str.zfill(6) if c_str.isdigit() and len(c_str) < 6 else c_str
         state = self.load_positions_state()
-        if code in state:
-            del state[code]
+        changed = False
+        for c in (code_6, c_str, c_str.lstrip("0")):
+            if c in state:
+                del state[c]
+                changed = True
+        if changed:
             self.save_positions_state(state)
 
     # =========================================================================

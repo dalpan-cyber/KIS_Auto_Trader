@@ -9,6 +9,8 @@ import datetime
 from typing import Dict, Any, List, Optional
 
 from core.sheets.base_sheet import BaseSheetManager, GSPREAD_AVAILABLE
+from time_utils import now_str
+import app_config as config
 
 logger = logging.getLogger("DomesticSheetManager")
 
@@ -82,6 +84,14 @@ class DomesticSheetManager(BaseSheetManager):
             headers=["종목코드", "종목명", "매수단가", "최고가", "1차익절완료", "매수전략", "갱신일시"],
             rows="100", cols="8"
         )
+        if self.positions_worksheet:
+            try:
+                cur_hdrs = self.positions_worksheet.row_values(1)
+                exp_hdrs = ["종목코드", "종목명", "매수단가", "최고가", "1차익절완료", "매수전략", "갱신일시"]
+                if cur_hdrs != exp_hdrs:
+                    self.positions_worksheet.update(range_name="A1:G1", values=[exp_hdrs])
+            except Exception:
+                pass
 
         # 4. 'Cooldown' 워크시트 (손절 쿨다운 관리)
         self.cooldown_worksheet = self._get_or_create_worksheet(
@@ -307,16 +317,48 @@ class DomesticSheetManager(BaseSheetManager):
         try:
             now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             rows = []
-            for code, data in positions.items():
+            for raw_code, data in positions.items():
+                code_str = str(raw_code).strip().lstrip("'")
+                code_6 = code_str.zfill(6) if code_str.isdigit() and len(code_str) < 6 else code_str
+
+                # 종목명이 코드와 같거나 비어있으면 매핑에서 검색
+                name = data.get("name", code_6)
+                if (not name or name == raw_code or name == code_6) and hasattr(config, "STOCK_NAMES"):
+                    name = config.STOCK_NAMES.get(code_6, name)
+
+                strat_name = data.get("strategy", "momentum")
+                strat_disp = data.get("strategy_display_name", "")
+                if not strat_disp:
+                    if strat_name == "monthly_trend":
+                        strat_disp = "월간 10개월 추세 (GTAA)"
+                    elif strat_name == "rebound":
+                        strat_disp = "52주 신저가 반등"
+                    elif strat_name == "multi":
+                        strat_disp = "슈퍼시그널"
+                    else:
+                        strat_disp = "모멘텀 추세추종"
+
+                # 구글 시트에서 앞자리 0이 잘리지 않도록 텍스트 접두사(') 추가
+                formatted_code = f"'{code_6}" if code_6.isdigit() else code_6
+
                 rows.append([
-                    code,
-                    data.get("name", code),
+                    formatted_code,
+                    name,
                     data.get("avg_buy_price", 0.0),
                     data.get("highest_price", 0.0),
                     "Y" if data.get("is_partial_sold", False) else "N",
-                    data.get("strategy_display_name", data.get("strategy", "모멘텀")),
+                    strat_disp,
                     data.get("last_updated", data.get("updated_at", now_str))
                 ])
+
+            # 헤더 확인 및 보정
+            expected_headers = ["종목코드", "종목명", "매수단가", "최고가", "1차익절완료", "매수전략", "갱신일시"]
+            try:
+                cur_headers = self.positions_worksheet.row_values(1)
+                if cur_headers != expected_headers:
+                    self.positions_worksheet.update(range_name="A1:G1", values=[expected_headers])
+            except Exception:
+                pass
 
             # 기존 데이터 삭제 후 최신 상태 작성
             try:
@@ -342,20 +384,51 @@ class DomesticSheetManager(BaseSheetManager):
         try:
             records = self.positions_worksheet.get_all_records()
             for rec in records:
-                code = str(rec.get("종목코드", "")).strip()
-                if not code:
+                raw_code = str(rec.get("종목코드", "")).strip().lstrip("'")
+                if not raw_code:
                     continue
-                strat_raw = str(rec.get("매수전략", "momentum") or "momentum")
+                code = raw_code.zfill(6) if raw_code.isdigit() and len(raw_code) < 6 else raw_code
+
+                strat_raw = str(rec.get("매수전략", "") or "").strip()
+                # 과거 6열 시절 갱신일시 컬럼에 전략이 들어갔던 경우 보정
+                if not strat_raw or strat_raw == "momentum":
+                    alt_strat = str(rec.get("갱신일시", "")).strip()
+                    if alt_strat in ("momentum", "rebound", "monthly_trend", "multi") or any(k in alt_strat for k in ("모멘텀", "반등", "월봉", "월간", "슈퍼")):
+                        strat_raw = alt_strat
+
+                # 정규화된 전략 키 및 표시명 결정
+                strat_key = "momentum"
+                s_lower = strat_raw.lower()
+                if any(k in s_lower for k in ("monthly", "월봉", "월간", "gtaa")):
+                    strat_key = "monthly_trend"
+                    strat_disp = "월간 10개월 추세 (GTAA)"
+                elif any(k in s_lower for k in ("rebound", "반등", "52주", "신저가")):
+                    strat_key = "rebound"
+                    strat_disp = "52주 신저가 반등"
+                elif any(k in s_lower for k in ("multi", "&", "슈퍼", "super", "복수")):
+                    strat_key = "multi"
+                    strat_disp = "슈퍼시그널"
+                elif any(k in s_lower for k in ("momentum", "모멘텀", "추세")):
+                    strat_key = "momentum"
+                    strat_disp = "모멘텀 추세추종"
+                else:
+                    strat_key = "momentum"
+                    strat_disp = strat_raw or "모멘텀 추세추종"
+
+                last_upd = str(rec.get("갱신일시", ""))
+                if last_upd in ("momentum", "rebound", "monthly_trend", "multi"):
+                    last_upd = now_str()
+
                 positions[code] = {
                     "code": code,
                     "name": str(rec.get("종목명", code)),
                     "avg_buy_price": float(rec.get("매수단가", 0.0) or 0.0),
                     "highest_price": float(rec.get("최고가", 0.0) or 0.0),
                     "is_partial_sold": str(rec.get("1차익절완료", "N")).upper() in ("Y", "TRUE", "1"),
-                    "strategy": strat_raw,
-                    "strategy_display_name": strat_raw,
-                    "last_updated": str(rec.get("갱신일시", "")),
-                    "updated_at": str(rec.get("갱신일시", ""))
+                    "strategy": strat_key,
+                    "strategy_display_name": strat_disp,
+                    "last_updated": last_upd,
+                    "updated_at": last_upd
                 }
             return positions
         except Exception as e:

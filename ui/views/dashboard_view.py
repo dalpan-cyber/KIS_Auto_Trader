@@ -135,16 +135,38 @@ def render_overview_tab(api, screener, summary, holdings, proposals, holding_cod
             cr = _extract_change_rate(h)
             cr_color = "#ff4d4f" if cr > 0 else "#38bdf8" if cr < 0 else "#94a3b8"
 
-            pos_info = positions_state.get(h["code"], {})
-            strat = pos_info.get("strategy", "momentum")
-            if "monthly" in strat:
+            h_code = str(h.get("code", "")).strip().lstrip("'")
+            code_6 = h_code.zfill(6) if h_code.isdigit() and len(h_code) < 6 else h_code
+            pos_info = positions_state.get(code_6) or positions_state.get(h_code) or positions_state.get(h_code.lstrip("0")) or {}
+
+            # positions_state에 없으면 proposals(추천 이력)에서 진입 전략 역추적
+            if not pos_info and hasattr(screener, "_get_holding_strategy"):
+                try:
+                    strat_inst = screener._get_holding_strategy(code_6)
+                    if strat_inst:
+                        pos_info = {
+                            "strategy": strat_inst.name,
+                            "strategy_display_name": getattr(strat_inst, "display_name", strat_inst.name)
+                        }
+                except Exception:
+                    pass
+
+            strat_key = pos_info.get("strategy", "")
+            strat_disp = pos_info.get("strategy_display_name", "")
+            s_combined = f"{strat_key} {strat_disp}".lower()
+
+            if any(k in s_combined for k in ("monthly", "월봉", "월간", "gtaa")):
                 strat_badge = '<span style="background:#7c2d12;color:#fdba74;padding:2px 6px;border-radius:4px;font-size:0.75rem;font-weight:600;">📅 월봉 10이평</span>'
-            elif "rebound" in strat:
+            elif any(k in s_combined for k in ("rebound", "반등", "52주", "신저가")):
                 strat_badge = '<span style="background:#1e3a8a;color:#93c5fd;padding:2px 6px;border-radius:4px;font-size:0.75rem;font-weight:600;">📉 52주 반등</span>'
-            elif "multi" in strat or "&" in strat:
+            elif any(k in s_combined for k in ("multi", "&", "슈퍼", "super", "복수")):
                 strat_badge = '<span style="background:#581c87;color:#d8b4fe;padding:2px 6px;border-radius:4px;font-size:0.75rem;font-weight:600;">🌟 슈퍼시그널</span>'
-            else:
+            elif any(k in s_combined for k in ("momentum", "모멘텀", "추세")):
                 strat_badge = '<span style="background:#064e3b;color:#6ee7b7;padding:2px 6px;border-radius:4px;font-size:0.75rem;font-weight:600;">🚀 모멘텀</span>'
+            elif pos_info:
+                strat_badge = f'<span style="background:#064e3b;color:#6ee7b7;padding:2px 6px;border-radius:4px;font-size:0.75rem;font-weight:600;">🚀 {strat_disp or strat_key}</span>'
+            else:
+                strat_badge = '<span style="background:#334155;color:#94a3b8;padding:2px 6px;border-radius:4px;font-size:0.75rem;font-weight:600;">ℹ️ 일반/수동</span>'
 
             html_rows.append(f"""
                 <tr style="border-bottom:1px solid #1e293b;">

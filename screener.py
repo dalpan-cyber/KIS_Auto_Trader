@@ -71,8 +71,8 @@ class StockScreener:
             except Exception:
                 pass
 
-        if strat_name and ("&" in strat_name or strat_name == "multi"):
-            strat_name = "rebound" if "rebound" in strat_name else "momentum"
+        if strat_name and ("&" in strat_name or strat_name == "multi" or "슈퍼" in strat_name):
+            strat_name = "rebound" if any(k in strat_name for k in ("rebound", "52주", "반등", "신저가")) else "momentum"
 
         if strat_name:
             s_inst = get_strategy(strat_name)
@@ -210,7 +210,8 @@ class StockScreener:
         # 보너스 점수 +10점 부여
         if best.get("is_recommended", True):
             best["score"] = best.get("score", 0) + 10
-            best["strategy"] = best.get("strategy", best.get("strategy_name", "multi"))
+            best["strategy"] = "multi"
+            best["strategy_name"] = "multi"
             best["strategy_display_name"] = combined_names
             best["is_multi_strategy"] = True
             best["reasons"] = [f"🌟 [슈퍼 시그널] {combined_names} 복수 알고리즘 동시 포착 (+10점)"] + best.get("reasons", [])
