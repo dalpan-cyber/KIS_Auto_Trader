@@ -1,5 +1,5 @@
 """
-Google Sheets 연동 및 동기화 매니저 모듈 (google_sheet_manager.py)
+Google Sheets 연동 및 동기화 매니저 모듈 (domestic_sheet_manager.py)
 KIS Auto Trader v2.0의 설정, 매수/매도 제안, 포지션 추적 상태, 손절 쿨다운, 매매일지를 구글 시트와 실시간 동기화합니다.
 """
 import os
@@ -8,233 +8,101 @@ import logging
 import datetime
 from typing import Dict, Any, List, Optional
 
-import app_config as config
+from core.sheets.base_sheet import BaseSheetManager, GSPREAD_AVAILABLE
 
-logger = logging.getLogger("GoogleSheetManager")
+logger = logging.getLogger("DomesticSheetManager")
 
-GSPREAD_AVAILABLE = False
-try:
-    import gspread
-    from google.oauth2.service_account import Credentials
-    GSPREAD_AVAILABLE = True
-except ImportError:
-    logger.warning("gspread 또는 google-auth 패키지가 설치되지 않았습니다. 구글 시트 연동이 비활성화됩니다.")
+def _get_config_val(name: str, default: Any = None) -> Any:
+    try:
+        import app_config as config
+        return getattr(config, name, default)
+    except Exception:
+        return default
 
 
-class DomesticSheetManager:
+class DomesticSheetManager(BaseSheetManager):
     """Google Sheets 국내 퀀트 매매일지 및 상태 동기화 관리 클래스"""
-
-    SCOPES = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive"
-    ]
 
     def __init__(
         self,
         sheet_name: Optional[str] = None,
         sheet_key: Optional[str] = None,
-        enabled: Optional[bool] = None
+        enabled: Optional[bool] = None,
+        service_account_file: Optional[str] = None
     ):
-        self.sheet_name = sheet_name or getattr(config, "DOMESTIC_GOOGLE_SHEET_NAME", getattr(config, "GOOGLE_SHEET_NAME", "KIS_Auto2_매매일지"))
-        self.sheet_key = sheet_key or getattr(config, "DOMESTIC_GOOGLE_SHEET_KEY", getattr(config, "GOOGLE_SHEET_KEY", ""))
-        if not self.sheet_key:
+        name = sheet_name or _get_config_val("DOMESTIC_GOOGLE_SHEET_NAME", _get_config_val("GOOGLE_SHEET_NAME", os.getenv("DOMESTIC_GOOGLE_SHEET_NAME", os.getenv("GOOGLE_SHEET_NAME", "KIS_Auto2_매매일지"))))
+        key = sheet_key or _get_config_val("DOMESTIC_GOOGLE_SHEET_KEY", _get_config_val("GOOGLE_SHEET_KEY", os.getenv("DOMESTIC_GOOGLE_SHEET_KEY", os.getenv("GOOGLE_SHEET_KEY", ""))))
+        
+        if not key:
             try:
                 import streamlit as st
                 if hasattr(st, "secrets"):
                     if "DOMESTIC_GOOGLE_SHEET_KEY" in st.secrets:
-                        self.sheet_key = str(st.secrets["DOMESTIC_GOOGLE_SHEET_KEY"])
+                        key = str(st.secrets["DOMESTIC_GOOGLE_SHEET_KEY"])
                     elif "GOOGLE_SHEET_KEY" in st.secrets:
-                        self.sheet_key = str(st.secrets["GOOGLE_SHEET_KEY"])
+                        key = str(st.secrets["GOOGLE_SHEET_KEY"])
             except Exception:
                 pass
-        self.enabled = enabled if enabled is not None else getattr(config, "GOOGLE_SHEET_ENABLED", True)
 
-        self.client: Optional[Any] = None
-        self.spreadsheet: Optional[Any] = None
+        is_enabled = enabled if enabled is not None else _get_config_val("GOOGLE_SHEET_ENABLED", True)
+
         self.settings_worksheet: Optional[Any] = None
         self.proposals_worksheet: Optional[Any] = None
         self.proposals_state_worksheet: Optional[Any] = None
         self.positions_worksheet: Optional[Any] = None
         self.cooldown_worksheet: Optional[Any] = None
         self.trade_history_worksheet: Optional[Any] = None
-        self.is_connected = False
 
-        if self.enabled and GSPREAD_AVAILABLE:
-            self._connect()
+        super().__init__(
+            sheet_name=name,
+            sheet_key=key,
+            enabled=is_enabled,
+            service_account_file=service_account_file
+        )
 
-    def _get_credentials(self) -> Optional[Any]:
-        """다양한 경로에서 GCP Service Account Credentials 획득"""
-        # 1. Streamlit Secrets (st.secrets["gcp_service_account"] 또는 st.secrets["GCP_SERVICE_ACCOUNT_JSON"])
-        try:
-            import streamlit as st
-            if hasattr(st, "secrets"):
-                if "gcp_service_account" in st.secrets:
-                    secret_dict = dict(st.secrets["gcp_service_account"])
-                    logger.info("Streamlit Secrets [gcp_service_account]에서 GCP 서비스 계정 정보 로드 성공")
-                    return Credentials.from_service_account_info(secret_dict, scopes=self.SCOPES)
-                elif "GCP_SERVICE_ACCOUNT_JSON" in st.secrets:
-                    val = st.secrets["GCP_SERVICE_ACCOUNT_JSON"]
-                    if isinstance(val, str) and val.strip().startswith("{"):
-                        return Credentials.from_service_account_info(json.loads(val), scopes=self.SCOPES)
-                    elif hasattr(val, "items"):
-                        return Credentials.from_service_account_info(dict(val), scopes=self.SCOPES)
-        except Exception as e:
-            logger.debug(f"Streamlit Secrets GCP 로드 예외: {e}")
+    def _init_worksheets(self):
+        """국내 퀀트 전용 워크시트 초기화"""
+        # 1. 'Settings' 워크시트 (설정값 & 감시종목)
+        self.settings_worksheet = self._get_or_create_worksheet(
+            "Settings",
+            headers=["설정키", "설정값", "설명", "최종갱신시각"],
+            rows="100", cols="6"
+        )
 
-        # 2. 환경변수 GCP_SERVICE_ACCOUNT_JSON (JSON 문자열 또는 파일 경로)
-        env_json = getattr(config, "GCP_SERVICE_ACCOUNT_JSON", "") or os.getenv("GCP_SERVICE_ACCOUNT_JSON", "")
-        if env_json:
-            env_json_str = env_json.strip()
-            if env_json_str.startswith("{"):
-                try:
-                    info = json.loads(env_json_str)
-                    logger.info("환경변수 GCP_SERVICE_ACCOUNT_JSON(JSON)에서 정보 로드 성공")
-                    return Credentials.from_service_account_info(info, scopes=self.SCOPES)
-                except Exception as e:
-                    logger.warning(f"환경변수 GCP_SERVICE_ACCOUNT_JSON JSON 파싱 실패: {e}")
-            elif os.path.exists(env_json_str):
-                try:
-                    logger.info(f"지정된 GCP 키 파일({env_json_str})에서 정보 로드 성공")
-                    return Credentials.from_service_account_file(env_json_str, scopes=self.SCOPES)
-                except Exception as e:
-                    logger.warning(f"GCP 키 파일({env_json_str}) 로드 실패: {e}")
+        # 2. 'Proposals' 워크시트 (15:10 스크리닝 매수/매도 제안)
+        self.proposals_worksheet = self._get_or_create_worksheet(
+            "Proposals",
+            headers=["일시", "구분", "종목코드", "종목명", "현재가/추천가", "추천수량", "예상금액", "종합점수", "추세", "수급", "모멘텀", "거래량배수", "매매사유"],
+            rows="500", cols="15"
+        )
 
-        # 3. 로컬 서비스 계정 파일 자동 탐색
-        possible_files = [
-            "kis-auto-trader-1024280eca64.json",
-            "gcp_key.json",
-            "service_account.json",
-            "credentials.json"
-        ]
-        try:
-            for fname in os.listdir(os.path.dirname(__file__) or "."):
-                if fname.endswith(".json") and fname not in possible_files:
-                    if fname.startswith("kis-auto-trader-") or fname.startswith("gcp_"):
-                        possible_files.append(fname)
-        except Exception:
-            pass
+        # 3. 'PositionsState' 워크시트 (트레일링 스탑 포지션 추적 상태)
+        self.positions_worksheet = self._get_or_create_worksheet(
+            "PositionsState",
+            headers=["종목코드", "종목명", "매수단가", "최고가", "1차익절완료", "매수전략", "갱신일시"],
+            rows="100", cols="8"
+        )
 
-        base_dir = os.path.dirname(__file__)
-        for fname in possible_files:
-            fpath = os.path.join(base_dir, fname) if base_dir else fname
-            if os.path.exists(fpath):
-                try:
-                    with open(fpath, "r", encoding="utf-8") as kf:
-                        content = kf.read()
-                        if "private_key" in content and "service_account" in content:
-                            logger.info(f"로컬 GCP 서비스 계정 인증키 파일 탐색 성공: {fpath}")
-                            return Credentials.from_service_account_file(fpath, scopes=self.SCOPES)
-                except Exception as e:
-                    logger.warning(f"로컬 파일 {fpath} 로드 실패: {e}")
+        # 4. 'Cooldown' 워크시트 (손절 쿨다운 관리)
+        self.cooldown_worksheet = self._get_or_create_worksheet(
+            "Cooldown",
+            headers=["종목코드", "재매수가능일자", "등록일시"],
+            rows="100", cols="5"
+        )
 
-        return None
+        # 5. 'TradeHistory' 워크시트 (체결 일지)
+        self.trade_history_worksheet = self._get_or_create_worksheet(
+            "TradeHistory",
+            headers=["체결일시", "구분", "종목코드", "종목명", "체결수량", "체결단가", "체결금액", "수익률(%)", "실현손익", "주문번호", "비고"],
+            rows="1000", cols="12"
+        )
 
-    def _connect(self) -> bool:
-        """Google Sheet 서비스 연결 및 워크시트 초기화"""
-        try:
-            creds = self._get_credentials()
-            if not creds:
-                logger.warning(
-                    "💡 [Google Sheets 안내] GCP 서비스 계정 인증키 파일이 없거나 환경변수가 설정되지 않아 구글 시트 연동을 건너땁니다."
-                )
-                self.is_connected = False
-                return False
-
-            sa_email = getattr(creds, "service_account_email", "알 수 없음")
-            self.client = gspread.authorize(creds)
-
-            # 스프레드시트 열기 (KEY 우선, 없으면 NAME으로 열기 시도)
-            if self.sheet_key:
-                self.spreadsheet = self.client.open_by_key(self.sheet_key)
-            else:
-                try:
-                    self.spreadsheet = self.client.open(self.sheet_name)
-                except gspread.exceptions.SpreadsheetNotFound:
-                    logger.info(f"구글 시트 '{self.sheet_name}'을 이름으로 찾지 못했습니다. 스프레드시트 생성을 시도합니다...")
-                    try:
-                        self.spreadsheet = self.client.create(self.sheet_name)
-                    except Exception as create_err:
-                        logger.warning(
-                            f"💡 [Google Sheets 안내] 서비스 계정 직접 생성 실패 ({create_err}).\n"
-                            f"   GCP 서비스 계정은 자체 드라이브 용량이 제공되지 않으므로,\n"
-                            f"   사용자 본인의 구글 드라이브에서 새 스프레드시트를 만드신 후,\n"
-                            f"   1) 우측 상단 [공유] 버튼에서 아래 서비스 계정 이메일을 '편집자(Editor)'로 추가하세요:\n"
-                            f"      👉 {sa_email}\n"
-                            f"   2) 스프레드시트 URL의 키(ID)를 .env 파일의 GOOGLE_SHEET_KEY=\"...\" 에 입력해주세요."
-                        )
-                        self.is_connected = False
-                        return False
-
-            # 1. 'Settings' 워크시트 (설정값 & 감시종목)
-            self.settings_worksheet = self._get_or_create_worksheet(
-                "Settings",
-                headers=["설정키", "설정값", "설명", "최종갱신시각"],
-                rows="100", cols="6"
-            )
-
-            # 2. 'Proposals' 워크시트 (15:10 스크리닝 매수/매도 제안)
-            self.proposals_worksheet = self._get_or_create_worksheet(
-                "Proposals",
-                headers=["일시", "구분", "종목코드", "종목명", "현재가/추천가", "추천수량", "예상금액", "종합점수", "추세", "수급", "모멘텀", "거래량배수", "매매사유"],
-                rows="500", cols="15"
-            )
-
-            # 3. 'PositionsState' 워크시트 (트레일링 스탑 포지션 추적 상태)
-            self.positions_worksheet = self._get_or_create_worksheet(
-                "PositionsState",
-                headers=["종목코드", "종목명", "매수단가", "최고가", "1차익절완료", "매수전략", "갱신일시"],
-                rows="100", cols="8"
-            )
-
-            # 4. 'Cooldown' 워크시트 (손절 쿨다운 관리)
-            self.cooldown_worksheet = self._get_or_create_worksheet(
-                "Cooldown",
-                headers=["종목코드", "재매수가능일자", "등록일시"],
-                rows="100", cols="5"
-            )
-
-            # 5. 'TradeHistory' 워크시트 (체결 일지)
-            self.trade_history_worksheet = self._get_or_create_worksheet(
-                "TradeHistory",
-                headers=["체결일시", "구분", "종목코드", "종목명", "체결수량", "체결단가", "체결금액", "수익률(%)", "실현손익", "주문번호", "비고"],
-                rows="1000", cols="12"
-            )
-
-            # 6. 'ProposalsState' 워크시트 (마지막 스크리닝 결과 및 관망/추천 종목 상태 보존)
-            self.proposals_state_worksheet = self._get_or_create_worksheet(
-                "ProposalsState",
-                headers=["키", "값JSON", "갱신일시"],
-                rows="30", cols="5"
-            )
-
-            self.is_connected = True
-            logger.info(f"🟢 Google Sheets 연동 성공! (서비스 계정: {sa_email} | 시트: {self.spreadsheet.title})")
-            return True
-        except Exception as e:
-            sa_email = getattr(creds, "service_account_email", "알 수 없음") if 'creds' in locals() and creds else "미인증"
-            logger.warning(
-                f"🚨 Google Sheets 연결 실패: {e}\n"
-                f"💡 [필수 체크] 구글 시트 우측 상단 '공유' 버튼에서 아래 이메일을 '편집자(Editor)'로 추가하세요:\n"
-                f"   👉 {sa_email}"
-            )
-            self.is_connected = False
-            return False
-
-    def _get_or_create_worksheet(self, title: str, headers: List[str], rows: str = "100", cols: str = "10"):
-        """워크시트 가져오기 또는 생성"""
-        if not self.spreadsheet:
-            return None
-        try:
-            ws = self.spreadsheet.worksheet(title)
-            return ws
-        except Exception:
-            try:
-                ws = self.spreadsheet.add_worksheet(title=title, rows=rows, cols=cols)
-                ws.append_row(headers)
-                return ws
-            except Exception as e:
-                logger.warning(f"워크시트 '{title}' 생성 중 예외: {e}")
-                return None
+        # 6. 'ProposalsState' 워크시트 (마지막 스크리닝 결과 및 관망/추천 종목 상태 보존)
+        self.proposals_state_worksheet = self._get_or_create_worksheet(
+            "ProposalsState",
+            headers=["키", "값JSON", "갱신일시"],
+            rows="30", cols="5"
+        )
 
     # =========================================================================
     # 1. Settings (설정값 & 감시종목) 동기화

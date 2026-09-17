@@ -21,6 +21,8 @@ class TestTradingAlgorithm(unittest.TestCase):
                 os.remove(POSITIONS_STATE_FILE)
             except Exception:
                 pass
+        config.CURRENT_SETTINGS["active_strategies"] = ["momentum"]
+        config.CURRENT_SETTINGS["monthly_allow_trend_continuation"] = True
         self.mock_api = MagicMock()
         self.screener = StockScreener(self.mock_api)
         self.screener._notify_screening_summary = MagicMock()
