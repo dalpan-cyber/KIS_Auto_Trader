@@ -366,12 +366,12 @@ class KISApiClient:
 
         self._ensure_token()
         if not self.access_token:
-            # API키 없을 시 가상 테스트 일봉 차트 데이터 반환
+            # API키 없을 시 가상 테스트 일봉 차트 데이터 반환 (과거 -> 최신 오름차순)
             chart_data = []
             base_p = 70000 if stock_code == "005930" else 120000
             for i in range(count):
                 chart_data.append({
-                    "date": f"202608{30-i:02d}",
+                    "date": f"202608{i+1:02d}",
                     "close": base_p + (i % 5) * 200 - (i % 3) * 150,
                     "open": base_p,
                     "high": base_p + 1000,
@@ -405,6 +405,7 @@ class KISApiClient:
                         "low": int(item.get("stck_lwpr", 0)),
                         "volume": int(item.get("acml_vol", 0))
                     })
+                results.reverse()  # KIS API의 내림차순(최신순) 데이터를 과거->최신 오름차순으로 변환
                 return results
             else:
                 logger.error(f"[{stock_code}] 일봉 조회 실패: {data.get('msg1')}")
@@ -772,7 +773,7 @@ class KISApiClient:
             base_p = mock_prices.get(symbol_upper, 100.0)
             for i in range(count):
                 chart_data.append({
-                    "date": f"202608{30-i:02d}",
+                    "date": f"202608{i+1:02d}",
                     "close": base_p + (i % 5) * 0.5 - (i % 3) * 0.3,
                     "open": base_p,
                     "high": base_p * 1.02,
@@ -811,6 +812,7 @@ class KISApiClient:
                                     "volume": int(item.get("tvol", item.get("voum", 0)) or 0)
                                 })
                         if results:
+                            results.reverse()  # KIS API의 내림차순(최신순) 데이터를 과거->최신 오름차순으로 변환
                             logger.info(f"[{symbol_upper}] 일봉 차트 [{ex}] 결과 {len(results)}건 반환")
                             return results
                         else:

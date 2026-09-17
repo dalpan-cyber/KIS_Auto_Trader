@@ -471,12 +471,13 @@ def render_interactive_stock_chart(api_client, screener_engine, code: str, name:
             for ann in fig["layout"]["annotations"]:
                 ann["font"] = dict(color="#f8fafc", size=13, family="Pretendard, -apple-system, sans-serif")
 
-            # X축/Y축 눈금 및 그리드 선명도 개선
+            # X축/Y축 눈금 및 그리드 선명도 개선 (type="category"로 비영업일 공백 제거 및 과거->최신 좌우 순서 보장)
             fig.update_xaxes(
                 showgrid=True,
                 gridcolor="#1e293b",
                 tickfont=dict(color="#cbd5e1", size=10),
-                linecolor="#334155"
+                linecolor="#334155",
+                type="category"
             )
             fig.update_yaxes(
                 showgrid=True,

@@ -51,6 +51,10 @@ def calculate_technical_indicators(
     if len(df) < 20:
         return None
 
+    # 날짜 기준 과거 -> 최신(오름차순) 정렬 보장
+    if "date" in df.columns:
+        df = df.sort_values(by="date", ascending=True).reset_index(drop=True)
+
     if "open" not in df.columns or df["open"].isna().all():
         df["open"] = df["close"]
     if "high" not in df.columns or df["high"].isna().all():
