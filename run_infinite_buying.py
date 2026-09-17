@@ -82,7 +82,7 @@ def main():
         return
 
     # 3. 주문 발주(ORDER) 모드: IDLE 상태인 대상 종목 활성화 및 당일 LOC 주문 발주
-    for symbol in getattr(config, "INFINITE_STOCKS", ["TQQQ"]):
+    for symbol in getattr(config, "INFINITE_STOCKS", ["TQQQ", "SOXL"]):
         stock_cfg = config.get_stock_config(symbol)
         st_data = bot.infinite_state_mgr.get_symbol_state(
             symbol,

@@ -72,7 +72,7 @@ class TraderBot:
 
     def reload_settings_from_config(self):
         """config 모듈에 반영된 최신 설정을 봇 객체에 재동기화"""
-        self.infinite_stocks = getattr(config, "INFINITE_STOCKS", ["TQQQ"])
+        self.infinite_stocks = getattr(config, "INFINITE_STOCKS", ["TQQQ", "SOXL"])
         self.target_symbols = getattr(config, "TARGET_STOCKS", self.infinite_stocks)
         self.infinite_strategy = InfiniteBuyingStrategy(
             division_count=getattr(config, "INFINITE_DIVISION_COUNT", 40),

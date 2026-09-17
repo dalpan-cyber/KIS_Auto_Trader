@@ -25,6 +25,43 @@ from strategy import Signal, StrategyFactory
 
 logger = logging.getLogger("InfiniteView")
 
+
+def get_active_infinite_stocks(bot: Optional[TraderBot] = None) -> List[str]:
+    """
+    현재 활성화된 무한매수 대상 종목 리스트를 신뢰도 순서대로 종합하여 반환합니다.
+    1. config.INFINITE_STOCKS
+    2. bot.infinite_stocks (TraderBot 인스턴스)
+    3. bot.infinite_state_mgr.states.keys() (상태 파일에 기록된 종목)
+    4. 기본값 ["TQQQ", "SOXL"]
+    """
+    stocks: List[str] = []
+    # 1. config 모듈 확인
+    cfg_stocks = getattr(config, "INFINITE_STOCKS", None)
+    if cfg_stocks and isinstance(cfg_stocks, (list, tuple)):
+        for s in cfg_stocks:
+            if s and s not in stocks:
+                stocks.append(s)
+
+    # 2. bot 인스턴스 확인
+    if bot:
+        bot_stocks = getattr(bot, "infinite_stocks", None)
+        if bot_stocks and isinstance(bot_stocks, (list, tuple)):
+            for s in bot_stocks:
+                if s and s not in stocks:
+                    stocks.append(s)
+
+        # 3. 상태 파일에 기록된 종목들 확인
+        if hasattr(bot, "infinite_state_mgr") and bot.infinite_state_mgr:
+            for s in bot.infinite_state_mgr.states.keys():
+                if s and s not in stocks:
+                    stocks.append(s)
+
+    # 4. 비어있으면 기본값 반환
+    if not stocks:
+        stocks = ["TQQQ", "SOXL"]
+    return stocks
+
+
 # Custom CSS 커스텀 다크 모드 및 카드 스타일링
 CUSTOM_CSS = """
 <style>
@@ -695,7 +732,7 @@ def page_main_dashboard(bot: Optional[TraderBot] = None):
     st.title("🇺🇸 KIS 라오어 무한매수법 전담 자동투자 시스템")
 
     # 해외 무한매수 종목별 주식 평가금액($) 및 외화 총자산 계산
-    infinite_stocks = getattr(config, "INFINITE_STOCKS", ["TQQQ"])
+    infinite_stocks = get_active_infinite_stocks(bot)
     usd_stock_eval = 0.0
     holding_stock_count = 0
 
@@ -757,7 +794,7 @@ def page_main_dashboard(bot: Optional[TraderBot] = None):
     st.subheader("🇺🇸 라오어 무한매수법 v2.0 진행 현황")
     
     if getattr(config, "INFINITE_BUYING_ENABLED", False):
-        infinite_stocks = getattr(config, "INFINITE_STOCKS", ["TQQQ"])
+        infinite_stocks = get_active_infinite_stocks(bot)
 
         if len(infinite_stocks) > 1:
             stock_sub_tabs = st.tabs([f"📌 {sym}" for sym in infinite_stocks] + ["📊 전체 종목 종합 요약"])
@@ -830,12 +867,12 @@ def page_config(bot: Optional[TraderBot] = None):
             if is_gss_connected:
                 loaded = config.load_settings_from_google_sheet(gss)
                 if loaded:
-                    st.session_state.cfg_stocks = list(config.INFINITE_STOCKS)
+                    bot.reload_settings_from_config()
+                    st.session_state.cfg_stocks = list(get_active_infinite_stocks(bot))
                     st.session_state.cfg_stock_configs = {
                         sym: config.get_stock_config(sym)
                         for sym in st.session_state.cfg_stocks
                     }
-                    bot.reload_settings_from_config()
                     st.success("✅ 구글 시트에서 최신 설정을 성공적으로 불러와 적용했습니다!")
                     st.rerun()
                 else:
@@ -843,13 +880,19 @@ def page_config(bot: Optional[TraderBot] = None):
             else:
                 st.error("구글 시트에 연결되어 있지 않습니다.")
 
-    # 현재 설정값을 세션 상태에 저장 (페이지 리로드 시 유지)
+    # 현재 설정값을 세션 상태에 저장 (페이지 리로드 시 유지 및 활성 종목 자동 보정)
+    active_stocks = get_active_infinite_stocks(bot)
     if "cfg_stocks" not in st.session_state:
-        st.session_state.cfg_stocks = list(getattr(config, "INFINITE_STOCKS", ["TQQQ"]))
+        st.session_state.cfg_stocks = list(active_stocks)
+    else:
+        for sym in active_stocks:
+            if sym not in st.session_state.cfg_stocks:
+                st.session_state.cfg_stocks.append(sym)
+
     if "cfg_stock_configs" not in st.session_state:
-        # 종목별 설정: {symbol: {total_budget_usd, division_count, target_roi, exhaust_action, exhaust_target_roi}}
         st.session_state.cfg_stock_configs = {}
-        for sym in st.session_state.cfg_stocks:
+    for sym in st.session_state.cfg_stocks:
+        if sym not in st.session_state.cfg_stock_configs:
             st.session_state.cfg_stock_configs[sym] = config.get_stock_config(sym)
     if "cfg_max_stocks" not in st.session_state:
         st.session_state.cfg_max_stocks = int(getattr(config, "MAX_STOCKS_HOLDING", 5))
@@ -989,7 +1032,7 @@ def page_config(bot: Optional[TraderBot] = None):
     changed = False
 
     # 종목 리스트 변경 감지
-    if stocks_list != list(getattr(config, "INFINITE_STOCKS", ["TQQQ"])):
+    if stocks_list != list(get_active_infinite_stocks(bot)):
         changed = True
 
     # 각 종목의 설정 변경 감지
@@ -1078,7 +1121,7 @@ def page_config(bot: Optional[TraderBot] = None):
 
     # 현재 적용 중인 설정 요약 표시
     st.markdown("### 📋 현재 적용 중인 설정")
-    for sym in getattr(config, "INFINITE_STOCKS", ["TQQQ"]):
+    for sym in get_active_infinite_stocks(bot):
         cfg = config.get_stock_config(sym)
         cur_ex = cfg["exhaust_action"]
         cur_ex_name = {
@@ -1125,7 +1168,7 @@ def render_infinite():
 
 def _render_infinite_main(bot: TraderBot):
     # page_main_dashboard 로직 호출
-    infinite_stocks = getattr(config, "INFINITE_STOCKS", ["TQQQ"])
+    infinite_stocks = get_active_infinite_stocks(bot)
     usd_stock_eval = 0.0
     holding_stock_count = 0
 
