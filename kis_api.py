@@ -653,18 +653,47 @@ class KISApiClient:
         qty: int,
         price: float = 0,
         buy: bool = True,
-        exchange: str = "NAS"
+        buy_sell: Optional[str] = None,
+        ord_dv: Optional[str] = None,
+        exchange: str = "NAS",
+        **kwargs
     ) -> Dict[str, Any]:
         """
-        현금 주문 발주 (국내/해외 자동 분기)
+        현금 주문 발주 (국내/해외 자동 분기 및 매수/매도, 주문구분 완전 지원)
+        - 국내: FHKST01010100 (TTTC0802U 매수 / TTTC0801U 매도)
+          * ord_dv: "00"(지정가), "01"(시장가), "02"(조건부지정가/LOC) 등
+          * buy_sell: "BUY" 또는 "SELL" 지원
+        - 해외: TTTT1002U / TTTT1006U (VTTT1002U / VTTT1006U)
         """
+        if buy_sell is not None:
+            buy = (str(buy_sell).upper() in ("BUY", "매수"))
+
         if self.is_overseas_symbol(stock_code):
-            return self.order_overseas_cash(stock_code, qty=qty, price=price, buy=buy, exchange=exchange)
+            overseas_ord_type = ord_dv or kwargs.get("ord_type", "00")
+            if overseas_ord_type == "02":
+                overseas_ord_type = "34"  # 국내 LOC 코드(02)를 해외 LOC 코드(34)로 매핑
+            return self.order_overseas_cash(
+                stock_code,
+                qty=qty,
+                price=price,
+                buy=buy,
+                exchange=exchange,
+                ord_type=overseas_ord_type
+            )
 
         if qty <= 0:
-            return {"success": False, "msg": "주문 수량이 0 이하입니다."}
+            return {"success": False, "rt_cd": "-1", "msg1": "주문 수량이 0 이하입니다.", "msg": "주문 수량이 0 이하입니다."}
 
         self._ensure_token()
+
+        # 국내 주문 구분 (ord_dv) 결정
+        if ord_dv:
+            order_division = str(ord_dv)
+        else:
+            order_division = "01" if price == 0 else "00"
+
+        order_prc_str = str(int(price)) if order_division not in ("01",) and price > 0 else "0" if order_division == "01" else str(int(price))
+
         if not self.access_token or not self.cano:
             # API 키/계좌 미설정 시 가상 주문 처리
             cur_price = price if price > 0 else self.get_stock_price(stock_code).get("price", 70000)
@@ -672,7 +701,7 @@ class KISApiClient:
 
             if buy:
                 if self._mock_balance_deposit < total_cost:
-                    return {"success": False, "msg": "가상 예수금 부족"}
+                    return {"success": False, "rt_cd": "-1", "msg1": "가상 예수금 부족", "msg": "가상 예수금 부족"}
                 self._mock_balance_deposit -= total_cost
                 if stock_code in self._mock_holdings:
                     prev_q = self._mock_holdings[stock_code]["qty"]
@@ -684,17 +713,20 @@ class KISApiClient:
                     self._mock_holdings[stock_code] = {"qty": qty, "avg_price": cur_price, "name": f"종목_{stock_code}"}
             else:
                 if stock_code not in self._mock_holdings or self._mock_holdings[stock_code]["qty"] < qty:
-                    return {"success": False, "msg": "매도할 보유 수량이 부족합니다."}
+                    return {"success": False, "rt_cd": "-1", "msg1": "매도할 보유 수량이 부족합니다.", "msg": "매도할 보유 수량이 부족합니다."}
                 self._mock_balance_deposit += total_cost
                 self._mock_holdings[stock_code]["qty"] -= qty
                 if self._mock_holdings[stock_code]["qty"] <= 0:
                     del self._mock_holdings[stock_code]
 
             order_type_str = "매수" if buy else "매도"
-            logger.info(f"[시뮬레이션 주문] {stock_code} {order_type_str} {qty}주 완료 (체결가: {cur_price:,.0f}원)")
+            order_no = f"SIM_{int(time.time())}"
+            logger.info(f"[시뮬레이션 주문] {stock_code} {order_type_str} {qty}주 완료 (체결가: {cur_price:,.0f}원, 구분: {order_division})")
             return {
                 "success": True,
-                "order_no": f"SIM_{int(time.time())}",
+                "rt_cd": "0",
+                "msg1": f"시뮬레이션 {order_type_str} 완료",
+                "order_no": order_no,
                 "code": stock_code,
                 "qty": qty,
                 "price": cur_price,
@@ -707,9 +739,9 @@ class KISApiClient:
             "CANO": self.cano,
             "ACNT_PRDT_CD": self.acnt_prdt_cd,
             "PDNO": stock_code,
-            "ORD_DVSN": "01" if price == 0 else "00",
+            "ORD_DVSN": order_division,
             "ORD_QTY": str(qty),
-            "ORD_UNPR": str(int(price))
+            "ORD_UNPR": order_prc_str
         }
         hashkey = self.get_hashkey(body)
         headers = self._get_headers(tr_id, hashkey=hashkey)
@@ -722,20 +754,30 @@ class KISApiClient:
             if res.status_code == 200 and data.get("rt_cd") == "0":
                 output = data.get("output", {})
                 order_no = output.get("KRX_FWDG_ORD_ORGNO", "") + output.get("ODNO", "")
-                logger.info(f"주문 성공: [{stock_code}] 수량 {qty} (주문번호: {order_no})")
+                logger.info(f"주문 성공: [{stock_code}] 수량 {qty} (주문구분: {order_division}, 주문번호: {order_no})")
                 return {
                     "success": True,
+                    "rt_cd": "0",
+                    "msg1": data.get("msg1", "주문 성공"),
                     "order_no": order_no,
                     "code": stock_code,
                     "qty": qty,
-                    "msg": data.get("msg1", "주문 성공")
+                    "msg": data.get("msg1", "주문 성공"),
+                    "raw": data
                 }
             else:
-                logger.error(f"주문 실패: [{stock_code}] {data.get('msg1')}")
-                return {"success": False, "msg": data.get("msg1", "주문 실패")}
+                msg = data.get("msg1", "주문 실패")
+                logger.error(f"주문 실패: [{stock_code}] {msg}")
+                return {
+                    "success": False,
+                    "rt_cd": data.get("rt_cd", "-1"),
+                    "msg1": msg,
+                    "msg": msg,
+                    "raw": data
+                }
         except Exception as e:
             logger.error(f"주문 발주 예외 발생: {e}")
-            return {"success": False, "msg": str(e)}
+            return {"success": False, "rt_cd": "-1", "msg1": str(e), "msg": str(e)}
 
     # -------------------------------------------------------------------------
     # 해외주식 (미국 등) 전용 REST API 메서드
