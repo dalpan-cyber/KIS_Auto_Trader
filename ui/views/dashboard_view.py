@@ -238,6 +238,53 @@ def render_overview_tab(api, screener, summary, holdings, proposals, holding_cod
         else:
             components.html(html_table, height=85 + len(holdings) * 44, scrolling=True)
 
+        # 진입 전략 수동 변경/재분류 UI
+        with st.expander("🛠️ 보유 종목 진입 전략 수동 변경 / 재분류", expanded=False):
+            col_sel, col_strat, col_btn = st.columns([3, 3, 2])
+            with col_sel:
+                strat_edit_code = st.selectbox(
+                    "대상 보유 종목 선택",
+                    [h["code"] for h in holdings],
+                    format_func=lambda c: next((f"{h.get('name', c)} ({c})" for h in holdings if h["code"] == c), c),
+                    key="strat_edit_stock_sel"
+                )
+            with col_strat:
+                target_h = next((h for h in holdings if h["code"] == strat_edit_code), {})
+                target_code_6 = strat_edit_code.zfill(6) if strat_edit_code.isdigit() else strat_edit_code
+                curr_pos = positions_state.get(target_code_6) or positions_state.get(strat_edit_code) or {}
+                curr_st = curr_pos.get("strategy", "momentum")
+                strat_options = {
+                    "momentum": "🚀 모멘텀 추세추종",
+                    "rebound": "📉 52주 신저가 반등",
+                    "monthly_trend": "📅 월봉 10이평 (GTAA)",
+                    "multi": "🌟 슈퍼시그널 (복수 알고리즘)",
+                    "manual": "ℹ️ 일반 / 수동 매수"
+                }
+                cur_idx = list(strat_options.keys()).index(curr_st) if curr_st in strat_options else 0
+                new_strat = st.selectbox(
+                    "변경할 진입 전략",
+                    list(strat_options.keys()),
+                    index=cur_idx,
+                    format_func=lambda k: strat_options[k],
+                    key="strat_edit_choice_sel"
+                )
+            with col_btn:
+                st.write("")
+                st.write("")
+                if st.button("💾 전략 저장", key="strat_edit_apply_btn", width="stretch"):
+                    if hasattr(screener, "position_tracker"):
+                        screener.position_tracker.set_position_strategy(
+                            code=strat_edit_code,
+                            strategy=new_strat,
+                            strategy_display_name=strat_options[new_strat],
+                            name=target_h.get("name", strat_edit_code),
+                            avg_buy_price=float(target_h.get("avg_buy_price", target_h.get("avg_price", 0))),
+                            current_price=float(target_h.get("current_price", 0))
+                        )
+                        st.success(f"✅ [{target_h.get('name', strat_edit_code)}] 전략이 '{strat_options[new_strat]}'(으)로 변경 및 저장되었습니다!")
+                        time.sleep(1.0)
+                        st.rerun()
+
         holding_options = [
             f"{h.get('name', '')} ({h.get('code', '')}) | 평단가: {float(h.get('avg_buy_price', h.get('avg_price', 0))):,.0f}원 | 수익률: {float(h.get('profit_rate', h.get('pnl_rate', 0))):+.2f}%"
             for h in holdings

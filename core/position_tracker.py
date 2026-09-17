@@ -111,6 +111,38 @@ class PositionTracker:
             return pos["strategy"]
         return None
 
+    def set_position_strategy(
+        self,
+        code: str,
+        strategy: str,
+        strategy_display_name: Optional[str] = None,
+        name: Optional[str] = None,
+        avg_buy_price: float = 0.0,
+        current_price: float = 0.0
+    ) -> Dict[str, Any]:
+        """보유 종목의 진입 전략을 수동으로 변경하거나 신규 지정"""
+        c_str = str(code).strip().lstrip("'")
+        code_6 = c_str.zfill(6) if c_str.isdigit() and len(c_str) < 6 else c_str
+        state = self.load_positions_state()
+        pos = state.get(code_6, {})
+        pos["code"] = code_6
+        if name:
+            pos["name"] = name
+        elif "name" not in pos:
+            pos["name"] = code_6
+        if avg_buy_price > 0:
+            pos["avg_buy_price"] = avg_buy_price
+        if current_price > 0:
+            pos["highest_price"] = max(pos.get("highest_price", current_price), current_price)
+
+        pos["strategy"] = strategy
+        pos["strategy_display_name"] = strategy_display_name or strategy
+        pos["last_updated"] = now_str()
+        state[code_6] = pos
+        self.save_positions_state(state)
+        logger.info(f"[{pos.get('name', code_6)}({code_6})] 진입 전략 수동 변경 완료: {strategy} ({strategy_display_name})")
+        return pos
+
     def update_position_state(
         self,
         code: str,
