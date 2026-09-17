@@ -359,7 +359,7 @@ class KISApiClient:
 
     def get_daily_chart(self, stock_code: str, period: str = "D", count: int = 30, exchange: str = "NAS") -> List[Dict[str, Any]]:
         """
-        주식 일별 차트 시세 조회 (국내: FHKST01010400 / 해외: HHDFS76240000)
+        주식 일별 차트 시세 조회 (국내: FHKST03010100 기간별 시세 / 해외: HHDFS76240000)
         """
         if self.is_overseas_symbol(stock_code):
             return self.get_overseas_daily_chart(stock_code, exchange=exchange, count=count)
@@ -380,9 +380,53 @@ class KISApiClient:
                 })
             return chart_data
 
-        url = f"{self.url_base}/uapi/domestic-stock/v1/quotations/inquire-daily-price"
-        headers = self._get_headers("FHKST01010400")
+        # 1. 국내주식 기간별시세 API (FHKST03010100) - 30일 제한 없이 count개 이상 조회 가능
+        end_date = today().strftime("%Y%m%d")
+        calendar_days = max(int(count * 1.8) + 15, 60)
+        start_date = (today() - datetime.timedelta(days=calendar_days)).strftime("%Y%m%d")
+
+        url = f"{self.url_base}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
+        headers = self._get_headers("FHKST03010100")
         params = {
+            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_INPUT_ISCD": stock_code,
+            "FID_INPUT_DATE_1": start_date,
+            "FID_INPUT_DATE_2": end_date,
+            "FID_PERIOD_DIV_CODE": period,
+            "FID_ORG_ADJ_PRC": "0"
+        }
+
+        try:
+            self._rate_limit()
+            res = requests.get(url, headers=headers, params=params, timeout=10)
+            data = self._safe_json_response(res, context=f"국내기간별일봉[{stock_code}]")
+
+            if res.status_code == 200 and data.get("rt_cd") == "0":
+                output2 = data.get("output2", [])
+                results = []
+                for item in output2[:count]:
+                    try:
+                        results.append({
+                            "date": str(item.get("stck_bsop_date", "")),
+                            "close": int(float(item.get("stck_clpr", 0) or 0)),
+                            "open": int(float(item.get("stck_oprc", 0) or 0)),
+                            "high": int(float(item.get("stck_hgpr", 0) or 0)),
+                            "low": int(float(item.get("stck_lwpr", 0) or 0)),
+                            "volume": int(float(item.get("acml_vol", 0) or 0)),
+                            "change_rate": float(item.get("prdy_ctrt", 0.0) or 0.0)
+                        })
+                    except (ValueError, TypeError):
+                        continue
+                if results:
+                    results.reverse()  # KIS API의 내림차순(최신순) 데이터를 과거->최신 오름차순으로 변환
+                    return results
+        except Exception as e:
+            logger.warning(f"[{stock_code}] 기간별 일봉 API(FHKST03010100) 조회 실패: {e}. 기본 일별 시세로 대체 시도...")
+
+        # 2. 폴백: 기본 일별 시세 API (FHKST01010400, 최대 30영업일)
+        fallback_url = f"{self.url_base}/uapi/domestic-stock/v1/quotations/inquire-daily-price"
+        fallback_headers = self._get_headers("FHKST01010400")
+        fallback_params = {
             "FID_COND_MRKT_DIV_CODE": "J",
             "FID_INPUT_ISCD": stock_code,
             "FID_PERIOD_DIV_CODE": period,
@@ -391,27 +435,27 @@ class KISApiClient:
 
         try:
             self._rate_limit()
-            res = requests.get(url, headers=headers, params=params, timeout=10)
-            data = self._safe_json_response(res, context=f"국내일봉[{stock_code}]")
+            res = requests.get(fallback_url, headers=fallback_headers, params=fallback_params, timeout=10)
+            data = self._safe_json_response(res, context=f"국내일봉폴백[{stock_code}]")
 
             if res.status_code == 200 and data.get("rt_cd") == "0":
                 results = []
                 for item in data.get("output", [])[:count]:
                     results.append({
                         "date": item.get("stck_bsop_date", ""),
-                        "close": int(item.get("stck_clpr", 0)),
-                        "open": int(item.get("stck_oprc", 0)),
-                        "high": int(item.get("stck_hgpr", 0)),
-                        "low": int(item.get("stck_lwpr", 0)),
-                        "volume": int(item.get("acml_vol", 0))
+                        "close": int(float(item.get("stck_clpr", 0) or 0)),
+                        "open": int(float(item.get("stck_oprc", 0) or 0)),
+                        "high": int(float(item.get("stck_hgpr", 0) or 0)),
+                        "low": int(float(item.get("stck_lwpr", 0) or 0)),
+                        "volume": int(float(item.get("acml_vol", 0) or 0))
                     })
-                results.reverse()  # KIS API의 내림차순(최신순) 데이터를 과거->최신 오름차순으로 변환
+                results.reverse()
                 return results
             else:
-                logger.error(f"[{stock_code}] 일봉 조회 실패: {data.get('msg1')}")
+                logger.error(f"[{stock_code}] 일봉 폴백 조회 실패: {data.get('msg1')}")
                 return []
         except Exception as e:
-            logger.error(f"[{stock_code}] 일봉 조회 예외 발생: {e}")
+            logger.error(f"[{stock_code}] 일봉 폴백 예외 발생: {e}")
             return []
 
     def get_account_balance(self) -> Dict[str, Any]:
