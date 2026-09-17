@@ -9,6 +9,7 @@ import logging
 import pandas as pd
 import numpy as np
 import streamlit as st
+from typing import Dict, Any, List, Optional
 
 PLOTLY_AVAILABLE = False
 try:
@@ -121,6 +122,13 @@ CUSTOM_CSS = """
 </style>
 """
 
+def render_css():
+    """무한매수 커스텀 CSS 적용"""
+    st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+
+def render_sidebar():
+    """통합 사이드바가 이미 있으므로 no-op"""
+    pass
 
 
 def render_stock_detail(symbol: str, bot: TraderBot):
@@ -673,10 +681,16 @@ def render_stock_detail(symbol: str, bot: TraderBot):
 
 
 
-def page_main_dashboard():
+def page_main_dashboard(bot: Optional[TraderBot] = None):
     """메인 대시보드: 무한매수 현황 & 당일 주문"""
     render_css()
-    render_sidebar()
+    if bot is None:
+        bot = st.session_state.get("infinite_bot")
+        if bot is None:
+            api_client = st.session_state.get("kis_api") or KISApiClient()
+            bot = TraderBot(api_client)
+            bot.initialize_account()
+            st.session_state.infinite_bot = bot
 
     st.title("🇺🇸 KIS 라오어 무한매수법 전담 자동투자 시스템")
 
@@ -776,10 +790,16 @@ def page_main_dashboard():
 
 
 
-def page_config():
+def page_config(bot: Optional[TraderBot] = None):
     """무한매수 설정 페이지"""
     render_css()
-    render_sidebar()
+    if bot is None:
+        bot = st.session_state.get("infinite_bot")
+        if bot is None:
+            api_client = st.session_state.get("kis_api") or KISApiClient()
+            bot = TraderBot(api_client)
+            bot.initialize_account()
+            st.session_state.infinite_bot = bot
 
     st.title("⚙️ 무한매수 설정")
     st.subheader("종목별로 무한매수 파라미터를 수정하고 [설정 적용] 버튼을 누르면 변경 사항이 반영됩니다.")
@@ -1165,4 +1185,4 @@ def _render_infinite_main(bot: TraderBot):
         st.info("설정된 무한매수 운용 종목이 없습니다. '무한매수 전략 설정' 탭에서 종목을 추가하세요.")
 
 def _render_infinite_settings_tab(bot: TraderBot):
-    page_config()
+    page_config(bot)
