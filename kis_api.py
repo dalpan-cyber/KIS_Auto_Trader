@@ -5,7 +5,9 @@ import os
 import json
 import time
 import logging
+import threading
 import requests
+from requests.adapters import HTTPAdapter
 from typing import Dict, Any, List, Optional
 import config
 
@@ -13,6 +15,8 @@ logger = logging.getLogger("KISApiClient")
 
 class KISApiClient:
     """한국투자증권 Open API (REST API) 통신 클래스"""
+    _shared_session: Optional[requests.Session] = None
+    _session_lock = threading.Lock()
 
     def __init__(
         self,
@@ -22,12 +26,12 @@ class KISApiClient:
         acnt_prdt_cd: Optional[str] = None,
         mock: Optional[bool] = None
     ):
+        self.logger = logging.getLogger("KISApiClient")
         self.app_key = app_key or config.APP_KEY
         self.app_secret = app_secret or config.APP_SECRET
         self.cano = cano or config.CANO
         self.acnt_prdt_cd = acnt_prdt_cd or config.ACNT_PRDT_CD
         self.mock = mock if mock is not None else config.MOCK_TRADING_ONLY
-
         self.url_base = config.URL_BASE_MOCK if self.mock else config.URL_BASE_REAL
         self.access_token: Optional[str] = None
         self.token_issued_at: float = 0
@@ -53,6 +57,11 @@ class KISApiClient:
 
         # 저장된 기존 토큰 파일 로드 시도
         self._load_token_file()
+
+    @property
+    def is_mock(self) -> bool:
+        return bool(self.mock)
+
 
     def get_symbol_exchange(self, symbol: str) -> str:
         """
@@ -402,42 +411,61 @@ class KISApiClient:
 
     def get_account_balance(self) -> Dict[str, Any]:
         """
-        계좌 잔고 및 예수금 조회 (VTTC8434R: 모의 / TTTC8434R: 실전)
+        국내 계좌 잔고 및 예수금 상세 조회 (TTTC8434R: 실전 / VTTC8434R: 모의)
+        - KIS_Auto2 퀀트 대시보드(quantity, summary 등) 및 기존 TraderBot(qty, deposit 등) 100% 동시 호환
         """
         self._ensure_token()
         if not self.access_token or not self.cano:
             # API 키/계좌 미설정 시 가상 계좌 잔고 반환
             holdings_list = []
-            total_eval_holdings = 0
+            total_eval_holdings = 0.0
             for code, h in self._mock_holdings.items():
-                cur_price = self.get_stock_price(code).get("price", h["avg_price"])
-                eval_amt = cur_price * h["qty"]
-                pnl = eval_amt - (h["avg_price"] * h["qty"])
-                pnl_rate = (pnl / (h["avg_price"] * h["qty"])) * 100 if h["avg_price"] > 0 else 0.0
+                cur_price = float(self.get_stock_price(code).get("price", h["avg_price"]))
+                qty = int(h["qty"])
+                avg_p = float(h["avg_price"])
+                eval_amt = cur_price * qty
+                pnl = eval_amt - (avg_p * qty)
+                pnl_rate = (pnl / (avg_p * qty)) * 100 if avg_p > 0 else 0.0
                 total_eval_holdings += eval_amt
 
                 holdings_list.append({
                     "code": code,
                     "name": h.get("name", f"종목_{code}"),
-                    "qty": h["qty"],
-                    "avg_price": h["avg_price"],
+                    "quantity": qty,
+                    "qty": qty,
+                    "available_qty": qty,
+                    "avg_buy_price": avg_p,
+                    "avg_price": avg_p,
                     "current_price": cur_price,
                     "eval_amount": eval_amt,
+                    "profit_loss": pnl,
                     "pnl": pnl,
-                    "pnl_rate": round(pnl_rate, 2)
+                    "profit_rate": round(pnl_rate, 2),
+                    "pnl_rate": round(pnl_rate, 2),
+                    "change_rate": 0.0,
+                    "diff_amt": 0.0,
                 })
 
-            total_asset = self._mock_balance_deposit + total_eval_holdings
+            deposit = float(self._mock_balance_deposit)
+            total_asset = deposit + total_eval_holdings
+            summary = {
+                "tot_asset": total_asset,
+                "cash_balance": deposit,
+                "stock_eval_amt": total_eval_holdings,
+                "total_profit_loss": sum(item["pnl"] for item in holdings_list),
+                "net_asset": total_asset
+            }
             return {
+                "rt_cd": "0",
                 "success": True,
-                "deposit": self._mock_balance_deposit,
+                "deposit": deposit,
                 "total_asset": total_asset,
+                "summary": summary,
                 "holdings": holdings_list
             }
 
-        tr_id = "VTTC8434R" if self.mock else "TTTC8434R"
         url = f"{self.url_base}/uapi/domestic-stock/v1/trading/inquire-balance"
-        headers = self._get_headers(tr_id)
+        tr_id = "VTTC8434R" if (getattr(self, "is_mock", False) or getattr(self, "mock", False)) else "TTTC8434R"
         params = {
             "CANO": self.cano,
             "ACNT_PRDT_CD": self.acnt_prdt_cd,
@@ -447,65 +475,128 @@ class KISApiClient:
             "UNPR_DVSN": "01",
             "FUND_STTL_ICLD_YN": "N",
             "FNCG_AMT_AUTO_RDPT_YN": "N",
-            "PRCS_DVSN": "01",
+            "PRCS_DVSN": "00",
             "CTX_AREA_FK100": "",
             "CTX_AREA_NK100": ""
         }
 
-        try:
-            self._rate_limit()
-            res = requests.get(url, headers=headers, params=params, timeout=10)
-            data = self._safe_json_response(res, context="국내계좌잔고")
+        for attempt in range(1, 3):
+            try:
+                headers = self._get_headers(tr_id)
+                self._rate_limit()
+                session = self.get_session() if hasattr(self, "get_session") else requests
+                res = session.get(url, headers=headers, params=params, timeout=10)
+                data = self._safe_json_response(res, context="국내계좌잔고")
+                rt_cd = data.get("rt_cd", "0")
 
-            if res.status_code == 200 and data.get("rt_cd") == "0":
+                if rt_cd != "0":
+                    msg = data.get("msg1", "")
+                    if attempt == 1:
+                        if "초과" in msg or "EGW00215" in str(data.get("msg_cd", "")):
+                            time.sleep(1.0)
+                            continue
+                        elif "만료된" in msg or "EGW" in str(data.get("msg_cd", "")):
+                            self.access_token = None
+                            self.get_access_token()
+                            time.sleep(0.5)
+                            continue
+                    return {
+                        "rt_cd": rt_cd,
+                        "success": False,
+                        "msg": msg,
+                        "summary": {"tot_asset": 0, "cash_balance": 0, "stock_eval_amt": 0, "total_profit_loss": 0, "net_asset": 0},
+                        "holdings": []
+                    }
+
                 output1 = data.get("output1", [])
-                output2 = data.get("output2", [{}])[0]
+                output2 = data.get("output2", [{}])
 
-                deposit = int(output2.get("dnca_tot_amt", 0))
-                total_asset = int(output2.get("tot_evlu_amt", 0))
-
-                holdings_list = []
+                holdings = []
                 for item in output1:
-                    qty = int(item.get("hldg_qty", 0))
-                    if qty <= 0:
-                        continue
-                    code = item.get("pdno", "")
-                    avg_p = float(item.get("prma_evlu_amt", 0)) / qty if qty > 0 else 0.0
-                    cur_p = int(item.get("prpr", 0))
-                    eval_amt = int(item.get("evlu_amt", 0))
-                    pnl = int(item.get("evlu_pfls_amt", 0))
-                    pnl_rate = float(item.get("evlu_pfls_rt", 0.0))
+                    qty = int(item.get("hldg_qty", 0) or 0)
+                    if qty > 0:
+                        change_rate = 0.0
+                        raw_fltt = str(item.get("fltt_rt", "")).strip()
+                        raw_prdy = str(item.get("prdy_ctrt", "")).strip()
+                        if raw_fltt and raw_fltt not in ("0", "0.0", "0.00", "0.00000000"):
+                            try:
+                                change_rate = float(raw_fltt)
+                            except (ValueError, TypeError):
+                                pass
+                        elif raw_prdy and raw_prdy not in ("0", "0.0", "0.00"):
+                            try:
+                                change_rate = float(raw_prdy)
+                            except (ValueError, TypeError):
+                                pass
 
-                    holdings_list.append({
-                        "code": code,
-                        "name": item.get("prdt_name", f"종목_{code}"),
-                        "qty": qty,
-                        "avg_price": avg_p,
-                        "current_price": cur_p,
-                        "eval_amount": eval_amt,
-                        "pnl": pnl,
-                        "pnl_rate": pnl_rate
-                    })
+                        if change_rate == 0.0:
+                            try:
+                                diff_val = float(item.get("bfdy_cprs_icdc") or item.get("prdy_vrss") or 0.0)
+                                curr_val = float(item.get("prpr", 0.0))
+                                prev_close = curr_val - diff_val
+                                if prev_close > 0 and diff_val != 0:
+                                    change_rate = (diff_val / prev_close) * 100.0
+                            except Exception:
+                                pass
+
+                        avg_p = float(item.get("pchs_avg_pric", 0) or 0.0)
+                        cur_p = float(item.get("prpr", 0) or 0.0)
+                        eval_amt = float(item.get("evlu_amt", 0) or 0.0)
+                        pnl = float(item.get("evlu_pfls_amt", 0) or 0.0)
+                        pnl_rt = float(item.get("evlu_pfls_rt", 0.0) or 0.0)
+
+                        holdings.append({
+                            "code": item.get("pdno", ""),
+                            "name": item.get("prdt_name", f"종목_{item.get('pdno')}"),
+                            "quantity": qty,
+                            "qty": qty,
+                            "available_qty": int(item.get("ord_psbl_qty", 0) or 0),
+                            "avg_buy_price": avg_p,
+                            "avg_price": avg_p,
+                            "current_price": cur_p,
+                            "eval_amount": eval_amt,
+                            "profit_loss": pnl,
+                            "pnl": pnl,
+                            "profit_rate": pnl_rt,
+                            "pnl_rate": pnl_rt,
+                            "change_rate": change_rate,
+                            "fltt_rt": raw_fltt,
+                            "prdy_ctrt": raw_prdy,
+                            "diff_amt": float(item.get("bfdy_cprs_icdc") or item.get("prdy_vrss") or 0.0),
+                        })
+
+                o2 = output2[0] if output2 else {}
+                stock_eval_amt = sum(h["eval_amount"] for h in holdings)
+                deposit = float(o2.get("dnca_tot_amt", 0) or 0.0)
+                tot_asset = float(o2.get("tot_evlu_amt", 0) or (deposit + stock_eval_amt))
+
+                summary = {
+                    "tot_asset": tot_asset,
+                    "cash_balance": deposit,
+                    "stock_eval_amt": stock_eval_amt,
+                    "total_profit_loss": float(o2.get("evlu_pfls_smtl_amt", 0) or 0.0),
+                    "net_asset": float(o2.get("nass_amt", tot_asset) or tot_asset)
+                }
 
                 return {
+                    "rt_cd": "0",
                     "success": True,
                     "deposit": deposit,
-                    "total_asset": total_asset,
-                    "holdings": holdings_list
+                    "total_asset": tot_asset,
+                    "summary": summary,
+                    "holdings": holdings
                 }
-            else:
-                msg1 = data.get("msg1", "")
-                if "만료된" in msg1 or data.get("msg_cd") == "EGW00123":
-                    logger.warning("Access Token 만료 감지: 자동 토큰 재발급 후 계좌 잔고 재조회...")
-                    self.access_token = None
-                    self.token_issued_at = 0
-                    if self.get_access_token():
-                        return self.get_account_balance()
-                logger.error(f"계좌 잔고 조회 실패: {msg1}")
-                return {"success": False, "msg": msg1}
-        except Exception as e:
-            logger.error(f"계좌 잔고 조회 예외 발생: {e}")
-            return {"success": False, "msg": str(e)}
+            except Exception as e:
+                self.logger.error(f"계좌 잔고 조회 예외 발생: {e}")
+                if attempt == 2:
+                    return {
+                        "rt_cd": "-1",
+                        "success": False,
+                        "msg": str(e),
+                        "summary": {"tot_asset": 0, "cash_balance": 0, "stock_eval_amt": 0, "total_profit_loss": 0, "net_asset": 0},
+                        "holdings": []
+                    }
+        return {"rt_cd": "-1", "success": False, "summary": {}, "holdings": []}
 
     def order_cash(
         self,

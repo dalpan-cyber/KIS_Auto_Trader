@@ -149,16 +149,16 @@ def render_overview_tab(api, screener, summary, holdings, proposals, holding_cod
             html_rows.append(f"""
                 <tr style="border-bottom:1px solid #1e293b;">
                     <td style="text-align:center;padding:10px 8px;">{icon_html}</td>
-                    <td style="padding:10px 8px;font-weight:700;color:#38bdf8;">{h['name']}</td>
-                    <td style="padding:10px 8px;color:#94a3b8;font-size:0.8rem;">{h['code']}</td>
+                    <td style="padding:10px 8px;font-weight:700;color:#38bdf8;">{h.get('name', '')}</td>
+                    <td style="padding:10px 8px;color:#94a3b8;font-size:0.8rem;">{h.get('code', '')}</td>
                     <td style="text-align:center;padding:10px 8px;">{strat_badge}</td>
-                    <td style="text-align:right;padding:10px 8px;color:#f8fafc;font-weight:600;">{h['quantity']:,}주</td>
-                    <td style="text-align:right;padding:10px 8px;color:#cbd5e1;">{h['avg_buy_price']:,.0f}원</td>
-                    <td style="text-align:right;padding:10px 8px;color:#f8fafc;font-weight:600;">{h['current_price']:,.0f}원</td>
+                    <td style="text-align:right;padding:10px 8px;color:#f8fafc;font-weight:600;">{int(h.get('quantity', h.get('qty', 0))):,}주</td>
+                    <td style="text-align:right;padding:10px 8px;color:#cbd5e1;">{float(h.get('avg_buy_price', h.get('avg_price', 0))):,.0f}원</td>
+                    <td style="text-align:right;padding:10px 8px;color:#f8fafc;font-weight:600;">{float(h.get('current_price', 0)):,.0f}원</td>
                     <td style="text-align:right;padding:10px 8px;color:{cr_color};font-weight:600;">{cr:+.2f}%</td>
                     <td style="text-align:right;padding:10px 8px;color:{pr_color};font-weight:700;">{pr:+.2f}%</td>
                     <td style="text-align:right;padding:10px 8px;color:{pnl_color};font-weight:700;">{pnl:+,.0f}원</td>
-                    <td style="text-align:right;padding:10px 8px;color:#f8fafc;font-weight:600;">{h.get('eval_amount', 0):,.0f}원</td>
+                    <td style="text-align:right;padding:10px 8px;color:#f8fafc;font-weight:600;">{float(h.get('eval_amount', 0)):,.0f}원</td>
                 </tr>
             """)
         html_table = f"""
@@ -216,7 +216,10 @@ def render_overview_tab(api, screener, summary, holdings, proposals, holding_cod
         else:
             components.html(html_table, height=85 + len(holdings) * 44, scrolling=True)
 
-        holding_options = [f"{h['name']} ({h['code']}) | 평단가: {h['avg_buy_price']:,.0f}원 | 수익률: {h['profit_rate']:+.2f}%" for h in holdings]
+        holding_options = [
+            f"{h.get('name', '')} ({h.get('code', '')}) | 평단가: {float(h.get('avg_buy_price', h.get('avg_price', 0))):,.0f}원 | 수익률: {float(h.get('profit_rate', h.get('pnl_rate', 0))):+.2f}%"
+            for h in holdings
+        ]
         selected_idx = st.selectbox(
             "차트를 확인할 보유 종목을 선택하세요",
             range(len(holdings)),
@@ -400,16 +403,16 @@ def render_risk_tab(api, screener, holdings, proposals, realtime_detection_fragm
         st.write("### 📦 전체 보유 주식 목록")
         holdings_df = pd.DataFrame([
             {
-                "수익": "▲" if float(h.get("profit_rate", 0)) > 0 else "▼" if float(h.get("profit_rate", 0)) < 0 else "•",
-                "종목명": h["name"],
-                "코드": h["code"],
-                "보유수량": h["quantity"],
-                "매입평균가": h["avg_buy_price"],
-                "현재가": h["current_price"],
+                "수익": "▲" if float(h.get("profit_rate", h.get("pnl_rate", 0))) > 0 else "▼" if float(h.get("profit_rate", h.get("pnl_rate", 0))) < 0 else "•",
+                "종목명": h.get("name", ""),
+                "코드": h.get("code", ""),
+                "보유수량": int(h.get("quantity", h.get("qty", 0))),
+                "매입평균가": float(h.get("avg_buy_price", h.get("avg_price", 0))),
+                "현재가": float(h.get("current_price", 0)),
                 "당일등락률": _extract_change_rate(h),
-                "수익률(%)": float(h.get("profit_rate", 0)),
-                "평가손익(원)": h.get("profit_loss", 0),
-                "평가금액(원)": h.get("eval_amount", 0),
+                "수익률(%)": float(h.get("profit_rate", h.get("pnl_rate", 0))),
+                "평가손익(원)": float(h.get("profit_loss", h.get("pnl", 0))),
+                "평가금액(원)": float(h.get("eval_amount", 0)),
             }
             for h in holdings
         ])
