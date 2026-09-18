@@ -183,6 +183,82 @@ class TestInfiniteGSSAndSafety(unittest.TestCase):
         st = mgr.get_symbol_state("TQQQ")
         self.assertEqual(st["current_round"], 3.0)
 
+    def test_sync_holdings_to_state_case_a_with_execution_history_sell_price(self):
+        """케이스 A(전량 매도 후 잔고 0) 시 KIS 체결 이력의 실제 매도 체결단가와 last_avg_price가 complete_round에 정확히 전달되는지 검증"""
+        api_mock = MagicMock(spec=KISApiClient)
+        api_mock.mock = True
+        api_mock.get_overseas_account_balance.return_value = {"success": True, "output": {}}
+        api_mock.get_overseas_stock_balance.return_value = {"success": True, "holdings": []}
+        api_mock.get_overseas_execution_balance.return_value = {"success": True, "holdings": []}
+
+        # KIS 체결 이력 모의 데이터 (실제 체결된 매도 건: 10주 @ $55.0)
+        api_mock.get_overseas_execution_history.return_value = [
+            {
+                "order_time": "2026-09-18 23:30:00",
+                "symbol": "TQQQ",
+                "order_type": "매도",
+                "qty": 10,
+                "executed_qty": 10,
+                "price": 55.0,
+                "executed_price": 55.0,
+                "status": "체결",
+                "order_no": "ORD12345"
+            }
+        ]
+
+        bot = TraderBot(api=api_mock)
+        bot.infinite_state_mgr = InfiniteStateManager(file_path=self.test_state_file, enable_gss=False)
+        mock_gss = MagicMock()
+        mock_gss.is_connected = True
+        bot.infinite_state_mgr.gss_mgr = mock_gss
+        bot.infinite_stocks = ["TQQQ"]
+
+        # 종목 상태 설정: 3회차 진행 중, peak_qty=10, last_avg_price=50.0
+        st = bot.infinite_state_mgr.get_symbol_state("TQQQ")
+        st["current_round"] = 3.0
+        st["status"] = "BUYING"
+        st["peak_qty"] = 10
+        st["last_avg_price"] = 50.0
+        bot.infinite_state_mgr.save_state()
+
+        # 잔고 0주인 상태에서 동기화 호출
+        bot.holdings = {}
+        bot.sync_holdings_to_state()
+
+        # 검증: complete_round가 실제 매도 체결가 $55.0, 평단가 $50.0, 수량 10주로 완료 처리되었는지 확인
+        mock_gss.record_completed_cycle.assert_called_once()
+        call_kwargs = mock_gss.record_completed_cycle.call_args.kwargs
+        self.assertEqual(call_kwargs["symbol"], "TQQQ")
+        self.assertEqual(call_kwargs["avg_price"], 50.0)
+        self.assertEqual(call_kwargs["sell_price"], 55.0)
+        self.assertEqual(call_kwargs["qty"], 10)
+
+        # 상태가 COMPLETED로 전환되고 peak_qty가 0으로 리셋되었는지 확인
+        final_st = bot.infinite_state_mgr.get_symbol_state("TQQQ")
+        self.assertEqual(final_st["status"], "COMPLETED")
+        self.assertEqual(final_st["current_round"], 0)
+        self.assertEqual(final_st["peak_qty"], 0)
+
+    def test_sync_execution_history_to_sheets(self):
+        """sync_execution_history_to_sheets가 체결 이력을 조회해 gss_mgr에 정상 전달하는지 검증"""
+        api_mock = MagicMock(spec=KISApiClient)
+        mock_history = [
+            {"symbol": "TQQQ", "order_type": "매도", "executed_qty": 5, "executed_price": 60.0}
+        ]
+        api_mock.get_overseas_execution_history.return_value = mock_history
+
+        bot = TraderBot(api=api_mock)
+        bot.infinite_state_mgr = InfiniteStateManager(file_path=self.test_state_file, enable_gss=False)
+        mock_gss = MagicMock()
+        mock_gss.is_connected = True
+        bot.infinite_state_mgr.gss_mgr = mock_gss
+        bot.infinite_stocks = ["TQQQ"]
+
+        bot.sync_execution_history_to_sheets(days_back=7)
+
+        # 구글 시트 sync_execution_history가 호출되었는지 확인
+        mock_gss.sync_execution_history.assert_called_once_with(mock_history)
+
 
 if __name__ == "__main__":
     unittest.main()

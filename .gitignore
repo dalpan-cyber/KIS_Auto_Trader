@@ -24,6 +24,7 @@ kis-auto-trader-*.json
 
 # Temp & IDE Files
 Temp/
+cache/
 .idea/
 .vscode/
 .antigravity/

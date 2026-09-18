@@ -330,9 +330,48 @@ class TraderBot:
                     self.logger.info(
                         f"🎊 [{symbol}] 전량 매도 체결 확인! ({prev_status} 상태, 보유: {peak_qty}주 -> 0주) 무한매수 {prev_round}회차 사이클 완료 처리합니다."
                     )
+                    # 1. KIS 체결 이력 API에서 실제 매도 체결 단가 및 수량 조회 시도 (최근 3일)
+                    sell_exec_price = 0.0
+                    sell_exec_qty = 0
+                    try:
+                        today_dt = datetime.datetime.now().date()
+                        start_dt = today_dt - datetime.timedelta(days=3)
+                        start_fmt = start_dt.strftime("%Y%m%d")
+                        end_fmt = today_dt.strftime("%Y%m%d")
+                        hist = self.api.get_overseas_execution_history(symbol=symbol, start_date=start_fmt, end_date=end_fmt)
+                        for h in hist:
+                            o_type = str(h.get("order_type", "")).strip()
+                            e_qty = int(h.get("executed_qty", h.get("qty", 0)) or 0)
+                            e_price = float(h.get("executed_price", h.get("price", 0.0)) or 0.0)
+                            if o_type == "매도" and e_qty > 0 and e_price > 0:
+                                sell_exec_qty = e_qty
+                                sell_exec_price = e_price
+                                break
+                    except Exception as e:
+                        self.logger.debug(f"[{symbol}] 케이스 A 체결 이력 매도 단가 조회 중 예외: {e}")
+
+                    # 2. 매도가격 fallback: 현재가 API 조회 시도
+                    if sell_exec_price <= 0:
+                        cur_p = self.current_prices.get(symbol, 0.0)
+                        if cur_p <= 0 and hasattr(self.api, "get_overseas_stock_price"):
+                            try:
+                                cur_p = self.api.get_overseas_stock_price(symbol)
+                            except Exception:
+                                cur_p = 0.0
+                        sell_exec_price = cur_p
+
+                    # 3. 매수 평단가: 잔고가 0이므로 st의 last_avg_price 우선 적용
                     avg_p = float(self.holdings.get(symbol, {}).get("avg_price", 0.0))
-                    cur_p = self.current_prices.get(symbol, 0.0)
-                    self.infinite_state_mgr.complete_round(symbol, avg_price=avg_p, sell_price=cur_p, qty=peak_qty)
+                    if avg_p <= 0:
+                        avg_p = float(st.get("last_avg_price", 0.0))
+
+                    completed_qty = sell_exec_qty if sell_exec_qty > 0 else peak_qty
+                    self.infinite_state_mgr.complete_round(
+                        symbol,
+                        avg_price=avg_p,
+                        sell_price=sell_exec_price,
+                        qty=completed_qty
+                    )
 
                 # 케이스 B: 장중 전량 매도 후 장 마감 LOC 매수가 체결되어 잔고가 다시 생긴 경우 (held_qty > 0)
                 elif prev_status in ("BUYING", "PAUSED") and prev_round > 0 and peak_qty > 0 and held_qty > 0:
@@ -342,7 +381,7 @@ class TraderBot:
                     sell_exec_price = 0.0
                     try:
                         today_dt = datetime.datetime.now().date()
-                        start_dt = today_dt - datetime.timedelta(days=2)
+                        start_dt = today_dt - datetime.timedelta(days=3)
                         start_fmt = start_dt.strftime("%Y%m%d")
                         end_fmt = today_dt.strftime("%Y%m%d")
                         hist = self.api.get_overseas_execution_history(symbol=symbol, start_date=start_fmt, end_date=end_fmt)
@@ -397,6 +436,55 @@ class TraderBot:
                         self.logger.info(f"▶ [{symbol}] 실계좌 보유 수량({held_qty}주) 확인: 진행 회차를 0에서 1.0회차로 자동 보정합니다.")
                         st["current_round"] = 1.0
                         self.infinite_state_mgr.save_state()
+
+    def sync_execution_history_to_sheets(self, days_back: int = 7):
+        """최근 체결 이력을 KIS API에서 조회하여 구글 시트 'ExecutionHistory'에 중복 없이 동기화"""
+        if not hasattr(self, "infinite_state_mgr") or not self.infinite_state_mgr:
+            return
+        gss = getattr(self.infinite_state_mgr, "gss_mgr", None)
+        if not gss or not getattr(gss, "is_connected", False):
+            self.logger.debug("Google Sheets 미연동 상태로 체결 이력 동기화를 건너뜁니다.")
+            return
+
+        try:
+            today_dt = datetime.datetime.now().date()
+            start_dt = today_dt - datetime.timedelta(days=days_back)
+            start_fmt = start_dt.strftime("%Y%m%d")
+            end_fmt = today_dt.strftime("%Y%m%d")
+            all_hist = []
+            symbols = list(getattr(self, "infinite_stocks", []))
+            if not symbols:
+                symbols = ["TQQQ", "SOXL"]
+
+            for symbol in symbols:
+                try:
+                    hist = self.api.get_overseas_execution_history(symbol=symbol, start_date=start_fmt, end_date=end_fmt)
+                    if hist:
+                        all_hist.extend(hist)
+                except Exception as ex:
+                    self.logger.warning(f"[{symbol}] KIS 체결 이력 조회 실패: {ex}")
+
+            if all_hist:
+                gss.sync_execution_history(all_hist)
+                self.logger.info(f"📊 Google Sheets 'ExecutionHistory'에 체결 이력 {len(all_hist)}건 동기화 완료")
+            else:
+                self.logger.info("ℹ️ 동기화할 최근 체결 이력이 없습니다.")
+        except Exception as e:
+            self.logger.warning(f"Google Sheets 체결 이력 동기화 중 예외: {e}")
+
+    def sync_holdings_to_sheets(self):
+        """실계좌 보유 현황 및 평가 손익을 구글 시트 'Holdings' 워크시트에 동기화"""
+        if not hasattr(self, "infinite_state_mgr") or not self.infinite_state_mgr:
+            return
+        gss = getattr(self.infinite_state_mgr, "gss_mgr", None)
+        if not gss or not getattr(gss, "is_connected", False):
+            return
+
+        try:
+            gss.sync_holdings(self.holdings, self.current_prices)
+            self.logger.info("📊 Google Sheets 'Holdings' 워크시트에 실시간 보유 현황 동기화 완료")
+        except Exception as e:
+            self.logger.warning(f"Google Sheets Holdings 동기화 중 예외: {e}")
 
     def start_infinite_buying(self, symbol: str):
         """특정 종목의 무한매수 수동 시작"""

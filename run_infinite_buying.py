@@ -78,6 +78,9 @@ def main():
         logger.info("🔍 [체결 확인 모드] 장 마감 후 체결 내역 조회 및 Google Sheets 동기화를 진행합니다. (신규 주문은 발주하지 않음)")
         bot.sync_holdings_to_state()
         bot.infinite_state_mgr.save_state()
+        # 구글 시트에 최근 7일 체결 이력(ExecutionHistory) 및 실시간 보유 현황(Holdings) 일괄 동기화
+        bot.sync_execution_history_to_sheets(days_back=7)
+        bot.sync_holdings_to_sheets()
         logger.info("🎉 ===== 무한매수 장 마감 체결 확인 및 구글 시트 동기화 완료 =====")
         return
 
@@ -108,6 +111,9 @@ def main():
     # 5. 최종 무한매수 상태 저장 및 구글 시트 동기화 강제 실행
     bot.infinite_state_mgr.save_state()
     bot.sync_holdings_to_state()
+    # 구글 시트에 당일 주문/체결 이력(ExecutionHistory) 및 실시간 보유 현황(Holdings) 백업 동기화
+    bot.sync_execution_history_to_sheets(days_back=7)
+    bot.sync_holdings_to_sheets()
 
     logger.info("🎉 ===== 무한매수 당일 주문 발주 루틴 완료 =====")
 
