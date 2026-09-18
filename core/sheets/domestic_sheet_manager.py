@@ -237,6 +237,20 @@ class DomesticSheetManager(BaseSheetManager):
             if rows:
                 self.proposals_worksheet.append_rows(rows)
                 logger.info(f"📊 Google Sheet 'Proposals'에 제안 {len(rows)}건 누적 저장 완료")
+
+                # 최신 100건 유지: 행 수가 101(헤더 1행 + 데이터 100건)을 초과하면 오래된 내역 롤링 정리
+                try:
+                    all_rows = self.proposals_worksheet.get_all_values()
+                    max_data_rows = 100
+                    if len(all_rows) > max_data_rows + 1:
+                        header = all_rows[0]
+                        trimmed = all_rows[-max_data_rows:]
+                        self.proposals_worksheet.clear()
+                        self.proposals_worksheet.update(range_name="A1", values=[header] + trimmed)
+                        self.proposals_worksheet.resize(rows=max(120, len(trimmed) + 20), cols=len(header))
+                        logger.info(f"🧹 Google Sheet 'Proposals' 최신 {len(trimmed)}건 유지 (오래된 제안 자동 롤링 정리 완료)")
+                except Exception as ex:
+                    logger.warning(f"Google Sheet Proposals 롤링 정리 중 오류 발생 (계속 진행): {ex}")
             return True
         except Exception as e:
             logger.warning(f"Google Sheet Proposals 동기화 실패: {e}")
