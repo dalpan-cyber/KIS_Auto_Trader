@@ -9,22 +9,22 @@
     "status": "BUYING",
     "exhaust_action": "AUTO",
     "exhaust_target_roi": 0.05,
-    "peak_qty": 47,
+    "peak_qty": 48,
     "paused_sell_price": 0.0,
-    "last_avg_price": 71.3143
+    "last_avg_price": 71.3419
   },
   "SOXL": {
     "symbol": "SOXL",
     "start_date": "2026-09-08",
     "total_budget_usd": 5000.0,
     "division_count": 40,
-    "current_round": 9.0,
+    "current_round": 0,
     "target_roi": 0.1,
     "exhaust_action": "AUTO",
     "exhaust_target_roi": 0.05,
-    "status": "BUYING",
-    "peak_qty": 13,
+    "status": "COMPLETED",
+    "peak_qty": 0,
     "paused_sell_price": 0.0,
-    "last_avg_price": 111.9546
+    "last_avg_price": 0.0
   }
 }
