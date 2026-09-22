@@ -302,6 +302,29 @@ class InfiniteStateManager:
         if modified:
             self.save_state()
 
+    def calculate_current_round(self, symbol: str, held_qty: int, avg_price: float) -> float:
+        """
+        라오어 무한매수법 정석 회차 계산:
+        원금 소진율 기반으로 실계좌 체결 상태에 따른 진행 회차 산출
+        1회차 예산 = 총 예산 / 분할 횟수
+        raw_round = (보유수량 * 평단가) / 1회차 예산
+        calc_round = round(raw_round * 2.0) / 2.0 (0.5단위 반올림)
+        진행 회차 = min(분할 횟수, max(0.5, calc_round))
+        """
+        if held_qty <= 0 or avg_price <= 0:
+            return 0.0
+        state = self.get_symbol_state(symbol)
+        total_budget = float(state.get("total_budget_usd", 5000.0) or 5000.0)
+        division = int(state.get("division_count", 40) or 40)
+        if total_budget <= 0 or division <= 0:
+            return 0.0
+
+        one_round_budget = total_budget / float(division)
+        invested = float(held_qty) * float(avg_price)
+        raw_round = invested / one_round_budget
+        calc_round = round(raw_round * 2.0) / 2.0
+        return min(float(division), max(0.5, calc_round))
+
     def advance_round(self, symbol: str, round_inc: float = 0.5):
         """매수 주문 접수/체결 시 진행 회차 증가 (새 사이클 시작 시 시작일 자동 최신화)"""
         state = self.get_symbol_state(symbol)

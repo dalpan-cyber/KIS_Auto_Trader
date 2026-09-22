@@ -331,6 +331,7 @@ def test_soxl_exchange_and_execution():
 
     # 2. TraderBot의 execute_daily_orders(SOXL) 시뮬레이션
     bot = TraderBot(api)
+    api.get_stock_price = lambda symbol: {"success": True, "price": 25.0}
     from infinite_state_manager import InfiniteStateManager
     bot.infinite_state_mgr = InfiniteStateManager(file_path=TEST_STATE_FILE, enable_gss=False)
     bot.fetch_account_balance = lambda: None  # 테스트 중 불필요한 네트워크 API 호출 방지
@@ -379,16 +380,18 @@ def test_soxl_exchange_and_execution():
     # IDLE 상태에서 BUYING 상태로 자동 전환되었는지 검증 (held_qty=0임에도 조기 COMPLETED되지 않고 BUYING 유지)
     soxl_st = bot.infinite_state_mgr.get_symbol_state("SOXL")
     assert soxl_st["status"] == "BUYING", f"상태가 BUYING으로 전환되지 않음: {soxl_st['status']}"
-    assert soxl_st["current_round"] == 1.0, f"회차가 1.0으로 증가하지 않음: {soxl_st['current_round']}"
-    print("  ✅ SOXL IDLE -> BUYING 자동 전환 및 2건 분할 매수 접수 성공 (회차: 1.0, 상태: BUYING 유지)")
+    # 발주 시점에는 회차가 증가하지 않음 (정석 방식: 미체결 상태에서는 회차 미가산)
+    assert soxl_st["current_round"] == 0, f"발주 시점에 회차가 증가하지 않아야 함: {soxl_st['current_round']}"
+    print("  ✅ SOXL IDLE -> BUYING 자동 전환 및 2건 분할 매수 접수 성공 (발주 시점 회차 미가산 확인)")
 
-    # 3. 체결 후 실제 매수 수량 반영 시뮬레이션 (held_qty: 10주)
+    # 3. 체결 후 실제 매수 수량 반영 시뮬레이션 (held_qty: 10주, 평단: $25.0 -> $250 / $125 = 2.0회차)
     bot.holdings["SOXL"] = {"qty": 10, "avg_price": 25.0}
     bot.sync_holdings_to_state()
     soxl_st = bot.infinite_state_mgr.get_symbol_state("SOXL")
     assert soxl_st["peak_qty"] == 10, f"peak_qty 갱신 실패: {soxl_st.get('peak_qty')}"
     assert soxl_st["status"] == "BUYING", f"체결 보유 중 상태 오류: {soxl_st['status']}"
-    print("  ✅ SOXL 실계좌 체결 반영: peak_qty=10 갱신 및 BUYING 유지 확인")
+    assert soxl_st["current_round"] == 2.0, f"원금 소진율 기반 회차 동기화 실패: {soxl_st['current_round']}"
+    print("  ✅ SOXL 실계좌 체결 반영: peak_qty=10 갱신, 라오어 정석 공식 2.0회차 산출 및 BUYING 유지 확인")
 
     # 4. 전량 익절 매도 체결 시뮬레이션 (held_qty: 0주)
     bot.holdings["SOXL"] = {"qty": 0, "avg_price": 0.0}
@@ -705,15 +708,91 @@ def test_intraday_sell_and_loc_rebuy_cycle_completion():
     assert c_call["sell_price"] == 30.00, f"체결 매도가 불일치: {c_call['sell_price']}"
     print(f"  ✅ 1. 직전 사이클 완료 기록 정상 호출 확인 (매도: {c_call['qty']}주 @ ${c_call['sell_price']:.2f}, 평단: ${c_call['avg_price']:.2f})")
 
-    # 5. 검증 2: 새로 체결된 2주가 새 사이클의 1.0회차로 정상 인계되었는지 확인
+    # 5. 검증 2: 새로 체결된 2주($52 / $125 -> 0.5회차)가 새 사이클의 0.5회차로 정상 인계되었는지 확인
     st_new = mgr.get_symbol_state("SOXL")
-    assert st_new["current_round"] == 1.0, f"새 사이클 회차가 1.0이 아님: {st_new['current_round']}"
+    assert st_new["current_round"] == 0.5, f"새 사이클 회차가 0.5가 아님: {st_new['current_round']}"
     assert st_new["status"] == "BUYING", f"상태가 BUYING이 아님: {st_new['status']}"
     assert st_new["peak_qty"] == 2, f"peak_qty가 2가 아님: {st_new['peak_qty']}"
     assert st_new["last_avg_price"] == 26.00, f"새 평단가가 26.00이 아님: {st_new['last_avg_price']}"
     today_str = datetime.datetime.now().strftime("%Y-%m-%d")
     assert st_new["start_date"] == today_str, f"시작일이 오늘 날짜가 아님: {st_new['start_date']}"
-    print(f"  ✅ 2. 신규 체결분(2주 @ $26.00)으로 새 사이클 1.0회차 자동 인계 완료 (시작일: {st_new['start_date']})")
+    print(f"  ✅ 2. 신규 체결분(2주 @ $26.00)으로 새 사이클 0.5회차(라오어 공식) 자동 인계 완료 (시작일: {st_new['start_date']})")
+    print("  ✅ PASS")
+
+
+def test_raoer_formula_round_calculation():
+    """라오어 무한매수법 정석 회차(원금 소진율 기반) 계산 및 발주 시 회차 미가산 검증"""
+    print("\n=== Test: 라오어 정석 공식 회차 계산 및 발주 시 미가산 검증 ===")
+    from unittest.mock import MagicMock
+    from trader import TraderBot
+    from kis_api import KISApiClient
+    from infinite_state_manager import InfiniteStateManager
+
+    mgr = InfiniteStateManager(file_path=TEST_STATE_FILE, enable_gss=False)
+    # TQQQ: 예산 $5000, 40분할 -> 1회차 예산 $125
+    mgr.states["TQQQ"] = {
+        "symbol": "TQQQ",
+        "start_date": "2026-09-08",
+        "total_budget_usd": 5000.0,
+        "division_count": 40,
+        "current_round": 24.0,
+        "target_roi": 0.10,
+        "exhaust_action": "HOLD",
+        "exhaust_target_roi": 0.05,
+        "status": "BUYING",
+        "peak_qty": 42,
+        "last_avg_price": 71.43
+    }
+
+    # 1. calculate_current_round 정량적 계산 검증
+    # 1) TQQQ 42주 @ $71.43 -> 투자금 $3000.06 / $125 = 24.00048 -> 24.0회차
+    r1 = mgr.calculate_current_round("TQQQ", held_qty=42, avg_price=71.43)
+    assert r1 == 24.0, f"42주 @ 71.43 계산 오류: {r1} != 24.0"
+
+    # 2) 0주 보유 시 0.0회차
+    assert mgr.calculate_current_round("TQQQ", held_qty=0, avg_price=71.43) == 0.0
+    assert mgr.calculate_current_round("TQQQ", held_qty=42, avg_price=0.0) == 0.0
+
+    # 3) 1주 @ $70 -> $70 / $125 = 0.56 -> 0.5회차
+    r2 = mgr.calculate_current_round("TQQQ", held_qty=1, avg_price=70.0)
+    assert r2 == 0.5, f"1주 @ 70 계산 오류: {r2} != 0.5"
+
+    # 4) 2주 @ $70 -> $140 / $125 = 1.12 -> 1.0회차
+    r3 = mgr.calculate_current_round("TQQQ", held_qty=2, avg_price=70.0)
+    assert r3 == 1.0, f"2주 @ 70 계산 오류: {r3} != 1.0"
+
+    # 5) 75주 @ $70 -> $5250 / $125 = 42.0 -> 최대 분할 횟수 40 한도 제한 검증
+    r4 = mgr.calculate_current_round("TQQQ", held_qty=75, avg_price=70.0)
+    assert r4 == 40.0, f"최대 분할 제한 오류: {r4} != 40.0"
+    print("  ✅ 1. calculate_current_round 수학적 정밀 계산 및 0.5단위 반올림, 분할한도 검증 완료")
+
+    # 2. TraderBot 발주 시점에 회차가 올라가지 않는지(미체결 회차 왜곡 차단) 검증
+    api = KISApiClient()
+    api.is_overseas_symbol = MagicMock(return_value=True)
+    api.get_stock_price = MagicMock(return_value={"success": True, "price": "71.50"})
+    api.order_overseas_cash = MagicMock(return_value={"success": True, "msg": "주문 성공", "data": {"ODNO": "MOCK_BUY"}})
+
+    bot = TraderBot(api=api)
+    bot.infinite_state_mgr = mgr
+    bot.infinite_stocks = ["TQQQ"]
+    bot.fetch_account_balance = lambda: None
+    bot.holdings["TQQQ"] = {"qty": 42, "avg_price": 71.43}
+
+    res = bot.execute_daily_orders("TQQQ", action_filter="BUY")
+    assert res["success"] is True
+    st_after_order = mgr.get_symbol_state("TQQQ")
+    # 발주 전 24.0회차 -> 발주 후에도 24.0회차 유지되어야 함 (미체결 상태에서 회차 선증가 방지)
+    assert st_after_order["current_round"] == 24.0, f"발주 직후 회차 왜곡 감지: {st_after_order['current_round']} != 24.0"
+    print("  ✅ 2. 매수 주문 발주 성공 후에도 회차가 선증가하지 않고 24.0회차 유지 검증 완료")
+
+    # 3. 아침 잔고 동기화 시점에 실제 체결 수량(예: 2주 추가 체결되어 44주 @ $71.40) 반영 시 회차 자동 동기화 검증
+    # 44주 * $71.40 = $3141.6 / $125 = 25.1328 -> 25.0회차로 정상 갱신
+    bot.holdings["TQQQ"] = {"qty": 44, "avg_price": 71.40}
+    bot.sync_holdings_to_state()
+    st_after_sync = mgr.get_symbol_state("TQQQ")
+    assert st_after_sync["current_round"] == 25.0, f"체결 동기화 후 회차 불일치: {st_after_sync['current_round']} != 25.0"
+    assert st_after_sync["peak_qty"] == 44, f"peak_qty 갱신 실패: {st_after_sync['peak_qty']}"
+    print("  ✅ 3. sync_holdings_to_state 잔고 반영 시 라오어 정석 공식 25.0회차 자동 동기화 검증 완료")
     print("  ✅ PASS")
 
 
@@ -733,6 +812,7 @@ if __name__ == "__main__":
         test_cycle_completion_and_rebalance_fixes()
         test_auto_exhaust_action_selection()
         test_intraday_sell_and_loc_rebuy_cycle_completion()
+        test_raoer_formula_round_calculation()
     finally:
         # 테스트 후 임시 파일 정리
         if os.path.exists(TEST_STATE_FILE):

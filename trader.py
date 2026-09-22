@@ -400,7 +400,7 @@ class TraderBot:
                     if recent_sell_found:
                         self.logger.info(
                             f"🎊 [{symbol}] 장중 전량 매도 체결 확인! (매도: {sell_exec_qty}주 @ ${sell_exec_price:.2f}) "
-                            f"직전 {prev_round}회차 사이클 완료 처리 후, 신규 체결 잔고({held_qty}주)로 새 사이클 1.0회차를 자동 시작합니다."
+                            f"직전 {prev_round}회차 사이클 완료 처리 후, 신규 체결 잔고({held_qty}주)로 새 사이클을 자동 시작합니다."
                         )
                         # 1. 직전 사이클 완료 기록
                         cur_p = self.current_prices.get(symbol, sell_exec_price)
@@ -410,19 +410,26 @@ class TraderBot:
                             sell_price=sell_exec_price or cur_p,
                             qty=sell_exec_qty
                         )
-                        # 2. 신규 체결분을 새 사이클 1.0회차로 자동 인계
+                        # 2. 신규 체결분을 새 사이클로 자동 인계 (라오어 정석 공식 산출)
                         st = self.infinite_state_mgr.get_symbol_state(symbol)
                         actual_avg_p = float(self.holdings.get(symbol, {}).get("avg_price", 0.0))
-                        st["current_round"] = 1.0
+                        calc_round = self.infinite_state_mgr.calculate_current_round(symbol, held_qty, actual_avg_p)
+                        st["current_round"] = calc_round if calc_round > 0 else 1.0
                         st["status"] = "BUYING"
                         st["peak_qty"] = held_qty
                         st["last_avg_price"] = actual_avg_p
                         st["start_date"] = datetime.datetime.now().strftime("%Y-%m-%d")
                         self.infinite_state_mgr.save_state()
+                        self.logger.info(f"▶ [{symbol}] 신규 사이클 시작: 보유 {held_qty}주, 평단가 ${actual_avg_p:.2f} -> {st['current_round']}회차 반영")
                     else:
-                        # 정상 보유 수량 증가 (일반 분할 매수 진행 중)
+                        # 정상 보유 수량 증가 또는 유지 (일반 분할 매수 진행 중)
                         avg_p = float(self.holdings.get(symbol, {}).get("avg_price", 0.0))
                         self.infinite_state_mgr.update_peak_qty(symbol, held_qty, avg_price=avg_p)
+                        calc_round = self.infinite_state_mgr.calculate_current_round(symbol, held_qty, avg_p)
+                        if calc_round > 0 and st.get("current_round") != calc_round:
+                            self.logger.info(f"🔄 [{symbol}] 실계좌 원금 소진율 기반 회차 자동 동기화: {st.get('current_round')}회차 -> {calc_round}회차")
+                            st["current_round"] = calc_round
+                            self.infinite_state_mgr.save_state()
 
                 # 케이스 C: 초기 IDLE 종목 실계좌 잔고 확인 또는 일반 보유 갱신
                 elif held_qty > 0:
@@ -432,9 +439,11 @@ class TraderBot:
                         self.logger.info(f"▶ [{symbol}] 실계좌 보유 수량({held_qty}주) 확인: 상태를 IDLE -> BUYING으로 자동 활성화합니다.")
                         self.infinite_state_mgr.start_buying(symbol)
                         st = self.infinite_state_mgr.get_symbol_state(symbol)
-                    if prev_round == 0:
-                        self.logger.info(f"▶ [{symbol}] 실계좌 보유 수량({held_qty}주) 확인: 진행 회차를 0에서 1.0회차로 자동 보정합니다.")
-                        st["current_round"] = 1.0
+                    calc_round = self.infinite_state_mgr.calculate_current_round(symbol, held_qty, avg_p)
+                    target_round = calc_round if calc_round > 0 else (1.0 if prev_round == 0 else prev_round)
+                    if st.get("current_round") != target_round:
+                        self.logger.info(f"▶ [{symbol}] 실계좌 원금 소진율 기반 회차 자동 동기화: {prev_round}회차 -> {target_round}회차")
+                        st["current_round"] = target_round
                         self.infinite_state_mgr.save_state()
 
     def sync_execution_history_to_sheets(self, days_back: int = 7):
@@ -583,10 +592,8 @@ class TraderBot:
         if self.api.is_overseas_symbol(symbol):
             order_res = self.api.order_overseas_cash(symbol, qty, price=price, buy=is_buy, ord_type=ord_type)
             if order_res.get("success"):
-                round_inc = prop.get("round_inc", 1.0)
                 if is_buy:
-                    # 매수 주문 접수/체결 시 진행 회차 증가 (전략 상태만 JSON/구글 시트에 기록)
-                    self.infinite_state_mgr.advance_round(symbol, round_inc=round_inc)
+                    self.logger.info(f"ℹ️ [{symbol}] 매수 주문 접수 완료 (진행 회차는 실계좌 체결/잔고 동기화 시 정석 공식으로 자동 갱신됩니다)")
                 else:
                     # 전량 익절 매도 주문 발주 성공 (실제 체결 완료는 장 마감/잔고 동기화 시 확인)
                     self.logger.info(
@@ -738,8 +745,7 @@ class TraderBot:
                 self.logger.info(msg)
 
                 if is_buy:
-                    # 매수 주문 접수/체결 시 진행 회차 증가
-                    self.infinite_state_mgr.advance_round(symbol, round_inc=round_inc)
+                    self.logger.info(f"ℹ️ [{symbol}] 매수 주문 접수 완료 (진행 회차는 실계좌 체결/잔고 동기화 시 정석 공식으로 자동 갱신됩니다)")
                 else:
                     # 전량 익절 매도 주문 발주 성공 (실제 체결 완료는 장 마감/잔고 동기화 시 확인)
                     self.logger.info(
@@ -881,8 +887,10 @@ class TraderBot:
                         if order_res.get("success"):
                             orders_sent = True
                             if is_buy:
-                                # 매수 주문 접수/체결 시 진행 회차 증가 (전략 상태만 JSON/구글 시트에 기록)
-                                self.infinite_state_mgr.advance_round(symbol, round_inc=round_inc)
+                                self.logger.info(
+                                    f"ℹ️ [{symbol}] 해외주식 무한매수 {action_kr} 접수 성공 "
+                                    f"(진행 회차는 실계좌 체결/잔고 동기화 시 정석 공식으로 자동 갱신됩니다)"
+                                )
                             else:
                                 # 전량 익절 매도 주문 발주 성공 (실제 체결 완료는 장 마감/잔고 동기화 시 확인)
                                 self.logger.info(
