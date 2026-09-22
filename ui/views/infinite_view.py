@@ -715,6 +715,23 @@ def render_stock_detail(symbol: str, bot: TraderBot):
         else:
             st.info(f"start_date({ccnl_start}) 이후의 거래요청 이력이 없습니다.")
 
+    # 7. 해당 종목 전량 매도 완료(익절) 사이클 이력
+    st.markdown("---")
+    st.subheader(f"🏆 [{symbol}] 전량 매도 완료(익절) 사이클 이력")
+    stock_completed = []
+    if hasattr(bot, "infinite_state_mgr") and bot.infinite_state_mgr:
+        all_completed = bot.infinite_state_mgr.get_completed_trades()
+        stock_completed = [t for t in all_completed if str(t.get("티커", "")).upper() == symbol.upper()]
+
+    if stock_completed:
+        c_pnl = sum(float(t.get("실현손익($)", 0) or 0) for t in stock_completed)
+        c_roi = sum(float(t.get("수익률(%)", 0) or 0) for t in stock_completed) / len(stock_completed)
+        st.caption(f"**누적 완료 사이클**: {len(stock_completed)}회 | **누적 실현 손익**: ${c_pnl:+,.2f} | **평균 수익률**: {c_roi:+.2f}%")
+        sc_df = pd.DataFrame(stock_completed)
+        st.dataframe(sc_df, width="stretch", hide_index=True)
+    else:
+        st.caption(f"아직 [{symbol}]의 완료된 사이클 이력이 없습니다. 목표 수익률 도달 시 자동으로 기록됩니다.")
+
 
 
 
@@ -1160,10 +1177,12 @@ def render_infinite():
         st.session_state.infinite_bot = bot
     bot: TraderBot = st.session_state.infinite_bot
 
-    tab1, tab2 = st.tabs(["📈 무한매수 현황 & 당일 주문", "⚙️ 무한매수 전략 설정"])
+    tab1, tab2, tab3 = st.tabs(["📈 무한매수 현황 & 당일 주문", "🏆 매도 완료(익절) 이력", "⚙️ 무한매수 전략 설정"])
     with tab1:
         _render_infinite_main(bot)
     with tab2:
+        _render_completed_trades_tab(bot)
+    with tab3:
         _render_infinite_settings_tab(bot)
 
 def _render_infinite_main(bot: TraderBot):
@@ -1226,6 +1245,115 @@ def _render_infinite_main(bot: TraderBot):
         render_stock_detail(infinite_stocks[0], bot)
     else:
         st.info("설정된 무한매수 운용 종목이 없습니다. '무한매수 전략 설정' 탭에서 종목을 추가하세요.")
+
+def _render_completed_trades_tab(bot: TraderBot):
+    """무한매수 전량 매도 완료(익절) 이력 탭"""
+    st.markdown("## 🏆 무한매수 전량 매도 완료(익절) 이력")
+    st.caption("라오어 무한매수법을 통해 목표 수익률에 도달하여 전량 익절 매도 완료(사이클 종료)된 누적 실현 손익 기록입니다.")
+
+    c_r1, c_r2 = st.columns([6, 2])
+    with c_r2:
+        if st.button("🔄 완료 이력 새로고침", key="btn_refresh_completed_trades", width="stretch"):
+            st.rerun()
+
+    trades = []
+    if hasattr(bot, "infinite_state_mgr") and bot.infinite_state_mgr:
+        trades = bot.infinite_state_mgr.get_completed_trades()
+
+    if not trades:
+        st.info("아직 전량 매도 완료된 사이클 이력이 없습니다. 목표 수익률 도달 시 자동으로 기록됩니다.")
+        return
+
+    # 최신 날짜순 정렬
+    trades_sorted = sorted(trades, key=lambda x: str(x.get("완료일시", "")), reverse=True)
+
+    # 1. 상단 메트릭 요약
+    total_trades = len(trades_sorted)
+    total_pnl = sum(float(t.get("실현손익($)", 0) or 0) for t in trades_sorted)
+    avg_roi = sum(float(t.get("수익률(%)", 0) or 0) for t in trades_sorted) / total_trades if total_trades > 0 else 0.0
+    ex_rate = getattr(bot, "exchange_rate", 1428.20)
+    total_pnl_krw = total_pnl * ex_rate
+    best_trade = max(trades_sorted, key=lambda x: float(x.get("실현손익($)", 0) or 0))
+
+    m1, m2, m3, m4 = st.columns(4)
+    with m1:
+        st.metric("🏆 총 완료 사이클", f"{total_trades} 회")
+    with m2:
+        st.metric("💵 누적 실현 손익 ($)", f"${total_pnl:+,.2f}", delta=f"약 ₩{total_pnl_krw:+,.0f}", delta_color="normal")
+    with m3:
+        st.metric("📈 평균 수익률", f"{avg_roi:+.2f}%")
+    with m4:
+        best_sym = best_trade.get("티커", "-")
+        best_pnl = float(best_trade.get("실현손익($)", 0) or 0)
+        st.metric("🥇 최고 수익 사이클", f"{best_sym} (${best_pnl:+,.2f})")
+
+    st.markdown("---")
+
+    # 2. 사이클별 손익 차트 (Plotly)
+    if PLOTLY_AVAILABLE and total_trades > 0:
+        fig = go.Figure()
+        cycle_labels = [f"{t.get('티커')} ({str(t.get('매도일자', t.get('완료일시', '')))[5:10]})" for t in reversed(trades_sorted)]
+        pnl_vals = [float(t.get("실현손익($)", 0) or 0) for t in reversed(trades_sorted)]
+
+        fig.add_trace(go.Bar(
+            x=cycle_labels,
+            y=pnl_vals,
+            name="실현 손익 ($)",
+            marker_color=["#22c55e" if p >= 0 else "#ef4444" for p in pnl_vals],
+            text=[f"${p:+,.2f}" for p in pnl_vals],
+            textposition="auto"
+        ))
+
+        fig.update_layout(
+            title="📊 사이클별 실현 손익 ($)",
+            template="plotly_dark",
+            height=320,
+            margin=dict(l=40, r=40, t=40, b=40),
+            yaxis=dict(title="실현 손익 ($)"),
+            paper_bgcolor="#1e293b",
+            plot_bgcolor="#0f172a"
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    # 3. 상세 내역 테이블
+    st.markdown("### 📋 완료된 매매 상세 내역")
+    df = pd.DataFrame(trades_sorted)
+
+    display_df = df.copy()
+    if "매수평단가($)" in display_df.columns:
+        display_df["매수평단가($)"] = display_df["매수평단가($)"].apply(lambda x: f"${float(x):,.2f}" if pd.notnull(x) and x != "" else "-")
+    if "매도단가($)" in display_df.columns:
+        display_df["매도단가($)"] = display_df["매도단가($)"].apply(lambda x: f"${float(x):,.2f}" if pd.notnull(x) and x != "" else "-")
+    if "총매수금액($)" in display_df.columns:
+        display_df["총매수금액($)"] = display_df["총매수금액($)"].apply(lambda x: f"${float(x):,.2f}" if pd.notnull(x) and x != "" else "-")
+    if "총매도금액($)" in display_df.columns:
+        display_df["총매도금액($)"] = display_df["총매도금액($)"].apply(lambda x: f"${float(x):,.2f}" if pd.notnull(x) and x != "" else "-")
+    if "실현손익($)" in display_df.columns:
+        display_df["실현손익($)"] = display_df["실현손익($)"].apply(lambda x: f"${float(x):+,.2f}" if pd.notnull(x) and x != "" else "-")
+    if "수익률(%)" in display_df.columns:
+        display_df["수익률(%)"] = display_df["수익률(%)"].apply(lambda x: f"{float(x):+.2f}%" if pd.notnull(x) and x != "" else "-")
+
+    def _style_completed_table(row):
+        styles = [''] * len(row)
+        p_val = str(row.get("실현손익($)", "")).strip()
+        if p_val.startswith("+") or p_val.startswith("$+"):
+            style_str = "color: #22c55e; font-weight: bold;"
+        elif p_val.startswith("-") or p_val.startswith("$-"):
+            style_str = "color: #ef4444; font-weight: bold;"
+        else:
+            style_str = "color: #94a3b8;"
+
+        if "실현손익($)" in row.index:
+            styles[row.index.get_loc("실현손익($)")] = style_str
+        if "수익률(%)" in row.index:
+            styles[row.index.get_loc("수익률(%)")] = style_str
+        return styles
+
+    try:
+        styled_df = display_df.style.apply(_style_completed_table, axis=1)
+        st.dataframe(styled_df, width="stretch", hide_index=True)
+    except Exception:
+        st.dataframe(display_df, width="stretch", hide_index=True)
 
 def _render_infinite_settings_tab(bot: TraderBot):
     page_config(bot)

@@ -512,6 +512,31 @@ class InfiniteSheetManager(BaseSheetManager):
         except Exception as e:
             logger.warning(f"Google Sheet CompletedTrades 기록 예외: {e}")
 
+    def get_completed_trades(self, limit: int = 200) -> List[Dict[str, Any]]:
+        """
+        Google Sheet 'CompletedTrades' 워크시트에서 전량 익절 매도 완료 이력 목록을 조회
+        """
+        if not self.is_connected:
+            return []
+
+        try:
+            if not self.completed_worksheet and self.spreadsheet:
+                try:
+                    self.completed_worksheet = self.spreadsheet.worksheet("CompletedTrades")
+                except Exception:
+                    return []
+
+            if not self.completed_worksheet:
+                return []
+
+            records = self.completed_worksheet.get_all_records()
+            if records and limit and len(records) > limit:
+                return records[-limit:]
+            return records or []
+        except Exception as e:
+            logger.warning(f"Google Sheet CompletedTrades 조회 예외: {e}")
+            return []
+
 
     def sync_settings_to_sheet(self, settings: Dict[str, Any]) -> tuple:
         """

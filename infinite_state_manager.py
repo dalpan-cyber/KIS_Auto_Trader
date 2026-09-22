@@ -15,13 +15,15 @@ from google_sheet_manager import GoogleSheetManager
 logger = logging.getLogger("InfiniteStateManager")
 
 DEFAULT_STATE_FILE = "infinite_trader_state.json"
+DEFAULT_COMPLETED_FILE = "completed_trades.json"
 
 
 class InfiniteStateManager:
     """무한매수법 전략 상태 관리 클래스 (로컬 JSON + Google Sheets 동기화)"""
 
-    def __init__(self, file_path: str = DEFAULT_STATE_FILE, enable_gss: Optional[bool] = None):
+    def __init__(self, file_path: str = DEFAULT_STATE_FILE, enable_gss: Optional[bool] = None, completed_file: str = DEFAULT_COMPLETED_FILE):
         self.file_path = file_path
+        self.completed_file = completed_file
         if enable_gss is None:
             enable_gss = (file_path == DEFAULT_STATE_FILE)
         self.gss_mgr = GoogleSheetManager(enabled=enable_gss)
@@ -365,9 +367,87 @@ class InfiniteStateManager:
             except Exception as e:
                 logger.warning(f"구글 시트 완료 일지 기록 중 예외: {e}")
 
+        # 로컬 완료 이력 파일(completed_trades.json)에도 백업 기록
+        try:
+            total_buy_amt = round(qty * eff_avg_p, 2) if qty > 0 and eff_avg_p > 0 else 0.0
+            total_sell_amt = round(qty * sell_price, 2) if qty > 0 and sell_price > 0 else 0.0
+            pnl = round(total_sell_amt - total_buy_amt, 2)
+            roi_pct = round((pnl / total_buy_amt * 100), 2) if total_buy_amt > 0 else 0.0
+            self._save_completed_trade_local({
+                "완료일시": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "티커": symbol.upper(),
+                "시작일자": start_date or "-",
+                "매도일자": end_date,
+                "완료회차": completed_round,
+                "매도수량": qty,
+                "매수평단가($)": round(eff_avg_p, 2),
+                "매도단가($)": round(sell_price, 2),
+                "총매수금액($)": total_buy_amt,
+                "총매도금액($)": total_sell_amt,
+                "실현손익($)": pnl,
+                "수익률(%)": roi_pct,
+                "상태": "COMPLETED"
+            })
+        except Exception as e:
+            logger.debug(f"로컬 완료 일지 기록 예외: {e}")
+
         state["current_round"] = 0
         state["status"] = "COMPLETED"
         state["peak_qty"] = 0
         state["paused_sell_price"] = 0.0
         state["last_avg_price"] = 0.0
         self.save_state()
+
+    def _save_completed_trade_local(self, record: Dict[str, Any]):
+        """로컬 JSON 파일에 완료된 사이클 이력 저장"""
+        trades = self.load_completed_trades_local()
+        # 중복 방지 (동일 티커, 매도일자, 매도수량)
+        exists = any(
+            t.get("티커") == record.get("티커") and
+            t.get("매도일자") == record.get("매도일자") and
+            t.get("매도수량") == record.get("매도수량")
+            for t in trades
+        )
+        if not exists:
+            trades.append(record)
+            try:
+                with open(self.completed_file, "w", encoding="utf-8") as f:
+                    json.dump(trades, f, ensure_ascii=False, indent=2)
+            except Exception as e:
+                logger.debug(f"로컬 완료 이력 저장 실패: {e}")
+
+    def load_completed_trades_local(self) -> List[Dict[str, Any]]:
+        """로컬 JSON 파일에서 완료된 사이클 이력 로드"""
+        if os.path.exists(self.completed_file):
+            try:
+                with open(self.completed_file, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                return []
+        return []
+
+    def get_completed_trades(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """
+        전량 익절 매도 완료 이력 조회:
+        1. Google Sheets 'CompletedTrades' 워크시트에서 우선 조회
+        2. 성공 시 로컬 캐시와 병합/동기화
+        3. 시트 미연결 또는 빈 결과 시 로컬 캐시 fallback
+        """
+        records = []
+        if hasattr(self, "gss_mgr") and self.gss_mgr and getattr(self.gss_mgr, "is_connected", False):
+            try:
+                records = self.gss_mgr.get_completed_trades(limit=limit)
+                if records:
+                    # 로컬 캐시에 동기화
+                    try:
+                        with open(self.completed_file, "w", encoding="utf-8") as f:
+                            json.dump(records, f, ensure_ascii=False, indent=2)
+                    except Exception:
+                        pass
+                    return records
+            except Exception as e:
+                logger.debug(f"구글 시트 완료 이력 조회 중 예외: {e}")
+
+        local_trades = self.load_completed_trades_local()
+        return local_trades[-limit:] if limit and len(local_trades) > limit else local_trades
+
