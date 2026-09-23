@@ -652,15 +652,17 @@ def test_intraday_sell_and_loc_rebuy_cycle_completion():
     api = KISApiClient()
     api.is_overseas_symbol = MagicMock(return_value=True)
 
-    # 최근 체결 이력: 20주 @ $30.00 매도 체결 모의
+    # 최근 체결 이력: 20주 @ $30.00 매도 체결 모의 (주문번호 포함)
     mock_history = [
         {
+            "order_no": "SELL_ORD_12345",
             "symbol": "SOXL",
             "order_type": "매도",
             "executed_qty": 20,
             "executed_price": 30.00,
             "status": "체결",
-            "order_time": "2026-09-15 23:45:00"
+            "order_time": "2026-09-15 23:45:00",
+            "ord_dt": "20260915"
         }
     ]
     api.get_overseas_execution_history = MagicMock(return_value=mock_history)
@@ -681,22 +683,26 @@ def test_intraday_sell_and_loc_rebuy_cycle_completion():
         "status": "BUYING",
         "peak_qty": 20,
         "last_avg_price": 25.00,
-        "paused_sell_price": 0.0
+        "paused_sell_price": 0.0,
+        "last_completed_sell_order_no": ""
     }
 
     # complete_round 호출 여부 캡처
     complete_round_calls = []
     original_complete_round = mgr.complete_round
-    def mock_complete(symbol, avg_price=0.0, sell_price=0.0, qty=0):
-        complete_round_calls.append({"symbol": symbol, "avg_price": avg_price, "sell_price": sell_price, "qty": qty})
-        return original_complete_round(symbol, avg_price=avg_price, sell_price=sell_price, qty=qty)
+    def mock_complete(symbol, avg_price=0.0, sell_price=0.0, qty=0, sell_order_no=""):
+        complete_round_calls.append({
+            "symbol": symbol, "avg_price": avg_price, "sell_price": sell_price,
+            "qty": qty, "sell_order_no": sell_order_no
+        })
+        return original_complete_round(symbol, avg_price=avg_price, sell_price=sell_price, qty=qty, sell_order_no=sell_order_no)
     mgr.complete_round = mock_complete
 
     # 2. 장 마감 후 잔고: LOC로 2주 @ $26.00가 체결되어 잔고가 2주 있는 상황
     bot.holdings["SOXL"] = {"qty": 2, "avg_price": 26.00}
     bot.current_prices["SOXL"] = 26.00
 
-    # 3. 잔고 동기화 실행
+    # 3. 잔고 동기화 1차 실행 (직전 사이클 완료 + 새 사이클 0.5회차 인계)
     bot.sync_holdings_to_state()
 
     # 4. 검증 1: 직전 5.0회차 20주 @ $30.00 매도에 대해 complete_round가 정상 호출되었는지 확인
@@ -706,7 +712,8 @@ def test_intraday_sell_and_loc_rebuy_cycle_completion():
     assert c_call["qty"] == 20, f"완료 수량 불일치: {c_call['qty']}"
     assert c_call["avg_price"] == 25.00, f"직전 평단가 불일치: {c_call['avg_price']}"
     assert c_call["sell_price"] == 30.00, f"체결 매도가 불일치: {c_call['sell_price']}"
-    print(f"  ✅ 1. 직전 사이클 완료 기록 정상 호출 확인 (매도: {c_call['qty']}주 @ ${c_call['sell_price']:.2f}, 평단: ${c_call['avg_price']:.2f})")
+    assert c_call["sell_order_no"] == "SELL_ORD_12345", f"매도 주문번호 불일치: {c_call['sell_order_no']}"
+    print(f"  ✅ 1. 직전 사이클 완료 기록 정상 호출 확인 (매도: {c_call['qty']}주 @ ${c_call['sell_price']:.2f}, 주문번호: {c_call['sell_order_no']})")
 
     # 5. 검증 2: 새로 체결된 2주($52 / $125 -> 0.5회차)가 새 사이클의 0.5회차로 정상 인계되었는지 확인
     st_new = mgr.get_symbol_state("SOXL")
@@ -716,7 +723,17 @@ def test_intraday_sell_and_loc_rebuy_cycle_completion():
     assert st_new["last_avg_price"] == 26.00, f"새 평단가가 26.00이 아님: {st_new['last_avg_price']}"
     today_str = datetime.datetime.now().strftime("%Y-%m-%d")
     assert st_new["start_date"] == today_str, f"시작일이 오늘 날짜가 아님: {st_new['start_date']}"
+    assert st_new["last_completed_sell_order_no"] == "SELL_ORD_12345", f"last_completed_sell_order_no 미저장: {st_new['last_completed_sell_order_no']}"
     print(f"  ✅ 2. 신규 체결분(2주 @ $26.00)으로 새 사이클 0.5회차(라오어 공식) 자동 인계 완료 (시작일: {st_new['start_date']})")
+
+    # 6. 검증 3: 다음 턴에 다시 sync_holdings_to_state()가 실행되어도 과거 매도 체결(20주)로 인한 중복 complete_round 방지 검증
+    bot.sync_holdings_to_state()
+    assert len(complete_round_calls) == 1, f"과거 매도 체결로 인해 complete_round 중복 호출 발생! 호출횟수: {len(complete_round_calls)}"
+    st_after_resync = mgr.get_symbol_state("SOXL")
+    assert st_after_resync["status"] == "BUYING", f"중복 완료로 인해 상태 훼손됨: {st_after_resync['status']}"
+    assert st_after_resync["current_round"] == 0.5, f"중복 완료로 인해 회차 훼손됨: {st_after_resync['current_round']}"
+    assert st_after_resync["peak_qty"] == 2, f"peak_qty 훼손됨: {st_after_resync['peak_qty']}"
+    print("  ✅ 3. 새 사이클 보유 중 잔고 재동기화 시 과거 매도 체결 중복 감지 및 중복 완료 완벽 차단 검증 완료")
     print("  ✅ PASS")
 
 

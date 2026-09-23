@@ -143,9 +143,10 @@ class InfiniteStateManager:
                 "peak_qty": 0,
                 "paused_sell_price": 0.0,
                 "last_avg_price": 0.0,
+                "last_completed_sell_order_no": "",
             }
             self.save_state()
-        # 기존 상태에 exhaust_action/exhaust_target_roi/peak_qty/paused_sell_price/last_avg_price가 없으면 기본값 추가 (하위 호환성)
+        # 기존 상태에 exhaust_action/exhaust_target_roi/peak_qty/paused_sell_price/last_avg_price/last_completed_sell_order_no가 없으면 기본값 추가 (하위 호환성)
         if "exhaust_action" not in self.states[symbol_upper]:
             self.states[symbol_upper]["exhaust_action"] = str(exhaust_action).strip().upper()
         if "exhaust_target_roi" not in self.states[symbol_upper]:
@@ -156,6 +157,8 @@ class InfiniteStateManager:
             self.states[symbol_upper]["paused_sell_price"] = 0.0
         if "last_avg_price" not in self.states[symbol_upper]:
             self.states[symbol_upper]["last_avg_price"] = 0.0
+        if "last_completed_sell_order_no" not in self.states[symbol_upper]:
+            self.states[symbol_upper]["last_completed_sell_order_no"] = ""
         return self.states[symbol_upper]
 
     def update_budget(self, symbol: str, total_budget_usd: float):
@@ -341,7 +344,8 @@ class InfiniteStateManager:
         symbol: str,
         avg_price: float = 0.0,
         sell_price: float = 0.0,
-        qty: int = 0
+        qty: int = 0,
+        sell_order_no: str = ""
     ):
         """전량 익절 매도 시 회차 리셋 및 상태 COMPLETED, Google Sheets 완료 일지 기록"""
         state = self.get_symbol_state(symbol)
@@ -396,6 +400,8 @@ class InfiniteStateManager:
         state["peak_qty"] = 0
         state["paused_sell_price"] = 0.0
         state["last_avg_price"] = 0.0
+        if sell_order_no:
+            state["last_completed_sell_order_no"] = str(sell_order_no).strip()
         self.save_state()
 
     def _save_completed_trade_local(self, record: Dict[str, Any]):

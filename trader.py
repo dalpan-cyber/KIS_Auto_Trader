@@ -333,19 +333,25 @@ class TraderBot:
                     # 1. KIS 체결 이력 API에서 실제 매도 체결 단가 및 수량 조회 시도 (최근 3일)
                     sell_exec_price = 0.0
                     sell_exec_qty = 0
+                    sell_order_no = ""
                     try:
                         today_dt = datetime.datetime.now().date()
                         start_dt = today_dt - datetime.timedelta(days=3)
                         start_fmt = start_dt.strftime("%Y%m%d")
                         end_fmt = today_dt.strftime("%Y%m%d")
                         hist = self.api.get_overseas_execution_history(symbol=symbol, start_date=start_fmt, end_date=end_fmt)
+                        last_completed_odno = str(st.get("last_completed_sell_order_no", "")).strip()
                         for h in hist:
                             o_type = str(h.get("order_type", "")).strip()
                             e_qty = int(h.get("executed_qty", h.get("qty", 0)) or 0)
                             e_price = float(h.get("executed_price", h.get("price", 0.0)) or 0.0)
+                            h_odno = str(h.get("order_no", "")).strip()
+                            if last_completed_odno and h_odno == last_completed_odno:
+                                continue
                             if o_type == "매도" and e_qty > 0 and e_price > 0:
                                 sell_exec_qty = e_qty
                                 sell_exec_price = e_price
+                                sell_order_no = h_odno
                                 break
                     except Exception as e:
                         self.logger.debug(f"[{symbol}] 케이스 A 체결 이력 매도 단가 조회 중 예외: {e}")
@@ -370,29 +376,50 @@ class TraderBot:
                         symbol,
                         avg_price=avg_p,
                         sell_price=sell_exec_price,
-                        qty=completed_qty
+                        qty=completed_qty,
+                        sell_order_no=sell_order_no
                     )
 
                 # 케이스 B: 장중 전량 매도 후 장 마감 LOC 매수가 체결되어 잔고가 다시 생긴 경우 (held_qty > 0)
                 elif prev_status in ("BUYING", "PAUSED") and prev_round > 0 and peak_qty > 0 and held_qty > 0:
-                    # 최근 체결 이력 조회하여 직전 보유 수량(peak_qty) 이상의 매도 체결이 있었는지 점검
+                    # 최근 체결 이력 조회하여 직전 보유 수량(peak_qty) 이상의 신규 매도 체결이 있었는지 점검
                     recent_sell_found = False
                     sell_exec_qty = 0
                     sell_exec_price = 0.0
+                    sell_order_no = ""
                     try:
                         today_dt = datetime.datetime.now().date()
                         start_dt = today_dt - datetime.timedelta(days=3)
                         start_fmt = start_dt.strftime("%Y%m%d")
                         end_fmt = today_dt.strftime("%Y%m%d")
                         hist = self.api.get_overseas_execution_history(symbol=symbol, start_date=start_fmt, end_date=end_fmt)
+                        last_completed_odno = str(st.get("last_completed_sell_order_no", "")).strip()
+                        st_start_date = str(st.get("start_date", "")).replace("-", "").strip()
+
                         for h in hist:
                             o_type = str(h.get("order_type", "")).strip()
                             e_qty = int(h.get("executed_qty", h.get("qty", 0)) or 0)
                             e_price = float(h.get("executed_price", h.get("price", 0.0)) or 0.0)
+                            h_odno = str(h.get("order_no", "")).strip()
+
+                            # 1. 이미 완료 처리에 사용된 매도 주문번호는 영구 스킵 (중복 완료 원천 차단)
+                            if last_completed_odno and h_odno == last_completed_odno:
+                                continue
+
+                            # 2. 체결 일자가 현재 사이클 시작일보다 엄격히 이전이면 스킵 (과거 사이클 매도 오인 방지)
+                            h_dt = str(h.get("ord_dt", "")).strip()
+                            if not h_dt:
+                                raw_ot = str(h.get("order_time", "")).replace("-", "").replace(":", "").replace(" ", "")
+                                h_dt = raw_ot[:8] if len(raw_ot) >= 8 and raw_ot[:8].isdigit() else ""
+                            if st_start_date and h_dt and h_dt.isdigit() and st_start_date.isdigit():
+                                if h_dt < st_start_date:
+                                    continue
+
                             if o_type == "매도" and e_qty >= peak_qty and e_qty > 0:
                                 recent_sell_found = True
                                 sell_exec_qty = e_qty
                                 sell_exec_price = e_price
+                                sell_order_no = h_odno
                                 break
                     except Exception as e:
                         self.logger.debug(f"[{symbol}] 체결 이력 매도 확인 중 예외: {e}")
@@ -408,7 +435,8 @@ class TraderBot:
                             symbol,
                             avg_price=st.get("last_avg_price", 0.0),
                             sell_price=sell_exec_price or cur_p,
-                            qty=sell_exec_qty
+                            qty=sell_exec_qty,
+                            sell_order_no=sell_order_no
                         )
                         # 2. 신규 체결분을 새 사이클로 자동 인계 (라오어 정석 공식 산출)
                         st = self.infinite_state_mgr.get_symbol_state(symbol)
