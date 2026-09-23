@@ -309,12 +309,14 @@ class InfiniteStateManager:
 
     def calculate_current_round(self, symbol: str, held_qty: int, avg_price: float) -> float:
         """
-        라오어 무한매수법 정석 회차 계산:
-        원금 소진율 기반으로 실계좌 체결 상태에 따른 진행 회차 산출
-        1회차 예산 = 총 예산 / 분할 횟수
-        raw_round = (보유수량 * 평단가) / 1회차 예산
-        calc_round = round(raw_round * 2.0) / 2.0 (0.5단위 반올림)
-        진행 회차 = min(분할 횟수, max(0.5, calc_round))
+        라오어 무한매수법 정석 회차 계산 (체결 성공 횟수 기준):
+        매일 0.5회차 매수 주문당 수량(qty_per_order)을 기준으로,
+        실제 매수 성공(체결)된 건수(1건당 0.5회차)에 맞추어 진행 회차를 산출합니다.
+        
+        0.5회차 예산 = (총 예산 / 분할 횟수) / 2
+        0.5회차 1건당 주문 수량 = max(1, int(0.5회차 예산 / 평단가))
+        진행 회차 = (보유 수량 / 0.5회차 주문 수량) * 0.5 (0.5단위 반올림)
+        상한: min(분할 횟수, max(0.5, calc_round))
         """
         if held_qty <= 0 or avg_price <= 0:
             return 0.0
@@ -325,8 +327,10 @@ class InfiniteStateManager:
             return 0.0
 
         one_round_budget = total_budget / float(division)
-        invested = float(held_qty) * float(avg_price)
-        raw_round = invested / one_round_budget
+        half_budget = one_round_budget / 2.0
+        qty_per_half_round = max(1, int(half_budget / float(avg_price)))
+
+        raw_round = (float(held_qty) / float(qty_per_half_round)) * 0.5
         calc_round = round(raw_round * 2.0) / 2.0
         return min(float(division), max(0.5, calc_round))
 

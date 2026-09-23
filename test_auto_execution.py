@@ -390,8 +390,8 @@ def test_soxl_exchange_and_execution():
     soxl_st = bot.infinite_state_mgr.get_symbol_state("SOXL")
     assert soxl_st["peak_qty"] == 10, f"peak_qty 갱신 실패: {soxl_st.get('peak_qty')}"
     assert soxl_st["status"] == "BUYING", f"체결 보유 중 상태 오류: {soxl_st['status']}"
-    assert soxl_st["current_round"] == 2.0, f"원금 소진율 기반 회차 동기화 실패: {soxl_st['current_round']}"
-    print("  ✅ SOXL 실계좌 체결 반영: peak_qty=10 갱신, 라오어 정석 공식 2.0회차 산출 및 BUYING 유지 확인")
+    assert soxl_st["current_round"] == 2.5, f"체결 횟수 기반 회차 동기화 실패: {soxl_st['current_round']}"
+    print("  ✅ SOXL 실계좌 체결 반영: peak_qty=10 갱신, 체결 횟수 기준 2.5회차(10주/2주*0.5) 산출 및 BUYING 유지 확인")
 
     # 4. 전량 익절 매도 체결 시뮬레이션 (held_qty: 0주)
     bot.holdings["SOXL"] = {"qty": 0, "avg_price": 0.0}
@@ -746,13 +746,14 @@ def test_raoer_formula_round_calculation():
     from infinite_state_manager import InfiniteStateManager
 
     mgr = InfiniteStateManager(file_path=TEST_STATE_FILE, enable_gss=False)
-    # TQQQ: 예산 $5000, 40분할 -> 1회차 예산 $125
+    # TQQQ: 예산 $5000, 40분할 -> half_budget = $62.5
+    # 주가 $71.43 > $62.5이므로 0.5회차 1건당 1주 매수
     mgr.states["TQQQ"] = {
         "symbol": "TQQQ",
         "start_date": "2026-09-08",
         "total_budget_usd": 5000.0,
         "division_count": 40,
-        "current_round": 24.0,
+        "current_round": 21.0,
         "target_roi": 0.10,
         "exhaust_action": "HOLD",
         "exhaust_target_roi": 0.05,
@@ -762,26 +763,34 @@ def test_raoer_formula_round_calculation():
     }
 
     # 1. calculate_current_round 정량적 계산 검증
-    # 1) TQQQ 42주 @ $71.43 -> 투자금 $3000.06 / $125 = 24.00048 -> 24.0회차
+    # 1) TQQQ 42주 (1주=0.5회차 매수 성공 42회) -> 42 * 0.5 = 21.0회차
     r1 = mgr.calculate_current_round("TQQQ", held_qty=42, avg_price=71.43)
-    assert r1 == 24.0, f"42주 @ 71.43 계산 오류: {r1} != 24.0"
+    assert r1 == 21.0, f"42주 계산 오류: {r1} != 21.0"
 
     # 2) 0주 보유 시 0.0회차
     assert mgr.calculate_current_round("TQQQ", held_qty=0, avg_price=71.43) == 0.0
     assert mgr.calculate_current_round("TQQQ", held_qty=42, avg_price=0.0) == 0.0
 
-    # 3) 1주 @ $70 -> $70 / $125 = 0.56 -> 0.5회차
+    # 3) 1주 @ $70 (매수 1회 성공) -> 0.5회차
     r2 = mgr.calculate_current_round("TQQQ", held_qty=1, avg_price=70.0)
-    assert r2 == 0.5, f"1주 @ 70 계산 오류: {r2} != 0.5"
+    assert r2 == 0.5, f"1주 계산 오류: {r2} != 0.5"
 
-    # 4) 2주 @ $70 -> $140 / $125 = 1.12 -> 1.0회차
+    # 4) 2주 @ $70 (매수 2회 성공) -> 1.0회차
     r3 = mgr.calculate_current_round("TQQQ", held_qty=2, avg_price=70.0)
-    assert r3 == 1.0, f"2주 @ 70 계산 오류: {r3} != 1.0"
+    assert r3 == 1.0, f"2주 계산 오류: {r3} != 1.0"
 
-    # 5) 75주 @ $70 -> $5250 / $125 = 42.0 -> 최대 분할 횟수 40 한도 제한 검증
-    r4 = mgr.calculate_current_round("TQQQ", held_qty=75, avg_price=70.0)
+    # 5) 3주 @ $79.38 (실계좌 TQQQ 현황) -> 1.5회차
+    r_tqqq = mgr.calculate_current_round("TQQQ", held_qty=3, avg_price=79.38)
+    assert r_tqqq == 1.5, f"TQQQ 3주 계산 오류: {r_tqqq} != 1.5"
+
+    # 6) SOXL 2주 @ $146.25 (실계좌 SOXL 현황) -> 1.0회차
+    r_soxl = mgr.calculate_current_round("SOXL", held_qty=2, avg_price=146.25)
+    assert r_soxl == 1.0, f"SOXL 2주 계산 오류: {r_soxl} != 1.0"
+
+    # 7) 85주 @ $70 -> 42.5회차 -> 최대 분할 횟수 40 한도 제한 검증
+    r4 = mgr.calculate_current_round("TQQQ", held_qty=85, avg_price=70.0)
     assert r4 == 40.0, f"최대 분할 제한 오류: {r4} != 40.0"
-    print("  ✅ 1. calculate_current_round 수학적 정밀 계산 및 0.5단위 반올림, 분할한도 검증 완료")
+    print("  ✅ 1. calculate_current_round 매수 성공 횟수 기준 수학적 정밀 계산 및 분할한도 검증 완료 (TQQQ 3주=1.5회, SOXL 2주=1.0회)")
 
     # 2. TraderBot 발주 시점에 회차가 올라가지 않는지(미체결 회차 왜곡 차단) 검증
     api = KISApiClient()
@@ -798,18 +807,18 @@ def test_raoer_formula_round_calculation():
     res = bot.execute_daily_orders("TQQQ", action_filter="BUY")
     assert res["success"] is True
     st_after_order = mgr.get_symbol_state("TQQQ")
-    # 발주 전 24.0회차 -> 발주 후에도 24.0회차 유지되어야 함 (미체결 상태에서 회차 선증가 방지)
-    assert st_after_order["current_round"] == 24.0, f"발주 직후 회차 왜곡 감지: {st_after_order['current_round']} != 24.0"
-    print("  ✅ 2. 매수 주문 발주 성공 후에도 회차가 선증가하지 않고 24.0회차 유지 검증 완료")
+    # 발주 전 21.0회차 -> 발주 후에도 21.0회차 유지되어야 함 (미체결 상태에서 회차 선증가 방지)
+    assert st_after_order["current_round"] == 21.0, f"발주 직후 회차 왜곡 감지: {st_after_order['current_round']} != 21.0"
+    print("  ✅ 2. 매수 주문 발주 성공 후에도 회차가 선증가하지 않고 21.0회차 유지 검증 완료")
 
     # 3. 아침 잔고 동기화 시점에 실제 체결 수량(예: 2주 추가 체결되어 44주 @ $71.40) 반영 시 회차 자동 동기화 검증
-    # 44주 * $71.40 = $3141.6 / $125 = 25.1328 -> 25.0회차로 정상 갱신
+    # 44주 = 44 * 0.5 = 22.0회차
     bot.holdings["TQQQ"] = {"qty": 44, "avg_price": 71.40}
     bot.sync_holdings_to_state()
     st_after_sync = mgr.get_symbol_state("TQQQ")
-    assert st_after_sync["current_round"] == 25.0, f"체결 동기화 후 회차 불일치: {st_after_sync['current_round']} != 25.0"
+    assert st_after_sync["current_round"] == 22.0, f"체결 동기화 후 회차 불일치: {st_after_sync['current_round']} != 22.0"
     assert st_after_sync["peak_qty"] == 44, f"peak_qty 갱신 실패: {st_after_sync['peak_qty']}"
-    print("  ✅ 3. sync_holdings_to_state 잔고 반영 시 라오어 정석 공식 25.0회차 자동 동기화 검증 완료")
+    print("  ✅ 3. sync_holdings_to_state 잔고 반영 시 매수 체결 성공 횟수 기준 22.0회차 자동 동기화 검증 완료")
     print("  ✅ PASS")
 
 
