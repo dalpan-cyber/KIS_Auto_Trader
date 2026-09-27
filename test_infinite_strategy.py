@@ -113,6 +113,81 @@ class TestInfiniteStrategy(unittest.TestCase):
         self.assertEqual(len(sell_orders), 2)
         self.assertEqual(len(buy_orders), 1)
 
+    def test_v21_first_and_second_half_orders(self):
+        """라오어 무한매수법 v2.1 전반전(0.5회차x2) vs 후반전(1.0회차x1) 차등 매수 및 별% 공식 검증"""
+        symbol = "TQQQ"
+        strategy = InfiniteBuyingStrategy(division_count=40, target_roi=0.10)
+
+        # 1. 전반전 (T=1.0회차): 0.5회차 평단가 LOC + 0.5회차 큰수(☆+9.5%) LOC
+        # 예산 $4000, 40분할 -> 1회 예산 $100, 0.5회차 예산 $50
+        # 평단가 $50.00
+        # 별% = 10 - 1/2 = +9.5% -> 큰수 가격 = 50 * 1.095 = 54.75
+        state_first_half = {
+            "symbol": symbol,
+            "total_budget_usd": 4000.0,
+            "division_count": 40,
+            "current_round": 1.0,
+            "target_roi": 0.10
+        }
+        orders_1 = strategy.generate_daily_orders(
+            symbol, current_price=52.0, state=state_first_half,
+            avg_price=50.0, total_qty=10
+        )
+        self.assertEqual(len(orders_1), 3)  # 익절 매도 1건 + 매수 LOC 2건
+        buy_orders_1 = [o for o in orders_1 if o["action"] == "BUY"]
+        self.assertEqual(len(buy_orders_1), 2)
+        self.assertEqual(buy_orders_1[0]["price"], 50.0)
+        self.assertEqual(buy_orders_1[0]["qty"], 1)
+        self.assertEqual(buy_orders_1[0]["round_inc"], 0.5)
+        self.assertEqual(buy_orders_1[1]["price"], 54.75)
+        self.assertEqual(buy_orders_1[1]["qty"], 1)
+        self.assertEqual(buy_orders_1[1]["round_inc"], 0.5)
+        self.assertIn("☆+9.5%", buy_orders_1[1]["desc"])
+
+        # 2. 후반전 시작 (T=20.0회차): 1.0회차 후반전(☆0.0%) LOC 1건
+        # 별% = 10 - 20/2 = 0.0% -> 가격 = 50 * 1.0 = 50.00
+        # 1회 예산 $100 -> 수량 = int(100 / 50) = 2주
+        state_second_half_20 = {
+            "symbol": symbol,
+            "total_budget_usd": 4000.0,
+            "division_count": 40,
+            "current_round": 20.0,
+            "target_roi": 0.10
+        }
+        orders_20 = strategy.generate_daily_orders(
+            symbol, current_price=48.0, state=state_second_half_20,
+            avg_price=50.0, total_qty=40
+        )
+        self.assertEqual(len(orders_20), 2)  # 익절 매도 1건 + 후반전 매수 LOC 1건
+        buy_orders_20 = [o for o in orders_20 if o["action"] == "BUY"]
+        self.assertEqual(len(buy_orders_20), 1)
+        self.assertEqual(buy_orders_20[0]["price"], 50.0)
+        self.assertEqual(buy_orders_20[0]["qty"], 2)
+        self.assertEqual(buy_orders_20[0]["round_inc"], 1.0)
+        self.assertIn("1.0회차 후반전(☆+0.0%)", buy_orders_20[0]["desc"])
+
+        # 3. 후반전 진행 중 (T=30.0회차): 1.0회차 후반전(☆-5.0%) LOC 1건
+        # 별% = 10 - 30/2 = -5.0% -> 가격 = 50 * 0.95 = 47.50
+        # 1회 예산 $100 -> 수량 = int(100 / 47.50) = 2주
+        state_second_half_30 = {
+            "symbol": symbol,
+            "total_budget_usd": 4000.0,
+            "division_count": 40,
+            "current_round": 30.0,
+            "target_roi": 0.10
+        }
+        orders_30 = strategy.generate_daily_orders(
+            symbol, current_price=45.0, state=state_second_half_30,
+            avg_price=50.0, total_qty=60
+        )
+        self.assertEqual(len(orders_30), 2)
+        buy_orders_30 = [o for o in orders_30 if o["action"] == "BUY"]
+        self.assertEqual(len(buy_orders_30), 1)
+        self.assertEqual(buy_orders_30[0]["price"], 47.50)
+        self.assertEqual(buy_orders_30[0]["qty"], 2)
+        self.assertEqual(buy_orders_30[0]["round_inc"], 1.0)
+        self.assertIn("1.0회차 후반전(☆-5.0%)", buy_orders_30[0]["desc"])
+
 
 if __name__ == "__main__":
     unittest.main()

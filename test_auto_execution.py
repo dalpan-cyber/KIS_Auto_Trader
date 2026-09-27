@@ -822,6 +822,69 @@ def test_raoer_formula_round_calculation():
     print("  ✅ PASS")
 
 
+def test_v21_first_and_second_half_execution():
+    """v2.1 전반전(0.5회차x2) 및 후반전(1.0회차x1) 발주 실행 통합 검증"""
+    print("\n=== Test: 라오어 무한매수법 v2.1 전반전/후반전 차등 발주 실행 ===")
+    from unittest.mock import MagicMock
+    from trader import TraderBot
+    from kis_api import KISApiClient
+    from infinite_state_manager import InfiniteStateManager
+
+    mgr = InfiniteStateManager(file_path=TEST_STATE_FILE, enable_gss=False)
+    api = KISApiClient()
+    api.is_overseas_symbol = MagicMock(return_value=True)
+    api.get_stock_price = MagicMock(return_value={"success": True, "price": "50.00"})
+    orders_placed = []
+
+    def mock_order(symbol, qty, price, buy, ord_type):
+        orders_placed.append({"symbol": symbol, "qty": qty, "price": price, "buy": buy, "ord_type": ord_type})
+        return {"success": True, "msg": "주문 성공", "data": {"ODNO": f"ORD_{len(orders_placed)}"}}
+
+    api.order_overseas_cash = MagicMock(side_effect=mock_order)
+
+    bot = TraderBot(api=api)
+    bot.infinite_state_mgr = mgr
+    bot.infinite_stocks = ["TQQQ"]
+    bot.fetch_account_balance = lambda: None
+
+    # 1. 전반전 시뮬레이션: TQQQ 5.0회차 (40분할 중 5회차 < 20회차)
+    mgr.states["TQQQ"] = {
+        "symbol": "TQQQ",
+        "start_date": "2026-09-01",
+        "total_budget_usd": 4000.0,
+        "division_count": 40,
+        "current_round": 5.0,
+        "target_roi": 0.10,
+        "status": "BUYING"
+    }
+    bot.holdings["TQQQ"] = {"qty": 10, "avg_price": 50.00}
+    orders_placed.clear()
+
+    res1 = bot.execute_daily_orders("TQQQ", action_filter="BUY")
+    assert res1["success"] is True
+    # 전반전은 2건 분할 매수 (평단가 LOC + 큰수 LOC)
+    assert len(orders_placed) == 2, f"전반전 매수 발주 건수 오류: {len(orders_placed)}"
+    assert orders_placed[0]["price"] == 50.00  # 평단가
+    # 별% = 10 - 5/2 = +7.5% -> 50 * 1.075 = 53.75
+    assert orders_placed[1]["price"] == 53.75  # 큰수
+    print("  ✅ 1. 전반전(5.0회차): 0.5회차 평단가 LOC + 0.5회차 큰수(☆+7.5%) 2건 발주 검증 완료")
+
+    # 2. 후반전 시뮬레이션: TQQQ 25.0회차 (40분할 중 25회차 >= 20회차)
+    mgr.states["TQQQ"]["current_round"] = 25.0
+    bot.holdings["TQQQ"] = {"qty": 50, "avg_price": 50.00}
+    orders_placed.clear()
+
+    res2 = bot.execute_daily_orders("TQQQ", action_filter="BUY")
+    assert res2["success"] is True
+    # 후반전은 1건 통합 매수 (1.0회차 별% LOC)
+    assert len(orders_placed) == 1, f"후반전 매수 발주 건수 오류: {len(orders_placed)}"
+    # 별% = 10 - 25/2 = -2.5% -> 50 * 0.975 = 48.75
+    assert orders_placed[0]["price"] == 48.75
+    assert orders_placed[0]["qty"] == 2  # 1회차 예산 $100 / $48.75 = 2주
+    print("  ✅ 2. 후반전(25.0회차): 1.0회차 후반전(☆-2.5%) 1건 통합 발주 검증 완료")
+    print("  ✅ PASS")
+
+
 if __name__ == "__main__":
     original_file_content = None
     if os.path.exists("infinite_settings.json"):
@@ -839,6 +902,7 @@ if __name__ == "__main__":
         test_auto_exhaust_action_selection()
         test_intraday_sell_and_loc_rebuy_cycle_completion()
         test_raoer_formula_round_calculation()
+        test_v21_first_and_second_half_execution()
     finally:
         # 테스트 후 임시 파일 정리
         if os.path.exists(TEST_STATE_FILE):

@@ -140,7 +140,10 @@ class VolatilityBreakoutStrategy(BaseStrategy):
 
 class InfiniteBuyingStrategy(BaseStrategy):
     """
-    라오어 무한매수법 v2.0 매매 전략 클래스
+    라오어 무한매수법 v2.1 매매 전략 클래스
+    - 전반전(T < division/2): 0.5회차 평단가 LOC + 0.5회차 큰수(☆%) LOC 2건 분할 매수
+    - 후반전(division/2 <= T < division): 1.0회차 후반전(☆%) LOC 1건 통합 매수
+    - 소진(T >= division): HOLD, LOWER_TARGET, REBALANCE_QUARTER 등 소진 대응
     - 매일 미국 장 개장 전/프리마켓에 당일 매수/매도 주문 제안 목록을 생성합니다.
     """
 
@@ -323,39 +326,69 @@ class InfiniteBuyingStrategy(BaseStrategy):
             self.logger.info(f"[{symbol}] 무한매수 일시/강제 중지 상태({status})입니다. 매수 주문 생성을 생략합니다.")
             return orders
 
-        # 2. 매수 및 40회차 소진 대응 주문 제안
+        # 2. 매수 및 40회차 소진 대응 주문 제안 (라오어 무한매수법 v2.1)
         if not is_exhausted:
             one_round_budget = total_budget / division
             half_budget = one_round_budget / 2.0
+            half_division = division / 2.0
 
             base_price = avg_price if avg_price > 0 else current_price
 
-            # 매수 수량 산정 (최소 1주 이상)
-            loc1_price = round(base_price, 2)
-            qty1 = max(1, int(half_budget / loc1_price))
+            # 별퍼센트(☆%) 공식: 10.0 - (T * (10.0 / half_division))
+            # 40분할 기준: 10.0 - (T / 2.0)
+            star_percent = 10.0 - (float(curr_round) * (10.0 / float(half_division)))
 
-            loc2_price = round(base_price * 1.05, 2)
-            qty2 = max(1, int(half_budget / loc2_price))
+            if curr_round < half_division:
+                # [전반전] (0 <= T < half_division): 적극적 물량 확보 구간
+                # 1) 0.5회차 평단가 LOC 매수
+                loc1_price = round(base_price, 2)
+                qty1 = max(1, int(half_budget / loc1_price))
 
-            orders.append({
-                "action": "BUY",
-                "symbol": symbol,
-                "qty": qty1,
-                "price": loc1_price,
-                "ord_type": "34",  # LOC 매수
-                "round_inc": 0.5,
-                "desc": f"0.5회차 평단가 LOC 매수 (${loc1_price:.2f}, {qty1}주)"
-            })
+                # 2) 0.5회차 큰수(☆%) LOC 매수
+                # 평단가가 없는 최초 매수(0회차)인 경우 현재가 기반 진입 보장
+                if avg_price <= 0:
+                    loc2_price = round(base_price * 1.05, 2)
+                else:
+                    loc2_price = round(base_price * (1.0 + star_percent / 100.0), 2)
+                    if loc2_price <= loc1_price:
+                        loc2_price = round(loc1_price + 0.01, 2)
 
-            orders.append({
-                "action": "BUY",
-                "symbol": symbol,
-                "qty": qty2,
-                "price": loc2_price,
-                "ord_type": "34",  # LOC 매수
-                "round_inc": 0.5,
-                "desc": f"0.5회차 상향 LOC 매수 (${loc2_price:.2f}, {qty2}주)"
-            })
+                qty2 = max(1, int(half_budget / loc2_price))
+
+                orders.append({
+                    "action": "BUY",
+                    "symbol": symbol,
+                    "qty": qty1,
+                    "price": loc1_price,
+                    "ord_type": "34",  # LOC 매수
+                    "round_inc": 0.5,
+                    "desc": f"0.5회차 평단가 LOC 매수 (${loc1_price:.2f}, {qty1}주)"
+                })
+
+                orders.append({
+                    "action": "BUY",
+                    "symbol": symbol,
+                    "qty": qty2,
+                    "price": loc2_price,
+                    "ord_type": "34",  # LOC 매수
+                    "round_inc": 0.5,
+                    "desc": f"0.5회차 큰수(☆{star_percent:+.1f}%) LOC 매수 (${loc2_price:.2f}, {qty2}주)"
+                })
+            else:
+                # [후반전] (half_division <= T < division): 평단가 방어 및 리스크 통제 구간
+                # 하루 1회차 전체 예산을 1건의 보수적 별%(☆%) LOC 매수로 집행
+                loc_price = round(base_price * (1.0 + star_percent / 100.0), 2)
+                qty = max(1, int(one_round_budget / loc_price))
+
+                orders.append({
+                    "action": "BUY",
+                    "symbol": symbol,
+                    "qty": qty,
+                    "price": loc_price,
+                    "ord_type": "34",  # LOC 매수
+                    "round_inc": 1.0,
+                    "desc": f"1.0회차 후반전(☆{star_percent:+.1f}%) LOC 매수 (${loc_price:.2f}, {qty}주)"
+                })
         else:
             # 40회차 소진 시 3가지 대응 모드 분기 (effective_exhaust_action 기준)
             if effective_exhaust_action == "REBALANCE_QUARTER":
