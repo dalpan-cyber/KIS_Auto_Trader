@@ -61,21 +61,21 @@ if "screener" not in st.session_state:
     st.session_state["screener"] = StockScreener(api)
 screener = st.session_state["screener"]
 
-# 실시간 매도 신호 감지 fragment (5분 주기)
+# 실시간 매도 신호 감지 fragment (5분 주기 - 고속 리스크 감시)
 @st.fragment(run_every=60)
 def realtime_detection_fragment():
     last_check = st.session_state.get("last_realtime_check", 0.0)
     now_ts = time.time()
     if now_ts - last_check >= 300:
         st.session_state["last_realtime_check"] = now_ts
-        with st.spinner("🔄 5분 주기 매도 신호 자동 체크 중..."):
-            updated = screener.check_sell_signals_now()
+        with st.spinner("⚡ 5분 주기 고속 리스크 감시 중 (손익·트레일링스탑)..."):
+            updated = screener.check_sell_signals_now(fast_mode=True)
             st.session_state["last_check_time"] = now_str("%H:%M:%S")
-            st.success(f"🔄 자동 체크 완료: {len(updated.get('sell_proposals', []))}건의 매도 신호 감지")
+            st.success(f"⚡ 고속 감시 완료: {len(updated.get('sell_proposals', []))}건의 리스크 신호 감지")
             time.sleep(1)
             st.rerun()
     else:
-        st.caption("⏳ 5분 주기로 실시간 감시가 실행됩니다.")
+        st.caption("⏳ 5분 주기로 고속 리스크 감시가 실행됩니다. (손절·목표익절·트레일링스탑 즉시 체크)")
 
 # ==============================================================================
 # 통합 사이드바 (Unified Navigation)

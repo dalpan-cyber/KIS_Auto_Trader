@@ -322,25 +322,36 @@ def _get_sell_button_style(sell_type: str, is_urgent: bool) -> tuple:
 
 def render_risk_tab(api, screener, holdings, proposals, realtime_detection_fragment):
     """포지션 & 리스크 관리 탭 (Risk Matrix)"""
-    col_btn1, col_btn2 = st.columns(2)
+    col_btn1, col_btn2 = st.columns([1.2, 1.8])
     with col_btn1:
         realtime_on = st.toggle(
-            "🔄 실시간 감지 (5분 간격)",
+            "⚡ 실시간 고속 감시 (5분 주기)",
             value=st.session_state.get("realtime_detect_on", False),
-            key="realtime_detect_toggle"
+            key="realtime_detect_toggle",
+            help="5분 주기로 차트 조회 없이 잔고 기반 긴급 손절, 목표 익절, 트레일링 스탑을 초고속(<1초) 감시합니다."
         )
     with col_btn2:
-        if st.button("⚡ 즉시 체크", key="btn_immediate_check", width="stretch"):
-            with st.spinner("보유 주식 매도 신호 즉시 분석 중..."):
-                updated = screener.check_sell_signals_now()
-                st.session_state["last_check_time"] = now_str()
-                st.success(f"✅ 매도 신호 재분석 완료: {len(updated.get('sell_proposals', []))}건 감지")
-                time.sleep(1)
-                st.rerun()
+        sub_c1, sub_c2 = st.columns(2)
+        with sub_c1:
+            if st.button("⚡ 고속 체크", key="btn_fast_check", width="stretch", help="손절/익절/트레일링스탑 리스크 신호를 즉시 검사합니다 (소요시간 < 1초)."):
+                with st.spinner("리스크 신호 고속 분석 중..."):
+                    updated = screener.check_sell_signals_now(fast_mode=True)
+                    st.session_state["last_check_time"] = now_str()
+                    st.success(f"✅ 고속 체크 완료: {len(updated.get('sell_proposals', []))}건 감지")
+                    time.sleep(1)
+                    st.rerun()
+        with sub_c2:
+            if st.button("🔍 정밀 분석", key="btn_full_check", width="stretch", help="일봉 차트 60개와 보조지표(데드크로스, 볼린저밴드 등)를 포함하여 전체 매도 신호를 정밀 분석합니다."):
+                with st.spinner("보유 주식 기술적 지표 정밀 분석 중..."):
+                    updated = screener.check_sell_signals_now(fast_mode=False)
+                    st.session_state["last_check_time"] = now_str()
+                    st.success(f"✅ 정밀 매도 신호 재분석 완료: {len(updated.get('sell_proposals', []))}건 감지")
+                    time.sleep(1)
+                    st.rerun()
 
     if realtime_on:
         st.session_state["realtime_detect_on"] = True
-        st.info("🔄 실시간 감지가 활성화되었습니다. 5분마다 보유 주식 매도 신호를 자동 체크합니다.")
+        st.info("⚡ 실시간 고속 감시가 활성화되었습니다. 5분마다 손절·목표익절·트레일링스탑을 초고속으로 자동 감시합니다.")
         realtime_detection_fragment()
     else:
         st.session_state["realtime_detect_on"] = False

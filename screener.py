@@ -375,17 +375,21 @@ class StockScreener:
             self.logger.warning(f"[{code}] 최근 매수 여부 확인 중 예외: {e}")
         return False
 
-    def evaluate_sell_signals(self, holding: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """라이브 환경에서 보유 종목 매도 분석"""
+    def evaluate_sell_signals(self, holding: Dict[str, Any], fast_mode: bool = False) -> Optional[Dict[str, Any]]:
+        """라이브 환경에서 보유 종목 매도 분석 (fast_mode=True 시 손절/익절/트레일링스탑 고속 감시)"""
         code = holding.get("code")
         profit_rate = float(holding.get("profit_rate", 0.0))
         current_price = float(holding.get("current_price", 0.0))
         avg_buy_price = float(holding.get("avg_buy_price", 0.0))
 
-        # 시장 국면 감지 (AUTO 모드에서 프리셋 자동 전환을 위해 필요)
+        # 시장 국면 감지 (fast_mode 시에는 추가 네트워크 호출 없이 캐시된 국면 또는 기본값 활용)
         market_regime = None
         if config.CURRENT_SETTINGS.get("market_regime_filter_enabled", True):
-            market_regime = self.get_market_regime(market=holding.get("market", "KOSPI"))
+            if fast_mode:
+                market_regime = getattr(self, "_cached_market_regime", None) or {"regime": "BULL"}
+            else:
+                market_regime = self.get_market_regime(market=holding.get("market", "KOSPI"))
+                self._cached_market_regime = market_regime
 
         # 유효 설정 (시장 국면 프리셋 적용)
         regime = (market_regime or {}).get("regime", "BULL")
@@ -399,20 +403,25 @@ class StockScreener:
         is_partial_sold = pos_state.get("is_partial_sold", False)
         highest_price = pos_state.get("highest_price", current_price)
 
-        if profit_rate <= stop_loss_rate or (profit_rate >= target_profit_rate and not is_partial_sold):
-            sell_res = self.evaluate_sell_signals_from_df(
-                holding=holding,
-                df=None,
-                is_recently_bought=False,
-                stop_loss_rate=stop_loss_rate / 100,
-                target_profit_rate=target_profit_rate / 100,
-                current_date=today().strftime("%Y%m%d"),
-                use_file_cooldown=False,
-                is_partial_sold=is_partial_sold,
-                highest_price=highest_price,
-                market_regime=market_regime
-            )
-            return sell_res
+        # 1. 가격/수익률 기반 3대 핵심 리스크 신호(손절, 분할익절, 트레일링스탑) 즉시 판별 (df=None)
+        fast_res = self.evaluate_sell_signals_from_df(
+            holding=holding,
+            df=None,
+            is_recently_bought=False,
+            stop_loss_rate=stop_loss_rate / 100,
+            target_profit_rate=target_profit_rate / 100,
+            current_date=today().strftime("%Y%m%d"),
+            use_file_cooldown=False,
+            is_partial_sold=is_partial_sold,
+            highest_price=highest_price,
+            market_regime=market_regime
+        )
+        if fast_res:
+            return fast_res
+
+        # 고속 감시 모드(fast_mode=True)일 경우, 무거운 차트/지표 조회를 전면 생략하고 즉시 반환
+        if fast_mode:
+            return None
 
         is_recent = self._is_recently_bought(code, days=2)
         if is_recent and not is_partial_sold:
@@ -623,9 +632,10 @@ class StockScreener:
 
         return urgent_sells
 
-    def check_sell_signals_now(self) -> Dict[str, Any]:
-        """장중 실시간 매도 신호 재분석 및 제안서 갱신"""
-        self.logger.info("=== 보유 주식 실시간 매도 신호 재분석 시작 ===")
+    def check_sell_signals_now(self, fast_mode: bool = False) -> Dict[str, Any]:
+        """장중 실시간 매도 신호 분석 및 제안서 갱신 (fast_mode=True: 손절/익절/트레일링스탑 고속 감시)"""
+        mode_label = "초고속 리스크 감시(손익·트레일링스탑)" if fast_mode else "정밀 매도 신호 재분석"
+        self.logger.info(f"=== 보유 주식 실시간 {mode_label} 시작 ===")
         existing = self.load_proposals()
         buy_proposals = existing.get("buy_proposals", [])
 
@@ -635,7 +645,7 @@ class StockScreener:
         sell_proposals = []
         for holding in holdings:
             try:
-                sell_res = self.evaluate_sell_signals(holding)
+                sell_res = self.evaluate_sell_signals(holding, fast_mode=fast_mode)
                 if sell_res:
                     sell_proposals.append(sell_res)
             except Exception as e:
@@ -664,7 +674,7 @@ class StockScreener:
         }
 
         self.save_proposals(proposals_data)
-        self.logger.info(f"실시간 매도 신호 재분석 완료: 매도 추천 {len(merged_sell_proposals)}건")
+        self.logger.info(f"실시간 {mode_label} 완료: 매도 추천 {len(merged_sell_proposals)}건")
         self._notify_sell_recommendations(sell_proposals)
         return proposals_data
 
