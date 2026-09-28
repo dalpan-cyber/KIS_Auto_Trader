@@ -4,14 +4,14 @@
     "start_date": "2026-09-22",
     "total_budget_usd": 5000.0,
     "division_count": 40,
-    "current_round": 3.0,
+    "current_round": 4.0,
     "target_roi": 0.1,
     "status": "BUYING",
     "exhaust_action": "AUTO",
     "exhaust_target_roi": 0.05,
-    "peak_qty": 6,
+    "peak_qty": 8,
     "paused_sell_price": 0.0,
-    "last_avg_price": 79.1517,
+    "last_avg_price": 78.6238,
     "last_completed_sell_order_no": ""
   },
   "SOXL": {
@@ -19,14 +19,14 @@
     "start_date": "2026-09-21",
     "total_budget_usd": 5000.0,
     "division_count": 40,
-    "current_round": 2.0,
+    "current_round": 3.0,
     "target_roi": 0.1,
     "exhaust_action": "AUTO",
     "exhaust_target_roi": 0.05,
     "status": "BUYING",
-    "peak_qty": 4,
+    "peak_qty": 6,
     "paused_sell_price": 0.0,
-    "last_avg_price": 147.57,
+    "last_avg_price": 145.81,
     "last_completed_sell_order_no": ""
   }
 }
