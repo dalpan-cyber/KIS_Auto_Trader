@@ -145,45 +145,90 @@ with st.sidebar:
             st.rerun()
 
     st.divider()
+    if st.button("🔄 데이터 즉시 새로고침", key="sidebar_force_refresh", width="stretch", help="캐시를 무효화하고 한국투자증권 실시간 잔고 및 데이터를 즉시 다시 불러옵니다."):
+        st.session_state["force_refresh_balance"] = True
+        st.rerun()
     st.caption("KIS Auto Trading Engine • Unified Terminal v3.0")
 
-# 계좌 및 제안서 데이터 조회
-balance_data = api.get_account_balance()
-summary = balance_data.get("summary", {})
-holdings = balance_data.get("holdings", [])
+# ==============================================================================
+# 캐시 기반 계좌 및 제안서 데이터 로더 (반응성 최적화)
+# ==============================================================================
+def get_cached_account_balance(api_client: KISApiClient, ttl_seconds: float = 30.0, force: bool = False):
+    """30초 TTL 세션 캐시 기반 잔고 조회 (무조건적인 KIS API 동기 호출 방지)"""
+    now_ts = time.time()
+    last_fetch = st.session_state.get("last_balance_fetch_ts", 0.0)
+    cached_bal = st.session_state.get("cached_balance_data")
 
-is_zero_balance = (
-    balance_data.get("rt_cd") != "0" or
-    (summary.get("tot_asset", 0) == 0 and summary.get("cash_balance", 0) == 0)
-)
-if is_zero_balance:
-    time.sleep(0.3)
-    retry_balance = api.get_account_balance()
-    if retry_balance.get("rt_cd") == "0" and (
-        retry_balance.get("summary", {}).get("tot_asset", 0) > 0 or
-        retry_balance.get("summary", {}).get("cash_balance", 0) > 0
-    ):
-        balance_data = retry_balance
-        summary = balance_data.get("summary", {})
-        holdings = balance_data.get("holdings", [])
+    if not force and cached_bal and (now_ts - last_fetch < ttl_seconds):
+        return cached_bal
 
-# 정상 수신된 잔고 데이터는 세션에 캐싱 (이후 일시적 API 지연 시 0원 노출 방지 fallback)
-if summary.get("tot_asset", 0) > 0 or summary.get("cash_balance", 0) > 0 or len(holdings) > 0:
-    st.session_state["cached_summary"] = summary
-    st.session_state["cached_holdings"] = holdings
-elif "cached_summary" in st.session_state:
-    summary = st.session_state["cached_summary"]
-    holdings = st.session_state.get("cached_holdings", holdings)
+    # API 호출
+    balance_data = api_client.get_account_balance()
+    summary = balance_data.get("summary", {})
+    holdings = balance_data.get("holdings", [])
 
-proposals = screener.load_proposals()
+    is_zero = (
+        balance_data.get("rt_cd") != "0" or
+        (summary.get("tot_asset", 0) == 0 and summary.get("cash_balance", 0) == 0)
+    )
+    if is_zero:
+        time.sleep(0.2)
+        retry_bal = api_client.get_account_balance()
+        if retry_bal.get("rt_cd") == "0" and (
+            retry_bal.get("summary", {}).get("tot_asset", 0) > 0 or
+            retry_bal.get("summary", {}).get("cash_balance", 0) > 0
+        ):
+            balance_data = retry_bal
 
-# 매도 추천에서 이미 매도 완료된 종목 제외
-holding_codes = {h.get("code") for h in holdings if isinstance(h, dict) and h.get("code")}
-if proposals.get("sell_proposals"):
-    proposals["sell_proposals"] = [
-        s for s in proposals["sell_proposals"]
-        if isinstance(s, dict) and s.get("code") in holding_codes
-    ]
+    # 정상 데이터 수신 시 캐시 저장, 실패 시 이전 캐시 유지
+    new_summary = balance_data.get("summary", {})
+    if new_summary.get("tot_asset", 0) > 0 or new_summary.get("cash_balance", 0) > 0 or len(balance_data.get("holdings", [])) > 0:
+        st.session_state["cached_balance_data"] = balance_data
+        st.session_state["last_balance_fetch_ts"] = now_ts
+        return balance_data
+    elif cached_bal:
+        return cached_bal
+
+    st.session_state["cached_balance_data"] = balance_data
+    st.session_state["last_balance_fetch_ts"] = now_ts
+    return balance_data
+
+def get_cached_proposals(screener_inst: StockScreener, ttl_seconds: float = 15.0, force: bool = False):
+    """15초 TTL 세션 캐시 기반 제안서 파일 로더 (불필요한 반복 디스크 I/O 방지)"""
+    now_ts = time.time()
+    last_fetch = st.session_state.get("last_proposals_fetch_ts", 0.0)
+    cached_props = st.session_state.get("cached_proposals_data")
+
+    if not force and cached_props and (now_ts - last_fetch < ttl_seconds):
+        return cached_props
+
+    props = screener_inst.load_proposals()
+    st.session_state["cached_proposals_data"] = props
+    st.session_state["last_proposals_fetch_ts"] = now_ts
+    return props
+
+# 메인 뷰 라우팅 결정
+current_page = st.session_state["nav_page"]
+
+# dashboard 또는 screener 페이지에서만 국내 잔고 및 제안서 로드 (미국 무한매수/백테스트/설정 진입 시 API 호출 0회)
+force_refresh = st.session_state.pop("force_refresh_balance", False)
+if current_page in ["dashboard", "screener"]:
+    balance_data = get_cached_account_balance(api, ttl_seconds=30.0, force=force_refresh)
+    summary = balance_data.get("summary", {})
+    holdings = balance_data.get("holdings", [])
+    proposals = get_cached_proposals(screener, ttl_seconds=15.0, force=force_refresh)
+
+    holding_codes = {h.get("code") for h in holdings if isinstance(h, dict) and h.get("code")}
+    if proposals.get("sell_proposals"):
+        proposals["sell_proposals"] = [
+            s for s in proposals["sell_proposals"]
+            if isinstance(s, dict) and s.get("code") in holding_codes
+        ]
+else:
+    summary = {}
+    holdings = []
+    proposals = {}
+    holding_codes = set()
 
 # ==============================================================================
 # 메인 뷰 라우팅

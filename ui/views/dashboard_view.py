@@ -72,12 +72,20 @@ def render_overview_tab(api, screener, summary, holdings, proposals, holding_cod
             top_cands = proposals.get("top_candidates", [])
             if top_cands:
                 st.markdown("**👀 [관망 후보 Top 3 (매수 추천 아님)]**")
-                cand_tabs = st.tabs([f"{idx}위. {c['name']} ({c['score']}점)" for idx, c in enumerate(top_cands[:3], 1)])
-                for idx, (tab, c) in enumerate(zip(cand_tabs, top_cands[:3]), 1):
-                    with tab:
-                        disq = c.get('disqualify_reason', '기준 미달')
-                        st.caption(f"**{c['name']} ({c['code']})** | 현재가: `{c['current_price']:,.0f}원` | **{c['score']}점** (사유: {disq})")
-                        render_interactive_stock_chart(api, screener, c['code'], c['name'])
+                for idx, c in enumerate(top_cands[:3], 1):
+                    disq = c.get('disqualify_reason', '기준 미달')
+                    st.markdown(f"- **{idx}위. {c['name']} ({c['code']})** | 현재가: `{c.get('current_price', 0):,.0f}원` | **{c.get('score', 0)}점** <small style='color:#94a3b8;'>(사유: {disq})</small>", unsafe_allow_html=True)
+
+                with st.expander("📈 관망 후보 차트 보기 (선택형)", expanded=False):
+                    cand_names = [f"{idx}위. {c['name']} ({c['code']})" for idx, c in enumerate(top_cands[:3], 1)]
+                    sel_cand_idx = st.selectbox(
+                        "확인할 후보 종목 선택",
+                        range(len(cand_names)),
+                        format_func=lambda i: cand_names[i],
+                        key="cand_chart_sel"
+                    )
+                    sel_c = top_cands[sel_cand_idx]
+                    render_interactive_stock_chart(api, screener, sel_c['code'], sel_c['name'])
         else:
             for b in buy_list[:3]:
                 buy_tag = "🔄 추가매수" if b.get("code") in holding_codes else "🆕 신규매수"
@@ -296,7 +304,7 @@ def render_overview_tab(api, screener, summary, holdings, proposals, holding_cod
             key="overview_holding_chart_select"
         )
         selected_h = holdings[selected_idx]
-        with st.expander(f"📊 {selected_h['name']} ({selected_h['code']}) 실시간 차트 & 지표 상세", expanded=True):
+        with st.expander(f"📊 {selected_h['name']} ({selected_h['code']}) 실시간 차트 & 지표 상세", expanded=False):
             render_interactive_stock_chart(
                 api_client=api,
                 screener_engine=screener,
@@ -549,11 +557,23 @@ def render_risk_tab(api, screener, holdings, proposals, realtime_detection_fragm
         st.dataframe(styled_holdings, width="stretch", hide_index=True)
 
 def render_execution_tab(api):
-    """주문/체결 내역 탭 (Execution)"""
-    if st.button("🔄 당일 체결 내역 새로고침", key="btn_refresh_orders_tab"):
-        st.rerun()
+    """주문/체결 내역 탭 (Execution - 캐시 및 온디맨드 새로고침)"""
+    col1, col2 = st.columns([8, 2])
+    with col2:
+        btn_refresh = st.button("🔄 체결 내역 새로고침", key="btn_refresh_orders_tab", width="stretch")
 
-    orders = api.get_order_history()
+    cached_orders = st.session_state.get("cached_order_history")
+    last_orders_ts = st.session_state.get("last_orders_fetch_ts", 0.0)
+    now_ts = time.time()
+
+    if btn_refresh or cached_orders is None or (now_ts - last_orders_ts > 60.0):
+        with st.spinner("당일 주문/체결 내역 조회 중..."):
+            orders = api.get_order_history()
+            st.session_state["cached_order_history"] = orders
+            st.session_state["last_orders_fetch_ts"] = now_ts
+    else:
+        orders = cached_orders
+
     if not orders:
         st.info("금일 전송된 주문 내역이 없습니다.")
     else:
@@ -561,7 +581,7 @@ def render_execution_tab(api):
         st.dataframe(o_df, width="stretch")
 
 def render_performance_tab(api):
-    """실현/미실현 손익 분석 탭 (Performance)"""
+    """실현/미실현 손익 분석 탭 (Performance - 온디맨드 지연 로딩)"""
     col_date1, col_date2, col_date3 = st.columns([1.5, 1.5, 1])
     with col_date1:
         start_date = st.date_input(
@@ -580,18 +600,21 @@ def render_performance_tab(api):
     with col_date3:
         st.write("")
         st.write("")
-        if st.button("🔍 조회", key="btn_perf_search", type="primary", width="stretch"):
-            st.rerun()
+        btn_search = st.button("🔍 손익 분석 조회", key="btn_perf_search", type="primary", width="stretch")
 
     if start_date > end_date:
         st.error("⚠️ 시작일이 종료일보다 늦을 수 없습니다.")
-    else:
-        start_str = start_date.strftime("%Y%m%d")
-        end_str = end_date.strftime("%Y%m%d")
+        return
 
-        with st.spinner("매매 이력 및 손익 분석 중..."):
+    start_str = start_date.strftime("%Y%m%d")
+    end_str = end_date.strftime("%Y%m%d")
+    cache_key = f"perf_res_{start_str}_{end_str}"
+
+    if btn_search:
+        with st.spinner("선택 기간 매매 이력 및 손익 정밀 분석 중 (KIS API 연동)..."):
             result = api.get_trade_history_with_profit(start_str, end_str)
-            balance_data = api.get_account_balance()
+            # 불필요한 계좌 잔고 중복 호출 대신 캐시된 잔고 활용
+            balance_data = st.session_state.get("cached_balance_data") or api.get_account_balance()
             holdings_data = balance_data.get("holdings", [])
             unrealized_profit = 0.0
             unrealized_by_stock = {}
@@ -608,98 +631,117 @@ def render_performance_tab(api):
                     "profit_loss": profit,
                     "profit_rate": h.get("profit_rate", 0)
                 }
+            st.session_state[cache_key] = {
+                "result": result,
+                "unrealized_profit": unrealized_profit,
+                "unrealized_by_stock": unrealized_by_stock
+            }
+            st.session_state["last_perf_cache_key"] = cache_key
 
-        orders = result["orders"]
-        realized_profit = result["realized_profit"]
-        buy_total = result["buy_total"]
-        sell_total = result["sell_total"]
-        buy_count = result["buy_count"]
-        sell_count = result["sell_count"]
-        profit_by_stock = result["profit_by_stock"]
-        total_profit = realized_profit + unrealized_profit
+    # 캐시된 결과 확인
+    perf_data = st.session_state.get(cache_key) or (
+        st.session_state.get(st.session_state.get("last_perf_cache_key", ""))
+        if not btn_search else None
+    )
 
-        col1, col2, col3, col4, col5, col6 = st.columns(6)
-        with col1:
-            st.metric("실현 손익", f"{realized_profit:+,.0f} 원", delta=f"{realized_profit:+,.0f} 원")
-        with col2:
-            st.metric("미실현 손익(평가)", f"{unrealized_profit:+,.0f} 원", delta=f"{unrealized_profit:+,.0f} 원")
-        with col3:
-            st.metric("총 손익", f"{total_profit:+,.0f} 원", delta=f"{total_profit:+,.0f} 원")
-        with col4:
-            st.metric("총 매수 금액", f"{buy_total:,.0f} 원")
-        with col5:
-            st.metric("총 매도 금액", f"{sell_total:,.0f} 원")
-        with col6:
-            st.metric("매수/매도 건수", f"{buy_count}건 / {sell_count}건")
+    if not perf_data:
+        st.info("💡 상단의 조회 기간을 설정하신 후 **[🔍 손익 분석 조회]** 버튼을 누르시면 기간별 매매 내역과 실현/미실현 손익을 정밀 계산하여 표시합니다.")
+        return
 
-        st.divider()
+    result = perf_data["result"]
+    unrealized_profit = perf_data["unrealized_profit"]
 
-        sold_stocks = {k: v for k, v in profit_by_stock.items() if v["sell_qty"] > 0}
-        if sold_stocks:
-            st.subheader("📈 종목별 실현 손익")
-            pbs_df = pd.DataFrame([
-                {
-                    "종목명": v["name"],
-                    "코드": k,
-                    "매수금액(원)": v["buy_amount"],
-                    "매도금액(원)": v["sell_amount"],
-                    "매수수량": v["buy_qty"],
-                    "매도수량": v["sell_qty"],
-                    "실현손익(원)": v["profit"],
-                    "매칭구분": v.get("match_status", "정상 매칭")
-                }
-                for k, v in sold_stocks.items()
-            ])
-            pbs_df["매수금액(원)"] = pbs_df["매수금액(원)"].apply(lambda x: f"{x:,.0f}")
-            pbs_df["매도금액(원)"] = pbs_df["매도금액(원)"].apply(lambda x: f"{x:,.0f}")
-            pbs_df["실현손익(원)"] = pbs_df["실현손익(원)"].apply(lambda x: f"{x:+,.0f}")
+    orders = result["orders"]
+    realized_profit = result["realized_profit"]
+    buy_total = result["buy_total"]
+    sell_total = result["sell_total"]
+    buy_count = result["buy_count"]
+    sell_count = result["sell_count"]
+    profit_by_stock = result["profit_by_stock"]
+    total_profit = realized_profit + unrealized_profit
 
-            def _style_realized_profit(row):
-                styles = [''] * len(row)
-                p_val = str(row.get("실현손익(원)", "")).strip()
-                if p_val.startswith("+"):
-                    style_str = "color: #ff4d4f; font-weight: 700;"
-                elif p_val.startswith("-"):
-                    style_str = "color: #38bdf8; font-weight: 700;"
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
+    with col1:
+        st.metric("실현 손익", f"{realized_profit:+,.0f} 원", delta=f"{realized_profit:+,.0f} 원")
+    with col2:
+        st.metric("미실현 손익(평가)", f"{unrealized_profit:+,.0f} 원", delta=f"{unrealized_profit:+,.0f} 원")
+    with col3:
+        st.metric("총 손익", f"{total_profit:+,.0f} 원", delta=f"{total_profit:+,.0f} 원")
+    with col4:
+        st.metric("총 매수 금액", f"{buy_total:,.0f} 원")
+    with col5:
+        st.metric("총 매도 금액", f"{sell_total:,.0f} 원")
+    with col6:
+        st.metric("매수/매도 건수", f"{buy_count}건 / {sell_count}건")
+
+    st.divider()
+
+    sold_stocks = {k: v for k, v in profit_by_stock.items() if v["sell_qty"] > 0}
+    if sold_stocks:
+        st.subheader("📈 종목별 실현 손익")
+        pbs_df = pd.DataFrame([
+            {
+                "종목명": v["name"],
+                "코드": k,
+                "매수금액(원)": v["buy_amount"],
+                "매도금액(원)": v["sell_amount"],
+                "매수수량": v["buy_qty"],
+                "매도수량": v["sell_qty"],
+                "실현손익(원)": v["profit"],
+                "매칭구분": v.get("match_status", "정상 매칭")
+            }
+            for k, v in sold_stocks.items()
+        ])
+        pbs_df["매수금액(원)"] = pbs_df["매수금액(원)"].apply(lambda x: f"{x:,.0f}")
+        pbs_df["매도금액(원)"] = pbs_df["매도금액(원)"].apply(lambda x: f"{x:,.0f}")
+        pbs_df["실현손익(원)"] = pbs_df["실현손익(원)"].apply(lambda x: f"{x:+,.0f}")
+
+        def _style_realized_profit(row):
+            styles = [''] * len(row)
+            p_val = str(row.get("실현손익(원)", "")).strip()
+            if p_val.startswith("+"):
+                style_str = "color: #ff4d4f; font-weight: 700;"
+            elif p_val.startswith("-"):
+                style_str = "color: #38bdf8; font-weight: 700;"
+            else:
+                style_str = "color: #94a3b8;"
+
+            if "실현손익(원)" in row.index:
+                styles[row.index.get_loc("실현손익(원)")] = style_str
+
+            if "매칭구분" in row.index:
+                m_val = str(row.get("매칭구분", ""))
+                if "과거매수" in m_val:
+                    styles[row.index.get_loc("매칭구분")] = "color: #10b981; font-weight: 600;"
+                elif "평단가" in m_val:
+                    styles[row.index.get_loc("매칭구분")] = "color: #f59e0b; font-weight: 600;"
+                elif "미매칭" in m_val:
+                    styles[row.index.get_loc("매칭구분")] = "color: #ef4444; font-weight: 700;"
                 else:
-                    style_str = "color: #94a3b8;"
+                    styles[row.index.get_loc("매칭구분")] = "color: #94a3b8;"
 
-                if "실현손익(원)" in row.index:
-                    styles[row.index.get_loc("실현손익(원)")] = style_str
+            return styles
 
-                if "매칭구분" in row.index:
-                    m_val = str(row.get("매칭구분", ""))
-                    if "과거매수" in m_val:
-                        styles[row.index.get_loc("매칭구분")] = "color: #10b981; font-weight: 600;"
-                    elif "평단가" in m_val:
-                        styles[row.index.get_loc("매칭구분")] = "color: #f59e0b; font-weight: 600;"
-                    elif "미매칭" in m_val:
-                        styles[row.index.get_loc("매칭구분")] = "color: #ef4444; font-weight: 700;"
-                    else:
-                        styles[row.index.get_loc("매칭구분")] = "color: #94a3b8;"
+        styled_pbs = pbs_df.style.apply(_style_realized_profit, axis=1)
+        st.dataframe(styled_pbs, width="stretch", hide_index=True)
 
-                return styles
-
-            styled_pbs = pbs_df.style.apply(_style_realized_profit, axis=1)
-            st.dataframe(styled_pbs, width="stretch", hide_index=True)
-
-            fig_profit = go.Figure(go.Bar(
-                x=[v["name"] for v in sold_stocks.values()],
-                y=[v["profit"] for v in sold_stocks.values()],
-                marker_color=["#ef4444" if v["profit"] >= 0 else "#3b82f6" for v in sold_stocks.values()],
-                text=[f"{v['profit']:+,.0f}" for v in sold_stocks.values()],
-                textposition="outside"
-            ))
-            fig_profit.update_layout(
-                title="종목별 실현 손익",
-                template="plotly_dark",
-                height=350,
-                yaxis_title="실현 손익 (원)",
-                margin=dict(l=20, r=20, t=40, b=20)
-            )
-            st.plotly_chart(fig_profit, width="stretch")
-        else:
-            st.info("선택 기간 내 매도 완료된 종목이 없습니다.")
+        fig_profit = go.Figure(go.Bar(
+            x=[v["name"] for v in sold_stocks.values()],
+            y=[v["profit"] for v in sold_stocks.values()],
+            marker_color=["#ef4444" if v["profit"] >= 0 else "#3b82f6" for v in sold_stocks.values()],
+            text=[f"{v['profit']:+,.0f}" for v in sold_stocks.values()],
+            textposition="outside"
+        ))
+        fig_profit.update_layout(
+            title="종목별 실현 손익",
+            template="plotly_dark",
+            height=350,
+            yaxis_title="실현 손익 (원)",
+            margin=dict(l=20, r=20, t=40, b=20)
+        )
+        st.plotly_chart(fig_profit, width="stretch")
+    else:
+        st.info("선택 기간 내 매도 완료된 종목이 없습니다.")
 
 def render_dashboard(api, screener, summary, holdings, proposals, holding_codes, realtime_detection_fragment):
     """통합 자산 & 포트폴리오 메인 뷰 (4개 서브 탭)"""

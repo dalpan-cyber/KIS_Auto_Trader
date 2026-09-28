@@ -12,15 +12,22 @@ def _render_buy_card(api, screener, item, idx, holding_codes, key_prefix="buy", 
     code = item.get("code")
     rec_price = float(item.get("recommended_price") or item.get("current_price", 0))
 
-    # 페이지 로딩 시점 실시간 현재가 조회
+    # 페이지 로딩 시점 실시간 현재가 조회 (30초 세션 캐시 적용)
     live_price = rec_price
     live_change_rate = float(item.get("change_rate", 0.0))
-    if api:
+    price_cache = st.session_state.setdefault("_live_price_cache", {})
+    now_ts = time.time()
+
+    if code in price_cache and (now_ts - price_cache[code]["ts"] < 30.0):
+        live_price = price_cache[code]["price"]
+        live_change_rate = price_cache[code]["change_rate"]
+    elif api:
         try:
             rt = api.get_stock_price(code)
             if rt.get("rt_cd") == "0" and rt.get("price", 0) > 0:
                 live_price = float(rt["price"])
                 live_change_rate = float(rt.get("prdy_ctrt", 0.0))
+                price_cache[code] = {"ts": now_ts, "price": live_price, "change_rate": live_change_rate}
         except Exception:
             pass
 
@@ -181,7 +188,7 @@ def _render_buy_card(api, screener, item, idx, holding_codes, key_prefix="buy", 
                     else:
                         st.error(f"❌ 주문 실패: {res.get('msg1')}")
 
-        with st.expander(f"📈 {item['name']} ({item['code']}) 실시간 주가 차트 & 보조지표 분석", expanded=True):
+        with st.expander(f"📈 {item['name']} ({item['code']}) 실시간 주가 차트 & 보조지표 분석", expanded=False):
             render_interactive_stock_chart(
                 api_client=api,
                 screener_engine=screener,
@@ -264,10 +271,11 @@ def render_screener(api, screener, proposals, holding_codes):
                 with col_score:
                     st.metric("종합 점수", f"{item['score']}점")
 
-                # 주가 차트 바로 노출
-                render_interactive_stock_chart(
-                    api_client=api,
-                    screener_engine=screener,
-                    code=item["code"],
-                    name=item["name"]
-                )
+                # 주가 차트 지연 노출 (선택 시 로드)
+                with st.expander("📈 실시간 차트 & 지표 보기", expanded=False):
+                    render_interactive_stock_chart(
+                        api_client=api,
+                        screener_engine=screener,
+                        code=item["code"],
+                        name=item["name"]
+                    )

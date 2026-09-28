@@ -2,6 +2,7 @@
 KIS Auto Trading - UI Styles & Theme Module
 Streamlit CSS 커스텀 스타일링 및 공통 차트 렌더러
 """
+import time
 from typing import Optional
 import pandas as pd
 import streamlit as st
@@ -364,7 +365,34 @@ def apply_custom_styles():
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 def render_interactive_stock_chart(api_client, screener_engine, code: str, name: str, avg_buy_price: Optional[float] = None, profit_rate: Optional[float] = None):
-    """보유 종목 및 추천 종목의 실시간 캔들 차트, 이동평균선, 볼린저밴드, 거래량, RSI 시각화 렌더러"""
+    """보유 종목 및 추천 종목의 실시간 캔들 차트, 이동평균선, 볼린저밴드, 거래량, RSI 시각화 렌더러 (60초 세션 캐시 적용)"""
+    cache_key = f"chart_{code}_{avg_buy_price}_{profit_rate}"
+    chart_cache = st.session_state.setdefault("_stock_chart_cache", {})
+    now_ts = time.time()
+
+    # 60초 이내 캐시 유효 시 즉시 렌더링 (API 호출 0회)
+    if cache_key in chart_cache:
+        cached_ts, cached_data = chart_cache[cache_key]
+        if now_ts - cached_ts < 60.0:
+            fig = cached_data["fig"]
+            latest = cached_data["latest"]
+            prev_rsi = cached_data["prev_rsi"]
+            st.plotly_chart(fig, width="stretch")
+            m1, m2, m3, m4, m5 = st.columns(5)
+            with m1:
+                st.metric("현재가", f"{latest['close']:,.0f}원", delta=f"{latest.get('change_rate', 0):+.2f}%")
+            with m2:
+                rsi_val = latest['rsi14']
+                st.metric("RSI(14)", f"{rsi_val:.1f}", delta=f"{rsi_val - prev_rsi:+.1f}")
+            with m3:
+                vol_ratio = (latest['volume'] / (latest['vol_ma20'] + 1e-9)) * 100 if latest.get('vol_ma20') else 0
+                st.metric("20일 평균대비 거래량", f"{vol_ratio:.0f}%")
+            with m4:
+                st.metric("20일선 (중기)", f"{latest['ma20']:,.0f}원")
+            with m5:
+                st.metric("볼린저 하단 (지지선)", f"{latest['bb_lower']:,.0f}원")
+            return
+
     with st.spinner(f"📈 {name}({code}) 실시간 일봉 차트 및 보조지표 로드 중..."):
         candles = api_client.get_daily_chart(code, count=65)
         realtime = api_client.get_stock_price(code)
@@ -489,12 +517,20 @@ def render_interactive_stock_chart(api_client, screener_engine, code: str, name:
             st.plotly_chart(fig, width="stretch")
 
             latest = df_tech.iloc[-1]
+            prev_rsi = df_tech.iloc[-2]['rsi14'] if len(df_tech) >= 2 else latest['rsi14']
+
+            # 캐시 저장
+            chart_cache[cache_key] = (now_ts, {
+                "fig": fig,
+                "latest": latest.to_dict() if hasattr(latest, 'to_dict') else dict(latest),
+                "prev_rsi": prev_rsi
+            })
+
             m1, m2, m3, m4, m5 = st.columns(5)
             with m1:
                 st.metric("현재가", f"{latest['close']:,.0f}원", delta=f"{latest.get('change_rate', 0):+.2f}%")
             with m2:
                 rsi_val = latest['rsi14']
-                prev_rsi = df_tech.iloc[-2]['rsi14'] if len(df_tech) >= 2 else rsi_val
                 st.metric("RSI(14)", f"{rsi_val:.1f}", delta=f"{rsi_val - prev_rsi:+.1f}")
             with m3:
                 vol_ratio = (latest['volume'] / (latest['vol_ma20'] + 1e-9)) * 100 if latest.get('vol_ma20') else 0
