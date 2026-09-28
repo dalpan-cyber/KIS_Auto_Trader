@@ -157,7 +157,7 @@ def load_settings_from_google_sheet(gss_instance=None) -> dict:
 
 
 def _load_persistent_settings():
-    """infinite_settings.json 파일 및 Google Sheet에서 영속 설정값을 로드"""
+    """infinite_settings.json 파일에서 로컬 영속 설정값을 로드 (구글 시트 동기화는 앱 기동 후 명시적 호출)"""
     _settings = {}
 
     # 1. 로컬 JSON 파일에서 로드
@@ -173,9 +173,6 @@ def _load_persistent_settings():
     if _settings:
         _apply_settings(_settings)
 
-    # 2. Google Sheet 'Settings' 워크시트에서 우선 로드
-    load_settings_from_google_sheet()
 
-
-# 모듈 로드 시 영속 설정 반영
+# 모듈 로드 시 로컬 영속 설정 반영 (구글 시트 동기화는 import 완료 후 별도 실행)
 _load_persistent_settings()

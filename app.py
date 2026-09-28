@@ -40,6 +40,11 @@ if "nav_page" not in st.session_state or st.session_state["nav_page"] not in ["d
 @st.cache_resource
 def get_system_scheduler():
     config.sync_settings_from_google_sheet()
+    try:
+        from core.config.infinite import load_settings_from_google_sheet as load_infinite_sheet_settings
+        load_infinite_sheet_settings()
+    except Exception as e_inf:
+        config.logger.debug(f"무한매수 구글 시트 설정 동기화 생략: {e_inf}")
     return start_scheduler()
 
 try:

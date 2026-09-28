@@ -12,6 +12,15 @@ logger = logging.getLogger("GoogleSheetManager")
 
 def _get_config_val(name: str, default: Any = None) -> Any:
     try:
+        import sys
+        for mod_name in ("core.config.infinite", "core.config.common", "config"):
+            mod = sys.modules.get(mod_name)
+            if mod and hasattr(mod, name):
+                val = getattr(mod, name)
+                if val is not None:
+                    return val
+        if name in os.environ:
+            return os.environ[name]
         import config
         return getattr(config, name, default)
     except Exception:
