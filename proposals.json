@@ -1,38 +1,11 @@
 {
-  "generated_at": "2026-09-17 08:48:36",
+  "generated_at": "-",
   "screening_type": "CLOSING_BUY_1510",
   "buy_proposals": [],
-  "last_recommended_proposals": [
-    {
-      "code": "373220",
-      "name": "LG에너지솔루션",
-      "current_price": 367000.0,
-      "change_rate": 0.0,
-      "score": 68,
-      "trend_score": 25,
-      "supply_score": 20,
-      "momentum_score": 15,
-      "futures_score": 8,
-      "has_futures": true,
-      "market_basis": 500.0,
-      "is_contango": true,
-      "reasons": [
-        "📊 이동평균 정배열 지속 (MA5 > MA20 > MA60) (+15점)",
-        "🟢 20일선 상회 유지 (종가 > MA20) (+10점)",
-        "🔥 수급 필수 게이트 통과 (대량 거래량 폭발) (+15점)",
-        "📈 RSI 및 볼린저밴드 상단 모멘텀 상승 (+15점)"
-      ],
-      "recommended_qty": 1,
-      "estimated_amount": 367000.0,
-      "strategy": "momentum",
-      "strategy_name": "momentum",
-      "strategy_display_name": "모멘텀 추세추종",
-      "buy_type": "신규매수"
-    }
-  ],
-  "last_recommended_at": "2026-09-03 15:15:00",
+  "last_recommended_proposals": [],
+  "last_recommended_at": "-",
   "top_candidates": [],
   "sell_proposals": [],
   "holdings_count": 0,
-  "status": "READY"
+  "status": "EMPTY"
 }

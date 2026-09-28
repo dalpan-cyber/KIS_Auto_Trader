@@ -209,19 +209,24 @@ def render_screener(api, screener, proposals, holding_codes):
     buy_list = proposals.get("buy_proposals", [])
     last_recommended = proposals.get("last_recommended_proposals", [])
     last_rec_at = proposals.get("last_recommended_at", "-")
+    generated_at = proposals.get("generated_at", "-")
 
     if buy_list:
         st.subheader(f"🚀 당일 15:10 종가 매수 추천 종목 ({len(buy_list)}건)")
+        st.caption(f"⏰ 스크리닝 분석 완료: `{generated_at}`")
         for idx, item in enumerate(buy_list):
             _render_buy_card(api, screener, item, idx, holding_codes, key_prefix="today_buy", is_last_recommended=False)
     else:
-        st.info("💡 오늘(15:10) 신규 매수 추천 기준(총점 60점 이상 & 수급 필수 게이트 충족)에 도달한 종목은 없습니다.")
+        gen_text = f"`{generated_at}`" if generated_at != "-" else "미실행"
+        st.info(f"💡 최근 스크리닝 분석({gen_text}): 신규 매수 추천 기준(총점 60점 이상 & 수급 필수 게이트 충족)에 도달한 종목이 없습니다.")
         if last_recommended:
             st.markdown("---")
-            st.subheader("📌 마지막(최근) 15:10 종가 매수 추천 종목")
-            st.caption(f"가장 최근 스크리닝(**{last_rec_at}**)에서 매수 추천되었던 종목입니다. 현재가 및 기술적 지표 흐름을 참고하여 원클릭으로 주문할 수 있습니다.")
+            st.subheader(f"📌 이전 추천 종목 이력 (과거 추천 일시: {last_rec_at})")
+            st.caption(f"이 목록은 과거(**{last_rec_at}**) 스크리닝에서 매수 추천되었던 종목 이력입니다. 당일 추천 종목이 없을 때 참고용으로 표시되며, 현재 주가 및 지표 흐름을 고려하여 판단할 수 있습니다.")
             for idx, item in enumerate(last_recommended):
                 _render_buy_card(api, screener, item, idx, holding_codes, key_prefix="last_rec", is_last_recommended=True)
+        else:
+            st.caption("ℹ️ 보관된 이전 매수 추천 이력이 없습니다.")
 
     # 관망 후보 Top 3
     top_candidates = proposals.get("top_candidates", [])

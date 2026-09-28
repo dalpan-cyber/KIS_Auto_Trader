@@ -806,23 +806,26 @@ class StockScreener:
         return ok
 
     @staticmethod
-    def load_proposals() -> Dict[str, Any]:
+    def load_proposals(force_sheet_sync: bool = True) -> Dict[str, Any]:
+        """
+        스크리닝 제안서 데이터 로드
+        (Google Sheet 연결 가능 시 최신 ProposalsState 워크시트를 최우선으로 반영)
+        """
         data = safe_load_json(PROPOSALS_FILE, default={})
-        
-        # 1. 로컬 proposals.json 에 매수추천/최근추천/관망후보 데이터가 비어있는 경우 (Streamlit Cloud 재부팅 등)
-        has_content = bool(data.get("buy_proposals") or data.get("last_recommended_proposals") or data.get("top_candidates"))
-        if not has_content:
+
+        # 1. Google Sheet 우선 로딩 (Sheet-First): 연결되어 있고 데이터가 있으면 로컬 데이터보다 최우선 반영
+        if force_sheet_sync:
             try:
                 from google_sheet_manager import get_sheet_manager
                 sheet_mgr = get_sheet_manager()
                 if sheet_mgr.is_connected:
                     sheet_data = sheet_mgr.read_proposals_state_from_sheet()
-                    if sheet_data and (sheet_data.get("buy_proposals") or sheet_data.get("last_recommended_proposals") or sheet_data.get("top_candidates")):
+                    if sheet_data and (sheet_data.get("buy_proposals") is not None or sheet_data.get("last_recommended_proposals") is not None or sheet_data.get("generated_at")):
                         data.update(sheet_data)
                         atomic_save_json(PROPOSALS_FILE, data)
-                        logging.getLogger("Screener").info("Google Sheet로부터 스크리닝 상태(ProposalsState) 복원 완료")
+                        logging.getLogger("Screener").debug("📊 Google Sheet로부터 최신 스크리닝 상태(ProposalsState) 동기화 완료")
             except Exception as e:
-                logging.getLogger("Screener").debug(f"Google Sheet ProposalsState 복원 생략: {e}")
+                logging.getLogger("Screener").debug(f"Google Sheet ProposalsState 동기화 생략: {e}")
 
         # 2. 여전히 데이터가 비어있다면 git에 포함된 proposals_fallback.json에서 복원 시도
         if not bool(data.get("buy_proposals") or data.get("last_recommended_proposals") or data.get("top_candidates")):
@@ -835,7 +838,7 @@ class StockScreener:
 
         # 기본 필드 구조 보장
         data.setdefault("generated_at", "-")
-        data.setdefault("screening_type", "CLOSING_BUY_1515")
+        data.setdefault("screening_type", "CLOSING_BUY_1510")
         data.setdefault("buy_proposals", [])
         data.setdefault("last_recommended_proposals", [])
         data.setdefault("last_recommended_at", "-")
