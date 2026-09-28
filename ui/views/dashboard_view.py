@@ -645,7 +645,8 @@ def render_performance_tab(api):
                     "매도금액(원)": v["sell_amount"],
                     "매수수량": v["buy_qty"],
                     "매도수량": v["sell_qty"],
-                    "실현손익(원)": v["profit"]
+                    "실현손익(원)": v["profit"],
+                    "매칭구분": v.get("match_status", "정상 매칭")
                 }
                 for k, v in sold_stocks.items()
             ])
@@ -665,6 +666,18 @@ def render_performance_tab(api):
 
                 if "실현손익(원)" in row.index:
                     styles[row.index.get_loc("실현손익(원)")] = style_str
+
+                if "매칭구분" in row.index:
+                    m_val = str(row.get("매칭구분", ""))
+                    if "과거매수" in m_val:
+                        styles[row.index.get_loc("매칭구분")] = "color: #10b981; font-weight: 600;"
+                    elif "평단가" in m_val:
+                        styles[row.index.get_loc("매칭구분")] = "color: #f59e0b; font-weight: 600;"
+                    elif "미매칭" in m_val:
+                        styles[row.index.get_loc("매칭구분")] = "color: #ef4444; font-weight: 700;"
+                    else:
+                        styles[row.index.get_loc("매칭구분")] = "color: #94a3b8;"
+
                 return styles
 
             styled_pbs = pbs_df.style.apply(_style_realized_profit, axis=1)

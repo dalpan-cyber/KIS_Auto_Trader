@@ -2176,7 +2176,13 @@ class KISApiClient:
         )
 
 
-    def get_order_history(self, start_date: Optional[str] = None, end_date: Optional[str] = None) -> List[Dict[str, Any]]:
+    def get_order_history(
+        self,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        code: Optional[str] = None,
+        buy_sell_dvsn: str = "00"
+    ) -> List[Dict[str, Any]]:
         """주문 및 체결 내역 조회 (TTTC8001R / VTTC8001R)"""
         url = f"{self.url_base}/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
         tr_id = "VTTC8001R" if self.is_mock else "TTTC8001R"
@@ -2188,9 +2194,9 @@ class KISApiClient:
             "ACNT_PRDT_CD": self.acnt_prdt_cd,
             "INQR_STRT_DT": start_str,
             "INQR_END_DT": end_str,
-            "SLL_BUY_DVSN_CD": "00",
+            "SLL_BUY_DVSN_CD": buy_sell_dvsn,
             "INQR_DVSN": "00",
-            "PDNO": "",
+            "PDNO": code or "",
             "CCLD_DVSN": "00",
             "ORD_GNO_BRNO": "",
             "ODNO": "",
@@ -2306,6 +2312,74 @@ class KISApiClient:
                         if buy_order["qty"] <= 0:
                             buy_queue.pop(0)
 
+            unmatched_sell_qty = sell_qty - buy_qty_matched
+            match_status = "정상 매칭"
+
+            # Step 2: 매도 수량이 매수 수량보다 많은 경우, 조회 시작일 이전의 과거 매수 내역 자동 역추적 (Auto-Backfill)
+            if unmatched_sell_qty > 0 and start_date:
+                try:
+                    start_dt = datetime.datetime.strptime(str(start_date).strip(), "%Y%m%d").date()
+                    # 90일 단위로 최대 2개 구간(총 180일 전까지) 역추적
+                    backfill_orders = []
+                    for chunk_idx in range(2):
+                        chunk_end = start_dt - datetime.timedelta(days=1 + chunk_idx * 90)
+                        chunk_start = start_dt - datetime.timedelta(days=(chunk_idx + 1) * 90)
+                        c_orders = self.get_order_history(
+                            start_date=chunk_start.strftime("%Y%m%d"),
+                            end_date=chunk_end.strftime("%Y%m%d"),
+                            code=code,
+                            buy_sell_dvsn="02"  # 매수만 조회
+                        )
+                        if c_orders:
+                            backfill_orders.extend(c_orders)
+
+                        total_backfilled_qty = sum(o.get("ccld_qty", 0) for o in backfill_orders if o.get("buy_sell") == "매수")
+                        if total_backfilled_qty >= unmatched_sell_qty:
+                            break
+
+                    if backfill_orders:
+                        # 과거 매수 주문 시간순 정렬 (FIFO)
+                        backfill_orders.sort(key=lambda o: (o.get("order_date", "") or "", o.get("order_time", "") or ""))
+                        matched_in_backfill = 0
+                        for bo in backfill_orders:
+                            if bo.get("buy_sell") == "매수" and bo.get("ccld_qty", 0) > 0:
+                                b_qty = bo.get("ccld_qty", 0)
+                                b_prc = bo.get("ccld_price", 0)
+                                match_qty = min(b_qty, unmatched_sell_qty)
+                                buy_amount_matched += match_qty * b_prc
+                                buy_qty_matched += match_qty
+                                unmatched_sell_qty -= match_qty
+                                matched_in_backfill += match_qty
+                                if unmatched_sell_qty <= 0:
+                                    break
+                        if matched_in_backfill > 0:
+                            match_status = "과거매수 자동매칭"
+                except Exception as e_backfill:
+                    self.logger.warning(f"[{code}] 과거 매수 내역 역추적 실패: {e_backfill}")
+
+            # Step 3: 그래도 매수 수량이 부족한 경우, 포지션 트래커(positions_state.json)의 평단가로 폴백
+            if unmatched_sell_qty > 0:
+                try:
+                    from core.storage import safe_load_json
+                    pos_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "positions_state.json")
+                    if not os.path.exists(pos_file):
+                        pos_file = "positions_state.json"
+                    pos_state = safe_load_json(pos_file, default={})
+                    code_6 = str(code).strip().zfill(6)
+                    stock_pos = pos_state.get(code_6, {}) or pos_state.get(str(code).strip(), {})
+                    avg_buy_price = float(stock_pos.get("avg_buy_price", 0.0))
+
+                    if avg_buy_price > 0:
+                        buy_amount_matched += unmatched_sell_qty * avg_buy_price
+                        buy_qty_matched += unmatched_sell_qty
+                        match_status = "진입평단가 보정" if match_status == "정상 매칭" else f"{match_status}+평단가보정"
+                        unmatched_sell_qty = 0
+                except Exception as e_pos:
+                    self.logger.warning(f"[{code}] 포지션 평단가 폴백 실패: {e_pos}")
+
+            if unmatched_sell_qty > 0:
+                match_status = f"일부 미매칭({unmatched_sell_qty}주 누락)"
+
             if sell_qty > 0:
                 profit = sell_amount - buy_amount_matched
                 profit_by_stock[code] = {
@@ -2314,7 +2388,9 @@ class KISApiClient:
                     "sell_amount": sell_amount,
                     "buy_qty": buy_qty_matched,
                     "sell_qty": sell_qty,
-                    "profit": profit
+                    "profit": profit,
+                    "match_status": match_status,
+                    "unmatched_qty": unmatched_sell_qty
                 }
                 realized_profit += profit
                 realized_buy_total += buy_amount_matched
@@ -2326,7 +2402,9 @@ class KISApiClient:
                     "sell_amount": 0.0,
                     "buy_qty": 0,
                     "sell_qty": 0,
-                    "profit": 0.0
+                    "profit": 0.0,
+                    "match_status": "해당 없음",
+                    "unmatched_qty": 0
                 }
 
         return {
