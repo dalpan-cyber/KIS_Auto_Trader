@@ -273,7 +273,8 @@ def render_stock_detail(symbol: str, bot: TraderBot):
             if st.button("시작일 저장", key=f"sd_save_{symbol}", width="stretch"):
                 new_sd_str = new_sd.strftime("%Y-%m-%d")
                 bot.infinite_state_mgr.update_start_date(symbol, new_sd_str)
-                st.success(f"전략 시작일이 {new_sd_str}로 변경되었습니다.")
+                st.success(f"전략 시작일이 {new_sd_str}로 저장되었습니다 (구글 시트 State 워크시트 실시간 동기화).")
+                time.sleep(1.0)
                 st.rerun()
 
     # 일시중지 상태 안내 배너

@@ -35,7 +35,7 @@ class InfiniteStateManager:
                 import config
                 config.load_settings_from_google_sheet(gss_instance=self.gss_mgr)
                 self._sync_states_with_config()
-                # 구글 시트 State 워크시트에서 진행 회차/상태 복원 (Streamlit Cloud 컨테이너 재시작 시 보존)
+                # 구글 시트 State 워크시트에서 진행 회차/상태/시작일 복원 (Streamlit Cloud 컨테이너 재시작 시 보존)
                 sheet_states = self.gss_mgr.read_states_from_sheet()
                 if sheet_states:
                     modified = False
@@ -46,6 +46,11 @@ class InfiniteStateManager:
                                 modified = True
                             if s_st.get("status") and s_st.get("status") != "IDLE" and self.states[sym].get("status") == "IDLE":
                                 self.states[sym]["status"] = s_st["status"]
+                                modified = True
+                            # 구글 시트에 저장된 유효한 시작일 복원 (Streamlit Cloud 재부팅 시 영속화)
+                            sheet_sd = str(s_st.get("start_date", "")).strip()
+                            if sheet_sd and sheet_sd not in ("-", "", "None") and self.states[sym].get("start_date") != sheet_sd:
+                                self.states[sym]["start_date"] = sheet_sd
                                 modified = True
                         else:
                             self.states[sym] = s_st
@@ -192,10 +197,11 @@ class InfiniteStateManager:
         self.save_state()
 
     def update_start_date(self, symbol: str, start_date: str):
-        """전략 시작일 업데이트"""
+        """전략 시작일 업데이트 및 구글 시트 State 워크시트 즉시 영속화"""
         state = self.get_symbol_state(symbol)
-        state["start_date"] = start_date
+        state["start_date"] = str(start_date).strip()
         self.save_state()
+        logger.info(f"📅 [{symbol}] 무한매수 전략 시작일 변경 완료: {start_date} (구글 시트 State 실시간 동기화)")
 
     def update_settings(
         self,
@@ -249,9 +255,9 @@ class InfiniteStateManager:
         self.save_state()
 
     def start_buying(self, symbol: str):
-        """수동 무한매수 시작 (상태를 BUYING으로 설정, 0회차 시 시작일 자동 갱신)"""
+        """수동 무한매수 시작 (상태를 BUYING으로 설정, 미지정 시에만 시작일 자동 갱신)"""
         state = self.get_symbol_state(symbol)
-        if state.get("current_round", 0) == 0:
+        if state.get("current_round", 0) == 0 and (not state.get("start_date") or state.get("start_date") in ("-", "None", "")):
             state["start_date"] = datetime.now().strftime("%Y-%m-%d")
         state["status"] = "BUYING"
         logger.info(f"▶ [{symbol}] 무한매수 매매 루프 수동 시작! (상태: BUYING, 시작일: {state.get('start_date')})")
@@ -335,9 +341,9 @@ class InfiniteStateManager:
         return min(float(division), max(0.5, calc_round))
 
     def advance_round(self, symbol: str, round_inc: float = 0.5):
-        """매수 주문 접수/체결 시 진행 회차 증가 (새 사이클 시작 시 시작일 자동 최신화)"""
+        """매수 주문 접수/체결 시 진행 회차 증가 (미지정 시에만 시작일 자동 최신화)"""
         state = self.get_symbol_state(symbol)
-        if state.get("current_round", 0) == 0:
+        if state.get("current_round", 0) == 0 and (not state.get("start_date") or state.get("start_date") in ("-", "None", "")):
             state["start_date"] = datetime.now().strftime("%Y-%m-%d")
         state["current_round"] = min(state.get("division_count", 40), state.get("current_round", 0) + round_inc)
         state["status"] = "BUYING"
