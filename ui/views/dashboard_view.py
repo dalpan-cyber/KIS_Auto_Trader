@@ -639,10 +639,11 @@ def render_performance_tab(api):
             st.session_state["last_perf_cache_key"] = cache_key
 
     # 캐시된 결과 확인
-    perf_data = st.session_state.get(cache_key) or (
-        st.session_state.get(st.session_state.get("last_perf_cache_key", ""))
-        if not btn_search else None
-    )
+    perf_data = st.session_state.get(cache_key)
+    if not perf_data and not btn_search:
+        last_key = st.session_state.get("last_perf_cache_key")
+        if last_key and isinstance(last_key, str) and last_key.strip():
+            perf_data = st.session_state.get(last_key)
 
     if not perf_data:
         st.info("💡 상단의 조회 기간을 설정하신 후 **[🔍 손익 분석 조회]** 버튼을 누르시면 기간별 매매 내역과 실현/미실현 손익을 정밀 계산하여 표시합니다.")
