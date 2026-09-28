@@ -632,7 +632,7 @@ class StockScreener:
 
         return urgent_sells
 
-    def check_sell_signals_now(self, fast_mode: bool = False) -> Dict[str, Any]:
+    def check_sell_signals_now(self, fast_mode: bool = False, *args, **kwargs) -> Dict[str, Any]:
         """장중 실시간 매도 신호 분석 및 제안서 갱신 (fast_mode=True: 손절/익절/트레일링스탑 고속 감시)"""
         mode_label = "초고속 리스크 감시(손익·트레일링스탑)" if fast_mode else "정밀 매도 신호 재분석"
         self.logger.info(f"=== 보유 주식 실시간 {mode_label} 시작 ===")

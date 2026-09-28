@@ -61,8 +61,8 @@ token_ok = api.get_access_token()
 if not token_ok:
     st.warning("⚠️ KIS API 토큰 발급에 실패했습니다. 네트워크 및 API 키 설정을 확인하세요.")
 
-# 국내 퀀트 스크리너 인스턴스
-if "screener" not in st.session_state:
+# 국내 퀀트 스크리너 인스턴스 (모듈 갱신 시 자동 재할당)
+if "screener" not in st.session_state or type(st.session_state.get("screener")) is not StockScreener:
     st.session_state["screener"] = StockScreener(api)
 screener = st.session_state["screener"]
 
@@ -74,7 +74,18 @@ def realtime_detection_fragment():
     if now_ts - last_check >= 300:
         st.session_state["last_realtime_check"] = now_ts
         with st.spinner("⚡ 5분 주기 고속 리스크 감시 중 (손익·트레일링스탑)..."):
-            updated = screener.check_sell_signals_now(fast_mode=True)
+            active_screener = st.session_state.get("screener")
+            if active_screener is None or type(active_screener) is not StockScreener:
+                active_screener = StockScreener(api)
+                st.session_state["screener"] = active_screener
+            try:
+                updated = active_screener.check_sell_signals_now(fast_mode=True)
+            except TypeError:
+                # 핫리로드 직후 남아있던 구버전 인스턴스 즉시 갱신
+                active_screener = StockScreener(api)
+                st.session_state["screener"] = active_screener
+                updated = active_screener.check_sell_signals_now(fast_mode=True)
+
             st.session_state["last_check_time"] = now_str("%H:%M:%S")
             st.success(f"⚡ 고속 감시 완료: {len(updated.get('sell_proposals', []))}건의 리스크 신호 감지")
             time.sleep(1)
