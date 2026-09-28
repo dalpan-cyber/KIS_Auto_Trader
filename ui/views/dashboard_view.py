@@ -331,6 +331,7 @@ def render_risk_tab(api, screener, holdings, proposals, realtime_detection_fragm
             help="5분 주기로 차트 조회 없이 잔고 기반 긴급 손절, 목표 익절, 트레일링 스탑을 초고속(<1초) 감시합니다."
         )
     with col_btn2:
+        sub_c1, sub_c2 = st.columns(2)
         with sub_c1:
             if st.button("⚡ 고속 체크", key="btn_fast_check", width="stretch", help="손절/익절/트레일링스탑 리스크 신호를 즉시 검사합니다 (소요시간 < 1초)."):
                 with st.spinner("리스크 신호 고속 분석 중..."):
