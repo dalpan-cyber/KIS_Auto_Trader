@@ -193,7 +193,8 @@ def _render_buy_card(api, screener, item, idx, holding_codes, key_prefix="buy", 
                 api_client=api,
                 screener_engine=screener,
                 code=item["code"],
-                name=item["name"]
+                name=item["name"],
+                chart_key=f"{key_prefix}_{idx}_{item['code']}"
             )
         st.divider()
 
@@ -277,5 +278,6 @@ def render_screener(api, screener, proposals, holding_codes):
                         api_client=api,
                         screener_engine=screener,
                         code=item["code"],
-                        name=item["name"]
+                        name=item["name"],
+                        chart_key=f"top_cand_{idx}_{item['code']}"
                     )

@@ -362,10 +362,18 @@ CUSTOM_CSS = """
 """
 
 def apply_custom_styles():
+    st.session_state["_active_chart_keys"] = {}
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
-def render_interactive_stock_chart(api_client, screener_engine, code: str, name: str, avg_buy_price: Optional[float] = None, profit_rate: Optional[float] = None):
+def render_interactive_stock_chart(api_client, screener_engine, code: str, name: str, avg_buy_price: Optional[float] = None, profit_rate: Optional[float] = None, chart_key: Optional[str] = None):
     """보유 종목 및 추천 종목의 실시간 캔들 차트, 이동평균선, 볼린저밴드, 거래량, RSI 시각화 렌더러 (60초 세션 캐시 적용)"""
+    # 고유 element key 생성 (중복 렌더링 시 StreamlitDuplicateElementId 방지)
+    base_key = chart_key or f"chart_{code}"
+    active_keys = st.session_state.setdefault("_active_chart_keys", {})
+    count = active_keys.get(base_key, 0)
+    active_keys[base_key] = count + 1
+    final_key = base_key if count == 0 else f"{base_key}_{count}"
+
     cache_key = f"chart_{code}_{avg_buy_price}_{profit_rate}"
     chart_cache = st.session_state.setdefault("_stock_chart_cache", {})
     now_ts = time.time()
@@ -377,7 +385,10 @@ def render_interactive_stock_chart(api_client, screener_engine, code: str, name:
             fig = cached_data["fig"]
             latest = cached_data["latest"]
             prev_rsi = cached_data["prev_rsi"]
-            st.plotly_chart(fig, width="stretch")
+            try:
+                st.plotly_chart(fig, use_container_width=True, key=final_key)
+            except TypeError:
+                st.plotly_chart(fig, width="stretch", key=final_key)
             m1, m2, m3, m4, m5 = st.columns(5)
             with m1:
                 st.metric("현재가", f"{latest['close']:,.0f}원", delta=f"{latest.get('change_rate', 0):+.2f}%")
@@ -392,6 +403,9 @@ def render_interactive_stock_chart(api_client, screener_engine, code: str, name:
             with m5:
                 st.metric("볼린저 하단 (지지선)", f"{latest['bb_lower']:,.0f}원")
             return
+
+    if not api_client or not screener_engine:
+        return
 
     with st.spinner(f"📈 {name}({code}) 실시간 일봉 차트 및 보조지표 로드 중..."):
         candles = api_client.get_daily_chart(code, count=65)
@@ -514,7 +528,10 @@ def render_interactive_stock_chart(api_client, screener_engine, code: str, name:
                 linecolor="#334155"
             )
 
-            st.plotly_chart(fig, width="stretch")
+            try:
+                st.plotly_chart(fig, use_container_width=True, key=final_key)
+            except TypeError:
+                st.plotly_chart(fig, width="stretch", key=final_key)
 
             latest = df_tech.iloc[-1]
             prev_rsi = df_tech.iloc[-2]['rsi14'] if len(df_tech) >= 2 else latest['rsi14']

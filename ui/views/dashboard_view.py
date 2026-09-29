@@ -85,7 +85,13 @@ def render_overview_tab(api, screener, summary, holdings, proposals, holding_cod
                         key="cand_chart_sel"
                     )
                     sel_c = top_cands[sel_cand_idx]
-                    render_interactive_stock_chart(api, screener, sel_c['code'], sel_c['name'])
+                    render_interactive_stock_chart(
+                        api_client=api,
+                        screener_engine=screener,
+                        code=sel_c['code'],
+                        name=sel_c['name'],
+                        chart_key=f"dash_cand_{sel_c['code']}"
+                    )
         else:
             for b in buy_list[:3]:
                 buy_tag = "🔄 추가매수" if b.get("code") in holding_codes else "🆕 신규매수"
@@ -311,7 +317,8 @@ def render_overview_tab(api, screener, summary, holdings, proposals, holding_cod
                 code=selected_h["code"],
                 name=selected_h["name"],
                 avg_buy_price=float(selected_h.get("avg_buy_price", 0)),
-                profit_rate=float(selected_h.get("profit_rate", 0))
+                profit_rate=float(selected_h.get("profit_rate", 0)),
+                chart_key=f"dash_hold_{selected_h['code']}"
             )
 
 def _get_sell_button_style(sell_type: str, is_urgent: bool) -> tuple:
@@ -740,7 +747,10 @@ def render_performance_tab(api):
             yaxis_title="실현 손익 (원)",
             margin=dict(l=20, r=20, t=40, b=20)
         )
-        st.plotly_chart(fig_profit, width="stretch")
+        try:
+            st.plotly_chart(fig_profit, use_container_width=True, key="dash_profit_summary_chart")
+        except TypeError:
+            st.plotly_chart(fig_profit, width="stretch", key="dash_profit_summary_chart")
     else:
         st.info("선택 기간 내 매도 완료된 종목이 없습니다.")
 

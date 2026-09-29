@@ -566,9 +566,9 @@ def render_stock_detail(symbol: str, bot: TraderBot):
         )
 
         try:
-            st.plotly_chart(fig, width="stretch")
+            st.plotly_chart(fig, use_container_width=True, key=f"infinite_chart_{symbol}")
         except TypeError:
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch", key=f"infinite_chart_{symbol}")
     else:
         if chart_data:
             df_c = pd.DataFrame(chart_data)
@@ -1314,7 +1314,7 @@ def _render_completed_trades_tab(bot: TraderBot):
             paper_bgcolor="#1e293b",
             plot_bgcolor="#0f172a"
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, key="infinite_pnl_summary_chart")
 
     # 3. 상세 내역 테이블
     st.markdown("### 📋 완료된 매매 상세 내역")

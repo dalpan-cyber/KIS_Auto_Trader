@@ -247,7 +247,10 @@ def render_backtest():
                     hovermode="x unified",
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
                 )
-                st.plotly_chart(fig, width="stretch")
+                try:
+                    st.plotly_chart(fig, use_container_width=True, key="backtest_result_chart")
+                except TypeError:
+                    st.plotly_chart(fig, width="stretch", key="backtest_result_chart")
 
             # -------------------------------------------------------------
             # [매매 내역 테이블]
