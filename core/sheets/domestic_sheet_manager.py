@@ -9,7 +9,7 @@ import datetime
 from typing import Dict, Any, List, Optional
 
 from core.sheets.base_sheet import BaseSheetManager, GSPREAD_AVAILABLE
-from time_utils import now_str
+import time_utils
 import app_config as config
 
 logger = logging.getLogger("DomesticSheetManager")
@@ -123,7 +123,7 @@ class DomesticSheetManager(BaseSheetManager):
             return False
 
         try:
-            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            now_str = time_utils.now_str()
             rows = []
             for key, val in settings.items():
                 if isinstance(val, (dict, list)):
@@ -197,7 +197,7 @@ class DomesticSheetManager(BaseSheetManager):
             return False
 
         try:
-            now_str = proposals_data.get("updated_at") or datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            now_str = proposals_data.get("updated_at") or time_utils.now_str()
             buy_proposals = proposals_data.get("buy_proposals", [])
             sell_proposals = proposals_data.get("sell_proposals", [])
 
@@ -262,7 +262,7 @@ class DomesticSheetManager(BaseSheetManager):
             return False
 
         try:
-            now_s = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            now_s = time_utils.now_str()
             meta = {
                 "generated_at": proposals_data.get("generated_at", now_s),
                 "screening_type": proposals_data.get("screening_type", "CLOSING_BUY_1515"),
@@ -329,7 +329,7 @@ class DomesticSheetManager(BaseSheetManager):
             return False
 
         try:
-            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            now_str = time_utils.now_str()
             rows = []
             for raw_code, data in positions.items():
                 code_str = str(raw_code).strip().lstrip("'")
@@ -458,7 +458,7 @@ class DomesticSheetManager(BaseSheetManager):
             return False
 
         try:
-            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            now_str = time_utils.now_str()
             rows = []
             for code, end_date in cooldown_map.items():
                 rows.append([code, str(end_date), now_str])
@@ -505,7 +505,7 @@ class DomesticSheetManager(BaseSheetManager):
             return False
 
         try:
-            now_str = trade_info.get("executed_at") or datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            now_str = trade_info.get("executed_at") or time_utils.now_str()
             row = [
                 now_str,
                 trade_info.get("side", "매수"),

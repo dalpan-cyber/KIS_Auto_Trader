@@ -7,6 +7,7 @@ import json
 import logging
 import datetime
 from typing import Dict, Any, List, Optional
+import time_utils
 
 logger = logging.getLogger("GoogleSheetManager")
 
@@ -87,7 +88,7 @@ class InfiniteSheetManager(BaseSheetManager):
             return
 
         try:
-            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            now_str = time_utils.now_str()
             try:
                 all_records = self.state_worksheet.get_all_records()
             except Exception:
@@ -166,7 +167,7 @@ class InfiniteSheetManager(BaseSheetManager):
             return
 
         try:
-            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            now_str = time_utils.now_str()
             current_prices = current_prices or {}
 
             # 기존 데이터 삭제 (헤더 제외)
@@ -220,7 +221,7 @@ class InfiniteSheetManager(BaseSheetManager):
             return
 
         try:
-            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            now_str = time_utils.now_str()
 
             # 기존 데이터 삭제 (헤더 제외)
             try:
@@ -346,7 +347,7 @@ class InfiniteSheetManager(BaseSheetManager):
             return
 
         try:
-            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            now_str = time_utils.now_str()
 
             # 1. 기존 시트 데이터 키 수집 (중복 방지)
             # NOTE: 주문번호+티커+일시만으로는 동일 주문번호의 부분체결/다중 레코드가 누락될 수 있으므로,
@@ -494,7 +495,7 @@ class InfiniteSheetManager(BaseSheetManager):
             if not self.completed_worksheet:
                 return
 
-            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            now_str = time_utils.now_str()
             total_buy_amt = qty * avg_price if qty > 0 and avg_price > 0 else 0.0
             total_sell_amt = qty * sell_price if qty > 0 and sell_price > 0 else 0.0
             pnl = total_sell_amt - total_buy_amt
@@ -504,7 +505,7 @@ class InfiniteSheetManager(BaseSheetManager):
                 now_str,
                 symbol.upper(),
                 start_date or "-",
-                end_date or datetime.date.today().strftime("%Y-%m-%d"),
+                end_date or time_utils.today().strftime("%Y-%m-%d"),
                 completed_round,
                 qty,
                 round(avg_price, 2),
@@ -560,7 +561,7 @@ class InfiniteSheetManager(BaseSheetManager):
             return False, err_msg
 
         try:
-            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            now_str = time_utils.now_str()
             headers = ["설정키", "설정값", "설명", "최종갱신시각"]
 
             # 설정 설명을 위한 매핑 dict
