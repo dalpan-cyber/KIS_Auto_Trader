@@ -102,9 +102,10 @@ def get_active_strategies(names: Optional[List[str]] = None) -> List[BaseStrateg
 
 
 # 전략 모듈 자동 로드 (등록을 위해 import)
-from core.strategy import momentum      # noqa: E402,F401
-from core.strategy import rebound       # noqa: E402,F401
-from core.strategy import monthly_trend # noqa: E402,F401
+from core.strategy import momentum        # noqa: E402,F401
+from core.strategy import rebound         # noqa: E402,F401
+from core.strategy import monthly_trend   # noqa: E402,F401
+from core.strategy import cup_and_handle  # noqa: E402,F401
 
 # =============================================================================
 # 하위 호환성을 위한 래퍼 함수 (기존 core.strategy 모듈 함수 시그니처 유지)
