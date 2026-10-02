@@ -19,14 +19,14 @@
     "start_date": "2026-09-21",
     "total_budget_usd": 5000.0,
     "division_count": 40,
-    "current_round": 4.5,
+    "current_round": 0,
     "target_roi": 0.1,
     "exhaust_action": "AUTO",
     "exhaust_target_roi": 0.05,
-    "status": "BUYING",
-    "peak_qty": 9,
+    "status": "COMPLETED",
+    "peak_qty": 0,
     "paused_sell_price": 0.0,
-    "last_avg_price": 147.0456,
+    "last_avg_price": 0.0,
     "last_completed_sell_order_no": ""
   }
 }
