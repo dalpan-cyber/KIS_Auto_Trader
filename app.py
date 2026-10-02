@@ -16,6 +16,7 @@ from ui import (
     apply_custom_styles,
     render_dashboard,
     render_screener,
+    render_stock_checker,
     render_backtest,
     render_settings,
     render_infinite
@@ -33,7 +34,7 @@ st.set_page_config(
 apply_custom_styles()
 
 # 기본 네비게이션 상태 초기화
-if "nav_page" not in st.session_state or st.session_state["nav_page"] not in ["dashboard", "infinite", "screener", "backtest", "settings"]:
+if "nav_page" not in st.session_state or st.session_state["nav_page"] not in ["dashboard", "infinite", "screener", "stock_checker", "backtest", "settings"]:
     st.session_state["nav_page"] = "dashboard"
 
 # 백그라운드 스케줄러 초기화 (앱 실행 중 1회만 등록)
@@ -123,12 +124,13 @@ with st.sidebar:
         </div>
     """, unsafe_allow_html=True)
 
-    # 5대 핵심 통합 네비게이션 메뉴
+    # 6대 핵심 통합 네비게이션 메뉴
     st.markdown("<div class='nav-header'>🧭 NAVIGATION • 메인 메뉴</div>", unsafe_allow_html=True)
     main_menu = [
         ("dashboard", "📊 국내 자산 & 포트폴리오"),
-        ("infinite", "🇺🇸 미국 라오어 무한매수법"),
         ("screener", "🎯 15:10 종가 스크리닝"),
+        ("stock_checker", "🔍 개별 종목 매수 진단"),
+        ("infinite", "🇺🇸 미국 라오어 무한매수법"),
         ("backtest", "🧪 퀀트 백테스터"),
         ("settings", "⚙️ 시스템 환경설정")
     ]
@@ -210,9 +212,9 @@ def get_cached_proposals(screener_inst: StockScreener, ttl_seconds: float = 15.0
 # 메인 뷰 라우팅 결정
 current_page = st.session_state["nav_page"]
 
-# dashboard 또는 screener 페이지에서만 국내 잔고 및 제안서 로드 (미국 무한매수/백테스트/설정 진입 시 API 호출 0회)
+# dashboard, screener, stock_checker 페이지에서만 국내 잔고 및 제안서 로드
 force_refresh = st.session_state.pop("force_refresh_balance", False)
-if current_page in ["dashboard", "screener"]:
+if current_page in ["dashboard", "screener", "stock_checker"]:
     balance_data = get_cached_account_balance(api, ttl_seconds=30.0, force=force_refresh)
     summary = balance_data.get("summary", {})
     holdings = balance_data.get("holdings", [])
@@ -237,10 +239,12 @@ current_page = st.session_state["nav_page"]
 
 if current_page == "dashboard":
     render_dashboard(api, screener, summary, holdings, proposals, holding_codes, realtime_detection_fragment)
-elif current_page == "infinite":
-    render_infinite()
 elif current_page == "screener":
     render_screener(api, screener, proposals, holding_codes)
+elif current_page == "stock_checker":
+    render_stock_checker(api, screener, holding_codes)
+elif current_page == "infinite":
+    render_infinite()
 elif current_page == "backtest":
     render_backtest()
 elif current_page == "settings":

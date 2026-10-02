@@ -3,28 +3,86 @@ KIS Auto Trading - Technical Indicators Module
 주가 데이터프레임 기반 이동평균, 볼린저 밴드, RSI, ATR 및 15:10 거래량 보정치 계산
 """
 from typing import List, Dict, Any, Optional, Union
+import datetime
 import pandas as pd
 import numpy as np
+from time_utils import now as kst_now
+
+def get_intraday_volume_scaling_factor(
+    target_time: Optional[Union[datetime.time, datetime.datetime, str]] = None
+) -> float:
+    """
+    정규장(09:00 ~ 15:30, 총 390분) 진행 시간에 맞춰
+    15:30 종가 시점에 도달할 것으로 예상되는 거래량 비례 환산 배율 계산.
+
+    - 09:00 이전: 장 시작 전이므로 1.0배
+    - 09:00 ~ 15:30:
+        경과 분수 M = max(10, (현재시간 - 09:00)) (장초 10분 클램핑으로 왜곡 방지)
+        배율 = 390.0 / M
+        예: 11:30 -> 390 / 150 = 2.60배, 15:10 -> 390 / 370 = 1.054배
+    - 15:30 이후: 장 마감 후이므로 확정 종가 거래량(1.0배)
+    """
+    if target_time is None or target_time == "15:10":
+        t = datetime.time(15, 10)
+    elif target_time == "now":
+        current_dt = kst_now()
+        t = current_dt.time()
+    elif isinstance(target_time, datetime.datetime):
+        t = target_time.time()
+    elif isinstance(target_time, datetime.time):
+        t = target_time
+    elif isinstance(target_time, str):
+        try:
+            parts = [int(p) for p in target_time.strip().split(":")[:2]]
+            t = datetime.time(parts[0], parts[1])
+        except Exception:
+            current_dt = kst_now()
+            t = current_dt.time()
+    else:
+        current_dt = kst_now()
+        t = current_dt.time()
+
+    current_minutes = t.hour * 60 + t.minute
+    market_open = 9 * 60        # 09:00 = 540
+    market_close = 15 * 60 + 30  # 15:30 = 930
+    total_market_minutes = market_close - market_open  # 390분
+
+    if current_minutes < market_open:
+        # 09:00 이전 장 시작 전
+        return 1.0
+    elif current_minutes >= market_close:
+        # 15:30 이후 장 마감
+        return 1.0
+    else:
+        # 장중: 09:00부터 경과 시간(분)
+        elapsed = current_minutes - market_open
+        # 장초반 과도한 왜곡 방지를 위해 최소 10분 클램핑
+        elapsed = max(10, elapsed)
+        scaling_factor = float(total_market_minutes) / float(elapsed)
+        return scaling_factor
+
 
 def calculate_technical_indicators(
     candles_or_df: Union[List[Dict[str, Any]], pd.DataFrame],
     is_intraday: bool = True,
-    atr_period: int = 14
+    atr_period: int = 14,
+    eval_time: Optional[Union[datetime.time, datetime.datetime, str]] = None
 ) -> Optional[pd.DataFrame]:
     """
     일봉 캔들 데이터를 바탕으로 기술적 보조지표 계산
     - 20영업일 이상 일봉 데이터 기준
     - 이동평균선: MA5, MA20, MA60
     - 거래량 이동평균: 전일까지 20일 거래량 단순 이동평균 (vol_ma20)
-    - 장중 거래량 보정치: 15:10 누적 거래량 * (390분 / 370분) ≈ 누적 거래량 * 1.054
+    - 장중 거래량 보정치: 검색/평가 시점 기준 15:30 종가 예상 거래량 환산
     - RSI(14)
     - 볼린저 밴드(20, 2): 20일 이평선 기준 ±2σ
     - ATR(14): 변동성 기반 손절 및 포지션 사이징용
 
     Args:
         candles_or_df: 캔들 리스트 또는 DataFrame
-        is_intraday: 장중 평가 여부 (True 시 15:10 거래량 1.054배 보정 적용)
+        is_intraday: 장중 평가 여부 (True 시 검색 시점 비례 종가 예상 거래량 스케일링)
         atr_period: ATR 계산 기간 (기본: 14)
+        eval_time: 평가 기준 시각 (None이면 현재 KST 시각 기준 자동 계산)
 
     Returns:
         보조지표가 추가된 pd.DataFrame 또는 데이터 부족 시 None
@@ -74,11 +132,13 @@ def calculate_technical_indicators(
     # 첫 행 등에 NaN이 남아있을 경우 현재 거래량으로 채움
     df["vol_ma20"] = df["vol_ma20"].fillna(df["volume"])
 
-    # 3. 당일 거래량 보정치 계산 (15:10 장마감 직전 평가 시 1.054배 보정)
+    # 3. 당일 거래량 보정치 계산 (검색/평가 시점 기준 15:30 종가 예상 거래량 스케일링)
     df["adjusted_volume"] = df["volume"].astype(float).copy()
     if is_intraday and len(df) > 0:
         last_idx = df.index[-1]
-        df.loc[last_idx, "adjusted_volume"] = float(df.loc[last_idx, "volume"]) * (390.0 / 370.0)
+        scaling_mult = get_intraday_volume_scaling_factor(eval_time)
+        df.loc[last_idx, "adjusted_volume"] = float(df.loc[last_idx, "volume"]) * scaling_mult
+        df.loc[last_idx, "volume_multiplier"] = scaling_mult
 
     # 4. RSI (14)
     delta = df["close"].diff()

@@ -131,11 +131,12 @@ class StockScreener:
     def calculate_technical_indicators(
         self,
         candles: List[Dict[str, Any]],
-        is_intraday: bool = True
+        is_intraday: bool = True,
+        eval_time: Optional[Any] = None
     ) -> Optional[pd.DataFrame]:
-        """일봉 캔들 데이터를 바탕으로 기술적 보조지표 계산"""
+        """일봉 캔들 데이터를 바탕으로 기술적 보조지표 계산 (eval_time 기준 거래량 스케일링)"""
         atr_period = int(config.CURRENT_SETTINGS.get("atr_period", 14))
-        return calculate_technical_indicators(candles, is_intraday=is_intraday, atr_period=atr_period)
+        return calculate_technical_indicators(candles, is_intraday=is_intraday, atr_period=atr_period, eval_time=eval_time)
 
     # =========================================================================
     # 매수 신호 평가
@@ -224,9 +225,10 @@ class StockScreener:
         held_codes: Optional[Set[str]] = None,
         is_intraday: bool = True,
         market: str = "KOSPI",
-        return_raw_eval: bool = False
+        return_raw_eval: bool = False,
+        eval_time: Optional[Any] = None
     ) -> Optional[Dict[str, Any]]:
-        """라이브 환경에서 API 데이터 수집 후 매수 신호 평가"""
+        """라이브 환경에서 API 데이터 수집 후 매수 신호 평가 (eval_time 기준 거래량 스케일링)"""
         candles = self.api.get_daily_chart(code, count=65)
 
         realtime = self.api.get_stock_price(code)
@@ -249,7 +251,7 @@ class StockScreener:
             else:
                 candles[-1].update(candle_entry)
 
-        df = self.calculate_technical_indicators(candles, is_intraday=is_intraday)
+        df = self.calculate_technical_indicators(candles, is_intraday=is_intraday, eval_time=eval_time)
         if df is not None and not df.empty and d250_hgpr > 0:
             df["d250_hgpr"] = d250_hgpr
 

@@ -7,6 +7,7 @@ from ui.views.screening_view import render_screener
 from ui.views.backtest_view import render_backtest
 from ui.views.settings_view import render_settings
 from ui.views.infinite_view import render_infinite
+from ui.views.stock_checker_view import render_stock_checker
 
 __all__ = [
     "apply_custom_styles",
@@ -16,5 +17,6 @@ __all__ = [
     "render_backtest",
     "render_settings",
     "render_infinite",
+    "render_stock_checker",
 ]
 
