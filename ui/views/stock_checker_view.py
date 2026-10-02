@@ -212,7 +212,7 @@ def render_stock_checker(api, screener, holding_codes):
     proj_vol = float(last_row.get("adjusted_volume", cum_vol))
     proj_ratio_pct = (proj_vol / vol_ma20 * 100) if vol_ma20 > 0 else 0.0
 
-    st.subheader(f"📊 {name} <small style='color:#64748b'>({code}) • {market}</small>", unsafe_allow_html=True)
+    st.markdown(f"### 📊 {name} <small style='color:#64748b'>({code}) • {market}</small>", unsafe_allow_html=True)
     m1, m2, m3, m4 = st.columns(4)
     with m1:
         st.metric(
