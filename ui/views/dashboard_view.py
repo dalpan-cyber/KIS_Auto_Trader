@@ -169,7 +169,9 @@ def render_overview_tab(api, screener, summary, holdings, proposals, holding_cod
             strat_disp = pos_info.get("strategy_display_name", "")
             s_combined = f"{strat_key} {strat_disp}".lower()
 
-            if any(k in s_combined for k in ("monthly", "월봉", "월간", "gtaa")):
+            if any(k in s_combined for k in ("cup", "handle", "컵앤핸들", "컵")):
+                strat_badge = '<span style="background:#831843;color:#fbcfe8;padding:2px 6px;border-radius:4px;font-size:0.75rem;font-weight:600;">🏆 컵앤핸들</span>'
+            elif any(k in s_combined for k in ("monthly", "월봉", "월간", "gtaa")):
                 strat_badge = '<span style="background:#7c2d12;color:#fdba74;padding:2px 6px;border-radius:4px;font-size:0.75rem;font-weight:600;">📅 월봉 10이평</span>'
             elif any(k in s_combined for k in ("rebound", "반등", "52주", "신저가")):
                 strat_badge = '<span style="background:#1e3a8a;color:#93c5fd;padding:2px 6px;border-radius:4px;font-size:0.75rem;font-weight:600;">📉 52주 반등</span>'
@@ -271,6 +273,7 @@ def render_overview_tab(api, screener, summary, holdings, proposals, holding_cod
                     "momentum": "🚀 모멘텀 추세추종",
                     "rebound": "📉 52주 신저가 반등",
                     "monthly_trend": "📅 월봉 10이평 (GTAA)",
+                    "cup_and_handle": "🏆 컵앤핸들 돌파 (Cup & Handle)",
                     "multi": "🌟 슈퍼시그널 (복수 알고리즘)",
                     "manual": "ℹ️ 일반 / 수동 매수"
                 }

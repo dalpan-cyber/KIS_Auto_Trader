@@ -393,9 +393,11 @@ class StockScreener:
                 market_regime = self.get_market_regime(market=holding.get("market", "KOSPI"))
                 self._cached_market_regime = market_regime
 
-        # 유효 설정 (시장 국면 프리셋 적용)
+        # 유효 설정 (해당 종목의 진입 전략 및 시장 국면 프리셋 적용)
+        holding_strat = self._get_holding_strategy(code)
+        strat_name = holding_strat.name if holding_strat else self.strategy.name
         regime = (market_regime or {}).get("regime", "BULL")
-        eff_settings = config.get_effective_strategy_settings(self.strategy.name, config.CURRENT_SETTINGS)
+        eff_settings = config.get_effective_strategy_settings(strat_name, config.CURRENT_SETTINGS)
         eff_settings = config.get_effective_settings_for_regime(regime, eff_settings)
 
         target_profit_rate = float(eff_settings.get("target_profit_rate", 0.05)) * 100
