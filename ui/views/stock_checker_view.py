@@ -128,10 +128,14 @@ def render_stock_checker(api, screener, holding_codes):
     m_open = 9 * 60
     m_close = 15 * 60 + 30
     
-    if t_min < m_open:
-        timing_desc = f"장 시작 전 ({cur_str}) • 보정 배율 1.00배"
+    is_weekend = (current_time_kst.weekday() >= 5)
+
+    if is_weekend:
+        timing_desc = f"주말 휴장 ({cur_str}) • 가장 최근 영업일 확정 종가 기준 분석 (보정 배율 1.00배)"
+    elif t_min < m_open:
+        timing_desc = f"장 시작 전 ({cur_str}) • 전일 확정 종가 기준 (보정 배율 1.00배)"
     elif t_min >= m_close:
-        timing_desc = f"장 마감 후 ({cur_str}) • 종가 확정 데이터 (1.00배)"
+        timing_desc = f"장 마감 후 ({cur_str}) • 당일 종가 확정 데이터 (1.00배)"
     else:
         elapsed_m = max(10, t_min - m_open)
         timing_desc = f"정규장 진행 중 ({cur_str}, 개장 후 {elapsed_m}분 경과) • 15:30 종가 예상 거래량 환산 배율: **{scaling_mult:.2f}배** (390분/{elapsed_m}분)"
@@ -177,10 +181,14 @@ def render_stock_checker(api, screener, holding_codes):
             "change_rate": chg_rate,
             "d250_hgpr": d250_high
         }
-        if not candles or candles[-1].get("date") != today_str:
-            candles.append(candle_entry)
+        if not is_weekend:
+            if not candles or candles[-1].get("date") != today_str:
+                candles.append(candle_entry)
+            else:
+                candles[-1].update(candle_entry)
         else:
-            candles[-1].update(candle_entry)
+            if candles:
+                candles[-1]["d250_hgpr"] = d250_high
 
         df = screener.calculate_technical_indicators(candles, is_intraday=True, eval_time=current_time_kst.time())
         if df is not None and not df.empty and d250_high > 0:
@@ -216,22 +224,29 @@ def render_stock_checker(api, screener, holding_codes):
     m1, m2, m3, m4 = st.columns(4)
     with m1:
         st.metric(
-            label="현재가",
+            label="현재가 (최근 종가)",
             value=f"{cur_price:,.0f}원",
             delta=f"{chg_diff:+,.0f}원 ({chg_rate:+.2f}%)"
         )
     with m2:
+        vol_m2_label = "현재 누적 거래량" if not is_weekend else "최근 거래일 거래량"
         st.metric(
-            label="현재 누적 거래량",
+            label=vol_m2_label,
             value=f"{cum_vol:,.0f}주",
-            help="검색 시점까지의 실제 누적 체결량"
+            help="실제 체결 누적량"
         )
     with m3:
+        vol_label = "종가 예상 거래량 (환산치)" if not is_weekend else "종가 기준 거래량"
+        vol_help = (
+            f"현재 거래량 × {scaling_mult:.2f}배 (전일 20일평균: {vol_ma20:,.0f}주)"
+            if not is_weekend
+            else f"주말 확정 종가 데이터 (전일 20일평균: {vol_ma20:,.0f}주)"
+        )
         st.metric(
-            label="종가 예상 거래량 (환산치)",
+            label=vol_label,
             value=f"{proj_vol:,.0f}주",
             delta=f"20일평균 대비 {proj_ratio_pct:.0f}%",
-            help=f"현재 거래량 × {scaling_mult:.2f}배 (전일 20일평균: {vol_ma20:,.0f}주)"
+            help=vol_help
         )
     with m4:
         power_str = f"{vol_power:.1f}%" if vol_power is not None else "조회불가"

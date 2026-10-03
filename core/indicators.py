@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 KIS Auto Trading - Technical Indicators Module
 주가 데이터프레임 기반 이동평균, 볼린저 밴드, RSI, ATR 및 15:10 거래량 보정치 계산
@@ -22,10 +23,15 @@ def get_intraday_volume_scaling_factor(
         예: 11:30 -> 390 / 150 = 2.60배, 15:10 -> 390 / 370 = 1.054배
     - 15:30 이후: 장 마감 후이므로 확정 종가 거래량(1.0배)
     """
+    current_dt = kst_now()
+    is_weekend = (current_dt.weekday() >= 5)
+    # 주말(토/일) 실시간 조회 시 휴장일이므로 1.0배(확정 종가 데이터) 고정
+    if is_weekend and (target_time == "now" or isinstance(target_time, datetime.time)):
+        return 1.0
+
     if target_time is None or target_time == "15:10":
         t = datetime.time(15, 10)
     elif target_time == "now":
-        current_dt = kst_now()
         t = current_dt.time()
     elif isinstance(target_time, datetime.datetime):
         t = target_time.time()
@@ -74,8 +80,7 @@ def calculate_technical_indicators(
     - 이동평균선: MA5, MA20, MA60
     - 거래량 이동평균: 전일까지 20일 거래량 단순 이동평균 (vol_ma20)
     - 장중 거래량 보정치: 검색/평가 시점 기준 15:30 종가 예상 거래량 환산
-    - RSI(14)
-    - 볼린저 밴드(20, 2): 20일 이평선 기준 ±2σ
+    - 볼린저 밴드(20, 2): 20일 이평선 기준 +- 2시그마
     - ATR(14): 변동성 기반 손절 및 포지션 사이징용
 
     Args:

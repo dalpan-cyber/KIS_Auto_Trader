@@ -236,6 +236,7 @@ class StockScreener:
 
         if realtime.get("rt_cd") == "0" and realtime.get("price", 0) > 0:
             today_str = today().strftime("%Y%m%d")
+            is_weekend = (today().weekday() >= 5)
             candle_entry = {
                 "date": today_str,
                 "close": realtime["price"],
@@ -246,10 +247,16 @@ class StockScreener:
                 "change_rate": realtime.get("prdy_ctrt", 0.0),
                 "d250_hgpr": d250_hgpr
             }
-            if not candles or candles[-1].get("date") != today_str:
-                candles.append(candle_entry)
+            if not is_weekend:
+                if not candles or candles[-1].get("date") != today_str:
+                    candles.append(candle_entry)
+                else:
+                    candles[-1].update(candle_entry)
             else:
-                candles[-1].update(candle_entry)
+                # 주말(토/일)에는 이미 마지막 캔들이 금요일(최근 영업일) 확정 데이터이므로
+                # 중복 캔들을 append하지 않고 필요한 필드(250일 최고가 등)만 보정
+                if candles:
+                    candles[-1]["d250_hgpr"] = d250_hgpr
 
         df = self.calculate_technical_indicators(candles, is_intraday=is_intraday, eval_time=eval_time)
         if df is not None and not df.empty and d250_hgpr > 0:
