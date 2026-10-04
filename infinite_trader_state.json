@@ -4,14 +4,14 @@
     "start_date": "2026-09-22",
     "total_budget_usd": 5000.0,
     "division_count": 40,
-    "current_round": 6.5,
+    "current_round": 7.0,
     "target_roi": 0.1,
     "status": "BUYING",
     "exhaust_action": "AUTO",
     "exhaust_target_roi": 0.05,
-    "peak_qty": 13,
+    "peak_qty": 14,
     "paused_sell_price": 0.0,
-    "last_avg_price": 78.3615,
+    "last_avg_price": 78.5507,
     "last_completed_sell_order_no": ""
   },
   "SOXL": {
