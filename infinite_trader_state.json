@@ -23,7 +23,7 @@
     "target_roi": 0.1,
     "exhaust_action": "AUTO",
     "exhaust_target_roi": 0.05,
-    "status": "COMPLETED",
+    "status": "BUYING",
     "peak_qty": 0,
     "paused_sell_price": 0.0,
     "last_avg_price": 0.0,
