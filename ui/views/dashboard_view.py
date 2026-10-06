@@ -51,11 +51,19 @@ def _calculate_holding_sell_conditions(h: dict, pos_info: dict) -> dict:
     strat_key = pos_info.get("strategy", "momentum")
     eff_settings = config.get_effective_strategy_settings(strat_key, getattr(config, "CURRENT_SETTINGS", {}))
 
-    tp_rate = float(eff_settings.get("target_profit_rate", 0.05))
-    sl_rate = float(eff_settings.get("stop_loss_rate", -0.035))
+    is_monthly = any(k in str(strat_key).lower() for k in ("monthly", "월봉", "gtaa"))
+    if is_monthly:
+        # 월봉 전략 기본값: 목표익절 20%, 비상손절 -7%, 트레일링 8%
+        tp_rate = float(eff_settings.get("target_profit_rate", 0.20))
+        sl_rate = float(eff_settings.get("stop_loss_rate", -0.07))
+        trailing_pct = float(eff_settings.get("trailing_stop_pct", 0.08))
+    else:
+        tp_rate = float(eff_settings.get("target_profit_rate", 0.05))
+        sl_rate = float(eff_settings.get("stop_loss_rate", -0.035))
+        trailing_pct = float(eff_settings.get("trailing_stop_pct", 0.06))
+
     if sl_rate > 0:
         sl_rate = -sl_rate
-    trailing_pct = float(eff_settings.get("trailing_stop_pct", 0.06))
 
     is_partial_sold = bool(pos_info.get("is_partial_sold", False))
     highest_p = float(pos_info.get("highest_price", max(avg_p, curr_p)) or max(avg_p, curr_p))
@@ -69,6 +77,7 @@ def _calculate_holding_sell_conditions(h: dict, pos_info: dict) -> dict:
 
     return {
         "is_overseas": is_overseas,
+        "is_monthly": is_monthly,
         "unit": unit,
         "avg_price": avg_p,
         "current_price": curr_p,
@@ -237,7 +246,15 @@ def render_overview_tab(api, screener, summary, holdings, proposals, holding_cod
                 strat_badge = '<span style="background:#334155;color:#94a3b8;padding:2px 6px;border-radius:4px;font-size:0.75rem;font-weight:600;">ℹ️ 일반/수동</span>'
 
             cond = _calculate_holding_sell_conditions(h, pos_info)
-            if cond["is_partial_sold"]:
+            if cond.get("is_monthly"):
+                cond_cell = f"""
+                    <div style="font-size:0.75rem;line-height:1.35;white-space:nowrap;">
+                        <span style="color:#fdba74;font-weight:700;">📉 월봉 10이평 하향이탈 시 전량 매도</span><br>
+                        <span style="color:#10b981;font-weight:600;">🎯 익절: {cond['tp_text']} <span style="font-size:0.7rem;color:#6ee7b7;">(트레일링 -{cond['trailing_pct']*100:.1f}%)</span></span><br>
+                        <span style="color:#ef4444;font-weight:600;">🚨 비상손절: {cond['sl_text']}</span>
+                    </div>
+                """
+            elif cond["is_partial_sold"]:
                 cond_cell = f"""
                     <div style="font-size:0.75rem;line-height:1.35;white-space:nowrap;">
                         <span style="color:#c084fc;font-weight:700;">🏆 2차 러너 (잔여)</span><br>
