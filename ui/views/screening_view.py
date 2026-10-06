@@ -102,12 +102,13 @@ def _render_buy_card(api, screener, item, idx, holding_codes, key_prefix="buy", 
                 label_visibility="collapsed"
             )
             
+            safe_live_price = max(100, int(live_price) if live_price else 100)
             if ord_type == "지정가":
                 target_price = st.number_input(
                     "지정가(원)",
                     min_value=100,
                     max_value=10000000,
-                    value=int(live_price),
+                    value=safe_live_price,
                     step=100,
                     key=f"{key_prefix}_price_{item['code']}_{idx}"
                 )
@@ -117,17 +118,18 @@ def _render_buy_card(api, screener, item, idx, holding_codes, key_prefix="buy", 
                     "LOC 상한가(원)",
                     min_value=100,
                     max_value=10000000,
-                    value=int(live_price),
+                    value=safe_live_price,
                     step=100,
                     key=f"{key_prefix}_price_{item['code']}_{idx}"
                 )
                 st.caption("🛡️ 종가가 상한가 이하일 때만 종가로 자동 체결")
             else:
-                target_price = int(live_price)
+                target_price = safe_live_price
                 st.caption("⚡ 종가 시장가 즉시 체결")
 
         with c3:
-            rec_qty = item.get("recommended_qty", 1)
+            raw_rec_qty = item.get("recommended_qty", 1)
+            rec_qty = max(1, int(raw_rec_qty or 1))
             order_qty = st.number_input(
                 "수량(주)",
                 min_value=1,
@@ -137,6 +139,8 @@ def _render_buy_card(api, screener, item, idx, holding_codes, key_prefix="buy", 
             )
             est_amt = order_qty * target_price
             st.write(f"예상 주문액: **{est_amt:,.0f}원**")
+            if int(raw_rec_qty or 0) <= 0:
+                st.caption("⚠️ 가용 예수금 부족으로 추천 수량이 0주였으나, 주문 입력을 위해 기본값 1주로 설정되었습니다.")
         
         with c4:
             st.write("")
