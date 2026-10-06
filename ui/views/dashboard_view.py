@@ -35,6 +35,58 @@ def _extract_change_rate(h: dict) -> float:
         return (diff / (curr - diff)) * 100.0
     return 0.0
 
+def _calculate_holding_sell_conditions(h: dict, pos_info: dict) -> dict:
+    """보유 종목별 1차 익절, 2차 익절(추세추종), 손절 조건 계산"""
+    try:
+        import app_config as config
+    except ImportError:
+        import config
+
+    code = str(h.get("code", "")).strip().lstrip("'")
+    is_overseas = not (code.isdigit() and len(code) == 6)
+    curr_p = float(h.get("current_price", 0.0) or 0.0)
+    avg_p = float(h.get("avg_buy_price", h.get("avg_price", 0.0)) or 0.0)
+
+    pos_info = pos_info or {}
+    strat_key = pos_info.get("strategy", "momentum")
+    eff_settings = config.get_effective_strategy_settings(strat_key, getattr(config, "CURRENT_SETTINGS", {}))
+
+    tp_rate = float(eff_settings.get("target_profit_rate", 0.05))
+    sl_rate = float(eff_settings.get("stop_loss_rate", -0.035))
+    if sl_rate > 0:
+        sl_rate = -sl_rate
+    trailing_pct = float(eff_settings.get("trailing_stop_pct", 0.06))
+
+    is_partial_sold = bool(pos_info.get("is_partial_sold", False))
+    highest_p = float(pos_info.get("highest_price", max(avg_p, curr_p)) or max(avg_p, curr_p))
+
+    tp_price = avg_p * (1.0 + tp_rate) if avg_p > 0 else 0.0
+    sl_price = avg_p * (1.0 + sl_rate) if avg_p > 0 else 0.0
+    ts_price = highest_p * (1.0 - trailing_pct) if highest_p > 0 else 0.0
+
+    unit = "$" if is_overseas else "원"
+    fmt = "{:,.2f}" if is_overseas else "{:,.0f}"
+
+    return {
+        "is_overseas": is_overseas,
+        "unit": unit,
+        "avg_price": avg_p,
+        "current_price": curr_p,
+        "tp_rate": tp_rate,
+        "tp_price": tp_price,
+        "tp_text": f"{fmt.format(tp_price)}{unit} (+{tp_rate*100:.1f}%)" if tp_price > 0 else "-",
+        "sl_rate": sl_rate,
+        "sl_price": sl_price,
+        "sl_text": f"{fmt.format(sl_price)}{unit} ({sl_rate*100:.1f}%)" if sl_price > 0 else "-",
+        "trailing_pct": trailing_pct,
+        "ts_price": ts_price,
+        "ts_text": f"{fmt.format(ts_price)}{unit}" if ts_price > 0 else "-",
+        "highest_price": highest_p,
+        "is_partial_sold": is_partial_sold,
+        "strat_key": strat_key,
+        "strat_disp": pos_info.get("strategy_display_name", strat_key)
+    }
+
 def render_overview_tab(api, screener, summary, holdings, proposals, holding_codes):
     """자산 개요 탭 (Overview)"""
     st.markdown("""
@@ -184,6 +236,23 @@ def render_overview_tab(api, screener, summary, holdings, proposals, holding_cod
             else:
                 strat_badge = '<span style="background:#334155;color:#94a3b8;padding:2px 6px;border-radius:4px;font-size:0.75rem;font-weight:600;">ℹ️ 일반/수동</span>'
 
+            cond = _calculate_holding_sell_conditions(h, pos_info)
+            if cond["is_partial_sold"]:
+                cond_cell = f"""
+                    <div style="font-size:0.75rem;line-height:1.35;white-space:nowrap;">
+                        <span style="color:#c084fc;font-weight:700;">🏆 2차 러너 (잔여)</span><br>
+                        <span style="color:#cbd5e1;">고점(-{cond['trailing_pct']*100:.1f}%) or 20일선</span><br>
+                        <span style="color:#ef4444;font-weight:600;">🚨 손절: {cond['sl_text']}</span>
+                    </div>
+                """
+            else:
+                cond_cell = f"""
+                    <div style="font-size:0.75rem;line-height:1.35;white-space:nowrap;">
+                        <span style="color:#10b981;font-weight:700;">🎯 1차: {cond['tp_text']} <span style="font-size:0.7rem;color:#6ee7b7;">(50%)</span></span><br>
+                        <span style="color:#ef4444;font-weight:600;">🚨 손절: {cond['sl_text']} <span style="font-size:0.7rem;color:#fca5a5;">(전량)</span></span>
+                    </div>
+                """
+
             html_rows.append(f"""
                 <tr style="border-bottom:1px solid #1e293b;">
                     <td style="text-align:center;padding:10px 8px;">{icon_html}</td>
@@ -196,6 +265,7 @@ def render_overview_tab(api, screener, summary, holdings, proposals, holding_cod
                     <td style="text-align:right;padding:10px 8px;color:{cr_color};font-weight:600;">{cr:+.2f}%</td>
                     <td style="text-align:right;padding:10px 8px;color:{pr_color};font-weight:700;">{pr:+.2f}%</td>
                     <td style="text-align:right;padding:10px 8px;color:{pnl_color};font-weight:700;">{pnl:+,.0f}원</td>
+                    <td style="text-align:left;padding:8px 8px;">{cond_cell}</td>
                     <td style="text-align:right;padding:10px 8px;color:#f8fafc;font-weight:600;">{float(h.get('eval_amount', 0)):,.0f}원</td>
                 </tr>
             """)
@@ -240,6 +310,7 @@ def render_overview_tab(api, screener, summary, holdings, proposals, holding_cod
                     <th style="text-align:right;">당일등락률</th>
                     <th style="text-align:right;">수익률(%)</th>
                     <th style="text-align:right;">평가손익(원)</th>
+                    <th style="text-align:left;">매도 조건 (익절/손절)</th>
                     <th style="text-align:right;">평가금액(원)</th>
                 </tr>
             </thead>
@@ -252,7 +323,7 @@ def render_overview_tab(api, screener, summary, holdings, proposals, holding_cod
         if hasattr(st, "html"):
             st.html(html_table)
         else:
-            components.html(html_table, height=85 + len(holdings) * 44, scrolling=True)
+            components.html(html_table, height=90 + len(holdings) * 56, scrolling=True)
 
         # 진입 전략 수동 변경/재분류 UI
         with st.expander("🛠️ 보유 종목 진입 전략 수동 변경 / 재분류", expanded=False):
@@ -313,7 +384,46 @@ def render_overview_tab(api, screener, summary, holdings, proposals, holding_cod
             key="overview_holding_chart_select"
         )
         selected_h = holdings[selected_idx]
+        sel_code_6 = selected_h["code"].zfill(6) if selected_h["code"].isdigit() else selected_h["code"]
+        sel_pos = positions_state.get(sel_code_6) or positions_state.get(selected_h["code"]) or {}
+        sel_cond = _calculate_holding_sell_conditions(selected_h, sel_pos)
+
         with st.expander(f"📊 {selected_h['name']} ({selected_h['code']}) 실시간 차트 & 지표 상세", expanded=False):
+            # 종목별 매도 조건 & 시나리오 안내 카드
+            status_badge = (
+                '<span style="background:#581c87;color:#e9d5ff;padding:3px 8px;border-radius:6px;font-weight:700;">🏆 1차 익절 완료 (잔여 50% 추세 러너 홀딩)</span>'
+                if sel_cond['is_partial_sold']
+                else '<span style="background:#064e3b;color:#6ee7b7;padding:3px 8px;border-radius:6px;font-weight:700;">🎯 1차 익절 대기 중 (50% 분할 매도 대기)</span>'
+            )
+            st.markdown(f"""
+            <div style="background:#0f172a;border:1px solid #1e293b;border-radius:10px;padding:12px 16px;margin-bottom:14px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+                    <div style="font-size:0.9rem;font-weight:700;color:#38bdf8;">
+                        🎯 [{selected_h['name']}] 매도 시나리오 & 목표 기준 <small style="color:#94a3b8;font-weight:400;">(진입전략: {sel_cond['strat_disp'] or sel_cond['strat_key']})</small>
+                    </div>
+                    <div>{status_badge}</div>
+                </div>
+                <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));gap:10px;font-size:0.82rem;">
+                    <div style="background:#111827;padding:8px 12px;border-radius:6px;border-left:3px solid #10b981;">
+                        <span style="color:#94a3b8;">🎯 1차 목표 익절가</span><br>
+                        <b style="color:#10b981;font-size:0.95rem;">{sel_cond['tp_text']}</b> <span style="color:#6ee7b7;font-size:0.75rem;">(50% 분할)</span>
+                    </div>
+                    <div style="background:#111827;padding:8px 12px;border-radius:6px;border-left:3px solid #c084fc;">
+                        <span style="color:#94a3b8;">🏆 2차 추세 익절</span><br>
+                        <b style="color:#c084fc;font-size:0.95rem;">고점대비 -{sel_cond['trailing_pct']*100:.1f}%</b> <span style="color:#cbd5e1;font-size:0.75rem;">or 20일선 이탈</span>
+                    </div>
+                    <div style="background:#111827;padding:8px 12px;border-radius:6px;border-left:3px solid #ef4444;">
+                        <span style="color:#94a3b8;">🚨 손절 기준가</span><br>
+                        <b style="color:#ef4444;font-size:0.95rem;">{sel_cond['sl_text']}</b> <span style="color:#fca5a5;font-size:0.75rem;">(전량 손절)</span>
+                    </div>
+                    <div style="background:#111827;padding:8px 12px;border-radius:6px;border-left:3px solid #38bdf8;">
+                        <span style="color:#94a3b8;">⏳ 타임컷 & 기타</span><br>
+                        <b style="color:#f1f5f9;font-size:0.85rem;">12영업일 미달시 청산</b> <span style="color:#94a3b8;font-size:0.75rem;">(데드크로스시 매도)</span>
+                    </div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
             render_interactive_stock_chart(
                 api_client=api,
                 screener_engine=screener,
@@ -321,7 +431,8 @@ def render_overview_tab(api, screener, summary, holdings, proposals, holding_cod
                 name=selected_h["name"],
                 avg_buy_price=float(selected_h.get("avg_buy_price", 0)),
                 profit_rate=float(selected_h.get("profit_rate", 0)),
-                chart_key=f"dash_hold_{selected_h['code']}"
+                chart_key=f"dash_hold_{selected_h['code']}",
+                exit_conditions=sel_cond
             )
 
 def _get_sell_button_style(sell_type: str, is_urgent: bool) -> tuple:

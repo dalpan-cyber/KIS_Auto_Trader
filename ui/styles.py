@@ -365,7 +365,7 @@ def apply_custom_styles():
     st.session_state["_active_chart_keys"] = {}
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
-def render_interactive_stock_chart(api_client, screener_engine, code: str, name: str, avg_buy_price: Optional[float] = None, profit_rate: Optional[float] = None, chart_key: Optional[str] = None):
+def render_interactive_stock_chart(api_client, screener_engine, code: str, name: str, avg_buy_price: Optional[float] = None, profit_rate: Optional[float] = None, chart_key: Optional[str] = None, exit_conditions: Optional[dict] = None):
     """보유 종목 및 추천 종목의 실시간 캔들 차트, 이동평균선, 볼린저밴드, 거래량, RSI 시각화 렌더러 (60초 세션 캐시 적용)"""
     # 고유 element key 생성 (중복 렌더링 시 StreamlitDuplicateElementId 방지)
     base_key = chart_key or f"chart_{code}"
@@ -374,7 +374,8 @@ def render_interactive_stock_chart(api_client, screener_engine, code: str, name:
     active_keys[base_key] = count + 1
     final_key = base_key if count == 0 else f"{base_key}_{count}"
 
-    cache_key = f"chart_{code}_{avg_buy_price}_{profit_rate}"
+    is_part = bool(exit_conditions.get("is_partial_sold", False)) if exit_conditions else False
+    cache_key = f"chart_{code}_{avg_buy_price}_{profit_rate}_{is_part}"
     chart_cache = st.session_state.setdefault("_stock_chart_cache", {})
     now_ts = time.time()
 
@@ -480,6 +481,49 @@ def render_interactive_stock_chart(api_client, screener_engine, code: str, name:
                     annotation_font_color="#fbbf24",
                     row=1, col=1
                 )
+
+                # 매도 조건선 (1차 목표가, 손절선, 트레일링스탑선) 시각화
+                if exit_conditions:
+                    tp_p = exit_conditions.get("tp_price", 0)
+                    if tp_p > 0:
+                        tp_txt = exit_conditions.get("tp_text", f"{tp_p:,.0f}원")
+                        fig.add_hline(
+                            y=tp_p,
+                            line_dash="dot",
+                            line_color="#10b981",
+                            line_width=1.5,
+                            annotation_text=f"🎯 1차목표: {tp_txt} (50%)",
+                            annotation_position="top left",
+                            annotation_font_color="#10b981",
+                            row=1, col=1
+                        )
+
+                    sl_p = exit_conditions.get("sl_price", 0)
+                    if sl_p > 0:
+                        sl_txt = exit_conditions.get("sl_text", f"{sl_p:,.0f}원")
+                        fig.add_hline(
+                            y=sl_p,
+                            line_dash="dot",
+                            line_color="#ef4444",
+                            line_width=1.5,
+                            annotation_text=f"🚨 손절선: {sl_txt}",
+                            annotation_position="bottom left",
+                            annotation_font_color="#ef4444",
+                            row=1, col=1
+                        )
+
+                    if exit_conditions.get("is_partial_sold") and exit_conditions.get("ts_price", 0) > 0:
+                        ts_p = exit_conditions["ts_price"]
+                        fig.add_hline(
+                            y=ts_p,
+                            line_dash="dashdot",
+                            line_color="#c084fc",
+                            line_width=1.8,
+                            annotation_text=f"🏆 트레일링스탑: {ts_p:,.0f}원",
+                            annotation_position="top left",
+                            annotation_font_color="#c084fc",
+                            row=1, col=1
+                        )
 
             # 2. 거래량
             colors = ["#ef4444" if row["close"] >= row["open"] else "#3b82f6" for _, row in df_tech.iterrows()]
