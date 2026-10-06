@@ -524,11 +524,15 @@ def render_stock_detail(symbol: str, bot: TraderBot):
                         sell_dates.append(h_date)
                         sell_prices.append(h_price)
                         sell_texts.append(f"🎉 익절 매도: {h_qty}주 @ ${h_price:.2f} ({h_status})")
-                        # 매도 시 수량 감소 (평단가는 유지)
+                        # 매도 시 수량 감소 및 누적 원금 비례 차감 (전량 매도 시 리셋)
                         cum_qty = max(0.0, cum_qty - h_qty)
                         if cum_qty > 0:
+                            cum_cost = cum_qty * last_avg
                             avg_dates.append(h_date)
                             avg_costs.append(last_avg)
+                        else:
+                            cum_cost = 0.0
+                            last_avg = 0.0
 
             if sell_dates:
                 fig.add_trace(go.Scatter(
