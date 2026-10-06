@@ -56,7 +56,7 @@ class KISApiClient:
             "SOXL": "AMS", "SOXS": "AMS", "SPY": "AMS", "SPXL": "AMS", "UPRO": "AMS",
             "TECL": "AMS", "FNGU": "AMS", "BULZ": "AMS", "LABU": "AMS", "LABD": "AMS",
             "TNA": "AMS", "TZA": "AMS", "FAS": "AMS", "FAZ": "AMS", "DPST": "AMS",
-            "BNKU": "AMS", "YINN": "AMS", "YANG": "AMS", "CWEB": "AMS"
+            "DFEN": "AMS", "BNKU": "AMS", "YINN": "AMS", "YANG": "AMS", "CWEB": "AMS"
         }
 
         # 저장된 기존 토큰 파일 로드 시도
