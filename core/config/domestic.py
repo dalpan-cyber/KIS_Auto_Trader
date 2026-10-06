@@ -394,16 +394,23 @@ def get_effective_strategy_settings(
 ) -> Dict[str, Any]:
     """전략별 고유 설정을 전역 설정에 병합한 최종 유효 설정 반환"""
     name = strategy_name or CURRENT_SETTINGS.get("strategy_name", "momentum")
-    merged = CURRENT_SETTINGS.copy()
-    merged.pop("strategy_settings", None)
+    base = base_settings.copy() if base_settings is not None else CURRENT_SETTINGS.copy()
+    base.pop("strategy_settings", None)
 
+    # 1. 전략 클래스의 스키마 기본값(defaults) 우선 병합 (각 전략마다 고유 기본값이 다를 수 있음)
+    try:
+        from core.strategy import get_strategy_settings_defaults
+        defaults = get_strategy_settings_defaults(name)
+        if defaults:
+            base.update(defaults)
+    except Exception as e:
+        logger.debug(f"전략 기본값 스키마 로드 생략: {e}")
+
+    # 2. 사용자가 해당 전략에 개별 설정/저장한 고유 값 병합
     strategy_specific = get_strategy_settings(name)
-    merged.update(strategy_specific)
+    base.update(strategy_specific)
 
-    if base_settings:
-        merged.update(base_settings)
-
-    return merged
+    return base
 
 
 def save_strategy_settings(

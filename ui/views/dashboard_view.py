@@ -49,14 +49,24 @@ def _calculate_holding_sell_conditions(h: dict, pos_info: dict) -> dict:
 
     pos_info = pos_info or {}
     strat_key = pos_info.get("strategy", "momentum")
-    eff_settings = config.get_effective_strategy_settings(strat_key, getattr(config, "CURRENT_SETTINGS", {}))
+    strat_disp = pos_info.get("strategy_display_name", "")
+    eff_settings = config.get_effective_strategy_settings(strat_key)
 
-    is_monthly = any(k in str(strat_key).lower() for k in ("monthly", "월봉", "gtaa"))
+    is_monthly = any(k in f"{strat_key} {strat_disp}".lower() for k in ("monthly", "월봉", "gtaa"))
     if is_monthly:
-        # 월봉 전략 기본값: 목표익절 20%, 비상손절 -7%, 트레일링 8%
-        tp_rate = float(eff_settings.get("target_profit_rate", 0.20))
-        sl_rate = float(eff_settings.get("stop_loss_rate", -0.07))
-        trailing_pct = float(eff_settings.get("trailing_stop_pct", 0.08))
+        # 월봉 전략: 사용자가 strategy_settings['monthly_trend']에 명시 설정한 값 우선, 없으면 월봉 기본값(+20%, -7%, 8%) 적용
+        strat_custom = config.get_strategy_settings("monthly_trend")
+        tp_rate = float(strat_custom.get("target_profit_rate") or eff_settings.get("target_profit_rate", 0.20))
+        sl_rate = float(strat_custom.get("stop_loss_rate") or eff_settings.get("stop_loss_rate", -0.07))
+        trailing_pct = float(strat_custom.get("trailing_stop_pct") or eff_settings.get("trailing_stop_pct", 0.08))
+
+        # 전역 단기 모멘텀 설정(5% 익절, 3.5% 손절 등)이 유입되는 것을 방지하기 위한 안전장치
+        if tp_rate < 0.10:
+            tp_rate = 0.20
+        if sl_rate > -0.05:
+            sl_rate = -0.07
+        if trailing_pct < 0.05:
+            trailing_pct = 0.08
     else:
         tp_rate = float(eff_settings.get("target_profit_rate", 0.05))
         sl_rate = float(eff_settings.get("stop_loss_rate", -0.035))
@@ -407,39 +417,69 @@ def render_overview_tab(api, screener, summary, holdings, proposals, holding_cod
 
         with st.expander(f"📊 {selected_h['name']} ({selected_h['code']}) 실시간 차트 & 지표 상세", expanded=False):
             # 종목별 매도 조건 & 시나리오 안내 카드
-            status_badge = (
-                '<span style="background:#581c87;color:#e9d5ff;padding:3px 8px;border-radius:6px;font-weight:700;">🏆 1차 익절 완료 (잔여 50% 추세 러너 홀딩)</span>'
-                if sel_cond['is_partial_sold']
-                else '<span style="background:#064e3b;color:#6ee7b7;padding:3px 8px;border-radius:6px;font-weight:700;">🎯 1차 익절 대기 중 (50% 분할 매도 대기)</span>'
-            )
-            st.markdown(f"""
-            <div style="background:#0f172a;border:1px solid #1e293b;border-radius:10px;padding:12px 16px;margin-bottom:14px;">
-                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
-                    <div style="font-size:0.9rem;font-weight:700;color:#38bdf8;">
-                        🎯 [{selected_h['name']}] 매도 시나리오 & 목표 기준 <small style="color:#94a3b8;font-weight:400;">(진입전략: {sel_cond['strat_disp'] or sel_cond['strat_key']})</small>
+            if sel_cond.get("is_monthly"):
+                st.markdown(f"""
+                <div style="background:#0f172a;border:1px solid #1e293b;border-radius:10px;padding:12px 16px;margin-bottom:14px;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+                        <div style="font-size:0.9rem;font-weight:700;color:#38bdf8;">
+                            🎯 [{selected_h['name']}] 매도 시나리오 & 목표 기준 <small style="color:#fdba74;font-weight:600;">(진입전략: 📅 월봉 10이평 GTAA)</small>
+                        </div>
+                        <div><span style="background:#7c2d12;color:#fdba74;padding:3px 8px;border-radius:6px;font-weight:700;">📅 월봉 10이평 추세 홀딩 중</span></div>
                     </div>
-                    <div>{status_badge}</div>
-                </div>
-                <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));gap:10px;font-size:0.82rem;">
-                    <div style="background:#111827;padding:8px 12px;border-radius:6px;border-left:3px solid #10b981;">
-                        <span style="color:#94a3b8;">🎯 1차 목표 익절가</span><br>
-                        <b style="color:#10b981;font-size:0.95rem;">{sel_cond['tp_text']}</b> <span style="color:#6ee7b7;font-size:0.75rem;">(50% 분할)</span>
-                    </div>
-                    <div style="background:#111827;padding:8px 12px;border-radius:6px;border-left:3px solid #c084fc;">
-                        <span style="color:#94a3b8;">🏆 2차 추세 익절</span><br>
-                        <b style="color:#c084fc;font-size:0.95rem;">고점대비 -{sel_cond['trailing_pct']*100:.1f}%</b> <span style="color:#cbd5e1;font-size:0.75rem;">or 20일선 이탈</span>
-                    </div>
-                    <div style="background:#111827;padding:8px 12px;border-radius:6px;border-left:3px solid #ef4444;">
-                        <span style="color:#94a3b8;">🚨 손절 기준가</span><br>
-                        <b style="color:#ef4444;font-size:0.95rem;">{sel_cond['sl_text']}</b> <span style="color:#fca5a5;font-size:0.75rem;">(전량 손절)</span>
-                    </div>
-                    <div style="background:#111827;padding:8px 12px;border-radius:6px;border-left:3px solid #38bdf8;">
-                        <span style="color:#94a3b8;">⏳ 타임컷 & 기타</span><br>
-                        <b style="color:#f1f5f9;font-size:0.85rem;">12영업일 미달시 청산</b> <span style="color:#94a3b8;font-size:0.75rem;">(데드크로스시 매도)</span>
+                    <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));gap:10px;font-size:0.82rem;">
+                        <div style="background:#111827;padding:8px 12px;border-radius:6px;border-left:3px solid #f97316;">
+                            <span style="color:#94a3b8;">📉 핵심 매도 신호</span><br>
+                            <b style="color:#fdba74;font-size:0.95rem;">월봉 10이평 하향이탈</b> <span style="color:#fdba74;font-size:0.75rem;">(전량 현금화)</span>
+                        </div>
+                        <div style="background:#111827;padding:8px 12px;border-radius:6px;border-left:3px solid #10b981;">
+                            <span style="color:#94a3b8;">🎯 목표 익절 (트레일링)</span><br>
+                            <b style="color:#10b981;font-size:0.95rem;">{sel_cond['tp_text']}</b> <span style="color:#6ee7b7;font-size:0.75rem;">(고점 -{sel_cond['trailing_pct']*100:.1f}%)</span>
+                        </div>
+                        <div style="background:#111827;padding:8px 12px;border-radius:6px;border-left:3px solid #ef4444;">
+                            <span style="color:#94a3b8;">🚨 일봉 비상 손절</span><br>
+                            <b style="color:#ef4444;font-size:0.95rem;">{sel_cond['sl_text']}</b> <span style="color:#fca5a5;font-size:0.75rem;">(급락 원금보호)</span>
+                        </div>
+                        <div style="background:#111827;padding:8px 12px;border-radius:6px;border-left:3px solid #38bdf8;">
+                            <span style="color:#94a3b8;">⏳ 보유 원칙</span><br>
+                            <b style="color:#f1f5f9;font-size:0.85rem;">월봉 유지 시 무기한</b> <span style="color:#94a3b8;font-size:0.75rem;">(타임컷 미적용)</span>
+                        </div>
                     </div>
                 </div>
-            </div>
-            """, unsafe_allow_html=True)
+                """, unsafe_allow_html=True)
+            else:
+                status_badge = (
+                    '<span style="background:#581c87;color:#e9d5ff;padding:3px 8px;border-radius:6px;font-weight:700;">🏆 1차 익절 완료 (잔여 50% 추세 러너 홀딩)</span>'
+                    if sel_cond['is_partial_sold']
+                    else '<span style="background:#064e3b;color:#6ee7b7;padding:3px 8px;border-radius:6px;font-weight:700;">🎯 1차 익절 대기 중 (50% 분할 매도 대기)</span>'
+                )
+                st.markdown(f"""
+                <div style="background:#0f172a;border:1px solid #1e293b;border-radius:10px;padding:12px 16px;margin-bottom:14px;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+                        <div style="font-size:0.9rem;font-weight:700;color:#38bdf8;">
+                            🎯 [{selected_h['name']}] 매도 시나리오 & 목표 기준 <small style="color:#94a3b8;font-weight:400;">(진입전략: {sel_cond['strat_disp'] or sel_cond['strat_key']})</small>
+                        </div>
+                        <div>{status_badge}</div>
+                    </div>
+                    <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));gap:10px;font-size:0.82rem;">
+                        <div style="background:#111827;padding:8px 12px;border-radius:6px;border-left:3px solid #10b981;">
+                            <span style="color:#94a3b8;">🎯 1차 목표 익절가</span><br>
+                            <b style="color:#10b981;font-size:0.95rem;">{sel_cond['tp_text']}</b> <span style="color:#6ee7b7;font-size:0.75rem;">(50% 분할)</span>
+                        </div>
+                        <div style="background:#111827;padding:8px 12px;border-radius:6px;border-left:3px solid #c084fc;">
+                            <span style="color:#94a3b8;">🏆 2차 추세 익절</span><br>
+                            <b style="color:#c084fc;font-size:0.95rem;">고점대비 -{sel_cond['trailing_pct']*100:.1f}%</b> <span style="color:#cbd5e1;font-size:0.75rem;">or 20일선 이탈</span>
+                        </div>
+                        <div style="background:#111827;padding:8px 12px;border-radius:6px;border-left:3px solid #ef4444;">
+                            <span style="color:#94a3b8;">🚨 손절 기준가</span><br>
+                            <b style="color:#ef4444;font-size:0.95rem;">{sel_cond['sl_text']}</b> <span style="color:#fca5a5;font-size:0.75rem;">(전량 손절)</span>
+                        </div>
+                        <div style="background:#111827;padding:8px 12px;border-radius:6px;border-left:3px solid #38bdf8;">
+                            <span style="color:#94a3b8;">⏳ 타임컷 & 기타</span><br>
+                            <b style="color:#f1f5f9;font-size:0.85rem;">12영업일 미달시 청산</b> <span style="color:#94a3b8;font-size:0.75rem;">(데드크로스시 매도)</span>
+                        </div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
 
             render_interactive_stock_chart(
                 api_client=api,

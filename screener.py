@@ -404,8 +404,9 @@ class StockScreener:
         holding_strat = self._get_holding_strategy(code)
         strat_name = holding_strat.name if holding_strat else self.strategy.name
         regime = (market_regime or {}).get("regime", "BULL")
-        eff_settings = config.get_effective_strategy_settings(strat_name, config.CURRENT_SETTINGS)
-        eff_settings = config.get_effective_settings_for_regime(regime, eff_settings)
+        eff_settings = config.get_effective_strategy_settings(strat_name)
+        if strat_name != "monthly_trend":
+            eff_settings = config.get_effective_settings_for_regime(regime, eff_settings)
 
         target_profit_rate = float(eff_settings.get("target_profit_rate", 0.05)) * 100
         stop_loss_rate = float(eff_settings.get("stop_loss_rate", -0.03)) * 100
