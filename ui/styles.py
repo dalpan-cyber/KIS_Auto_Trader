@@ -387,7 +387,7 @@ def render_interactive_stock_chart(api_client, screener_engine, code: str, name:
             latest = cached_data["latest"]
             prev_rsi = cached_data["prev_rsi"]
             try:
-                st.plotly_chart(fig, use_container_width=True, key=final_key)
+                st.plotly_chart(fig, width="stretch", key=final_key)
             except TypeError:
                 st.plotly_chart(fig, width="stretch", key=final_key)
             m1, m2, m3, m4, m5 = st.columns(5)
@@ -573,7 +573,7 @@ def render_interactive_stock_chart(api_client, screener_engine, code: str, name:
             )
 
             try:
-                st.plotly_chart(fig, use_container_width=True, key=final_key)
+                st.plotly_chart(fig, width="stretch", key=final_key)
             except TypeError:
                 st.plotly_chart(fig, width="stretch", key=final_key)
 

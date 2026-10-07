@@ -248,7 +248,7 @@ def render_backtest():
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
                 )
                 try:
-                    st.plotly_chart(fig, use_container_width=True, key="backtest_result_chart")
+                    st.plotly_chart(fig, width="stretch", key="backtest_result_chart")
                 except TypeError:
                     st.plotly_chart(fig, width="stretch", key="backtest_result_chart")
 

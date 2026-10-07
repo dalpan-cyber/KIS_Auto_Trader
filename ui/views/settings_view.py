@@ -340,7 +340,7 @@ def render_settings():
         with g_col2:
             st.write("")
             st.write("")
-            if st.button("🔄 구글 시트로 즉시 동기화", use_container_width=True, disabled=not is_conn):
+            if st.button("🔄 구글 시트로 즉시 동기화", width="stretch", disabled=not is_conn):
                 with st.spinner("구글 시트로 동기화 중..."):
                     sync_s = sheet_mgr.sync_settings_to_sheet(config.CURRENT_SETTINGS)
                     from screener import StockScreener

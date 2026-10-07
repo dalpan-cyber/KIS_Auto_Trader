@@ -919,7 +919,7 @@ def render_performance_tab(api):
             margin=dict(l=20, r=20, t=40, b=20)
         )
         try:
-            st.plotly_chart(fig_profit, use_container_width=True, key="dash_profit_summary_chart")
+            st.plotly_chart(fig_profit, width="stretch", key="dash_profit_summary_chart")
         except TypeError:
             st.plotly_chart(fig_profit, width="stretch", key="dash_profit_summary_chart")
     else:

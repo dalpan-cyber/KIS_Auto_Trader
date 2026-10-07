@@ -119,7 +119,7 @@ def render_history(api):
                 margin=dict(l=20, r=20, t=50, b=20)
             )
             try:
-                st.plotly_chart(fig_unreal, use_container_width=True, key="hist_unreal_chart")
+                st.plotly_chart(fig_unreal, width="stretch", key="hist_unreal_chart")
             except TypeError:
                 st.plotly_chart(fig_unreal, width="stretch", key="hist_unreal_chart")
         else:
@@ -162,7 +162,7 @@ def render_history(api):
                 margin=dict(l=20, r=20, t=50, b=20)
             )
             try:
-                st.plotly_chart(fig_profit, use_container_width=True, key="hist_profit_chart")
+                st.plotly_chart(fig_profit, width="stretch", key="hist_profit_chart")
             except TypeError:
                 st.plotly_chart(fig_profit, width="stretch", key="hist_profit_chart")
         else:
@@ -199,6 +199,6 @@ def render_history(api):
                     height=350
                 )
                 try:
-                    st.plotly_chart(fig_pie, use_container_width=True, key="hist_pie_chart")
+                    st.plotly_chart(fig_pie, width="stretch", key="hist_pie_chart")
                 except TypeError:
                     st.plotly_chart(fig_pie, width="stretch", key="hist_pie_chart")
