@@ -8,7 +8,7 @@ import time
 import streamlit as st
 
 import app_config as config
-from kis_api import KISApiClient
+from kis_api import KISApiClient, resolve_mock_mode
 from screener import StockScreener
 from scheduler import start_scheduler
 from time_utils import now_str
@@ -54,8 +54,10 @@ except Exception as e:
     scheduler = None
 
 # 공용 KIS API 클라이언트 싱글톤 인스턴스
-if "kis_api" not in st.session_state:
+# 모의/실전 모드가 바뀌면 기존 클라이언트·스크리너를 폐기하고 새 모드로 재생성
+if "kis_api" not in st.session_state or st.session_state["kis_api"].mock != resolve_mock_mode():
     st.session_state["kis_api"] = KISApiClient()
+    st.session_state.pop("screener", None)
 api: KISApiClient = st.session_state["kis_api"]
 
 token_ok = api.get_access_token()
@@ -110,7 +112,8 @@ with st.sidebar:
         </div>
     """, unsafe_allow_html=True)
     
-    is_mock = config.CURRENT_SETTINGS.get("mock_trading", True)
+    # 실제 주문이 나가는 API 클라이언트의 모드를 그대로 표시
+    is_mock = api.mock
     if is_mock:
         st.markdown("<div class='badge-mock'><span class='status-dot dot-mock'></span>VTS SIMULATION ACTIVE</div>", unsafe_allow_html=True)
     else:

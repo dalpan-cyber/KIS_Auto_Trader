@@ -22,8 +22,12 @@ from core.strategy import get_strategy, get_default_strategy_name, get_active_st
 PROPOSALS_FILE = os.path.join(os.path.dirname(__file__), "proposals.json")
 PROPOSALS_FALLBACK_FILE = os.path.join(os.path.dirname(__file__), "proposals_fallback.json")
 
+EXECUTED_BUY_ORDERS_FILE = os.path.join(os.path.dirname(__file__), "executed_buy_orders.json")
+
 # 스케줄러 잡과 UI fragment가 같은 프로세스에서 동시에 매도 감시를 돌리지 않도록 보호
 _SELL_CHECK_LOCK = threading.Lock()
+# 종가 매수 주문 집행 중복 실행 방지
+_BUY_EXECUTE_LOCK = threading.Lock()
 
 class StockScreener:
     def __init__(self, api_client: Optional[KISApiClient] = None, strategy_name: Optional[str] = None):
@@ -642,13 +646,26 @@ class StockScreener:
                 if sell_res:
                     urgent_sells.append(sell_res)
                     if config.CURRENT_SETTINGS.get("auto_execute_orders", False):
-                        self.logger.warning(f"[{holding.get('name')}] 09:00 긴급 손절 시장가 매도 자동 발주")
-                        self.api.order_stock(
-                            code=holding.get("code"),
-                            qty=int(holding.get("quantity", 0)),
-                            buy_sell="매도",
-                            order_type="01"
-                        )
+                        code = holding.get("code")
+                        # 매도 가능 수량 기준 (미체결 주문 등으로 묶인 수량 제외)
+                        sell_qty = int(holding.get("available_qty", holding.get("quantity", 0)) or 0)
+                        if sell_qty <= 0:
+                            self.logger.warning(f"[{holding.get('name')}({code})] 매도 가능 수량이 없어 09:00 긴급 손절 발주를 건너뜁니다.")
+                            sell_res["auto_order_status"] = "SKIPPED"
+                            continue
+                        self.logger.warning(f"[{holding.get('name')}({code})] 09:00 긴급 손절 시장가 매도 자동 발주 ({sell_qty}주)")
+                        try:
+                            res = self.api.order_stock(code=code, qty=sell_qty, buy_sell="매도", order_type="01")
+                        except Exception as e:
+                            res = {"rt_cd": "-1", "msg1": str(e)}
+                        if res.get("rt_cd") == "0":
+                            sell_res["auto_order_status"] = "ORDERED"
+                            self.logger.info(f"[{holding.get('name')}({code})] 09:00 긴급 손절 매도 접수 완료 (주문번호: {res.get('order_no', '-')})")
+                            if sell_qty >= int(holding.get("quantity", 0) or 0):
+                                self._clear_position_state(code)
+                        else:
+                            sell_res["auto_order_status"] = "FAILED"
+                            self.logger.error(f"[{holding.get('name')}({code})] 09:00 긴급 손절 매도 발주 실패: {res.get('msg1') or res.get('msg')}")
 
         if urgent_sells:
             self._notify_sell_recommendations(urgent_sells)
@@ -718,6 +735,27 @@ class StockScreener:
 
     def execute_top_buy_orders(self) -> List[Dict[str, Any]]:
         """15:18 매수 추천 종목 시장가 주문 집행"""
+        if not _BUY_EXECUTE_LOCK.acquire(blocking=False):
+            self.logger.warning("다른 종가 매수 주문 집행이 진행 중이어서 중복 실행을 건너뜁니다.")
+            return []
+        try:
+            return self._execute_top_buy_orders_locked()
+        finally:
+            _BUY_EXECUTE_LOCK.release()
+
+    @staticmethod
+    def _load_executed_buy_codes(today_key: str) -> Set[str]:
+        """오늘 이미 매수 발주한 종목 코드 (재실행 시 중복 매수 방지)"""
+        data = safe_load_json(EXECUTED_BUY_ORDERS_FILE, default={})
+        if data.get("date") != today_key:
+            return set()
+        return set(data.get("codes", []))
+
+    @staticmethod
+    def _save_executed_buy_codes(today_key: str, codes: Set[str]) -> None:
+        atomic_save_json(EXECUTED_BUY_ORDERS_FILE, {"date": today_key, "codes": sorted(codes)})
+
+    def _execute_top_buy_orders_locked(self) -> List[Dict[str, Any]]:
         self.logger.info("=== [15:18] 종가 매수 추천 종목 주문 집행 시작 ===")
         proposals = self.load_proposals()
         buy_list = proposals.get("buy_proposals", [])
@@ -727,6 +765,16 @@ class StockScreener:
 
         if not config.CURRENT_SETTINGS.get("auto_execute_orders", False):
             return []
+
+        # 오늘 생성된 스크리닝 제안만 집행 (15:10 스크리닝 실패 시 과거 제안으로 매수하는 사고 방지)
+        today_dash = today().strftime("%Y-%m-%d")
+        generated_at = str(proposals.get("generated_at", ""))
+        if not generated_at.startswith(today_dash):
+            self.logger.error(f"매수 제안 생성 시각({generated_at or '-'})이 오늘({today_dash})이 아니어서 주문 집행을 중단합니다.")
+            return []
+
+        today_key = today().strftime("%Y%m%d")
+        executed_codes = self._load_executed_buy_codes(today_key)
 
         # 시장 국면 감지 및 유효 설정 적용 (AUTO 모드에서 프리셋 자동 전환)
         market_regime = None
@@ -757,6 +805,10 @@ class StockScreener:
             if qty <= 0:
                 continue
 
+            if code in executed_codes:
+                self.logger.info(f"[{name}({code})] 오늘 이미 매수 발주된 종목이어서 중복 주문을 건너뜁니다.")
+                continue
+
             try:
                 self.logger.info(f"[{name}({code})] 15:18 종가 시장가 매수 발주 (수량: {qty}주)")
                 res = self.api.order_stock(
@@ -766,20 +818,28 @@ class StockScreener:
                     order_type="01"
                 )
                 executed.append({"stock": item, "response": res})
-                if res.get("rt_cd") == "0":
-                    self.position_tracker.record_buy(
-                        code=code,
-                        name=name,
-                        price=float(item.get("current_price", 0.0)),
-                        qty=qty,
-                        strategy=item.get("strategy_name", item.get("strategy", "momentum")),
-                        strategy_display_name=item.get("strategy_display_name")
-                    )
+                if res.get("rt_cd") != "0":
+                    self.logger.error(f"[{name}({code})] 매수 주문 실패: {res.get('msg1') or res.get('msg')}")
+                    continue
+
+                executed_codes.add(code)
+                self._save_executed_buy_codes(today_key, executed_codes)
+                self.position_tracker.record_buy(
+                    code=code,
+                    name=name,
+                    price=float(item.get("current_price", 0.0)),
+                    qty=qty,
+                    strategy=item.get("strategy_name", item.get("strategy", "momentum")),
+                    strategy_display_name=item.get("strategy_display_name")
+                )
                 if not item.get("is_additional_buy"):
                     current_holding_count += 1
                     daily_new_buy_count += 1
             except Exception as e:
-                self.logger.error(f"[{name}({code})] 주문 집행 에러: {e}")
+                # 접수 여부가 불확실하므로 재실행 시 중복 매수되지 않도록 발주 기록에 포함
+                executed_codes.add(code)
+                self._save_executed_buy_codes(today_key, executed_codes)
+                self.logger.error(f"[{name}({code})] 주문 집행 에러 (접수 여부 확인 필요, 재발주 차단): {e}")
 
         return executed
 

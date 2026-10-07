@@ -17,6 +17,18 @@ from core.exceptions import KISApiError, KISAuthError, KISRateLimitError, KISOrd
 logger = logging.getLogger("KISApiClient")
 
 
+def resolve_mock_mode() -> bool:
+    """모의/실전 모드 결정: MOCK_TRADING_ONLY 환경변수가 명시되면 우선, 아니면 설정(settings.json)의 mock_trading 사용"""
+    env_val = (os.getenv("MOCK_TRADING_ONLY") or "").strip().lower()
+    if env_val:
+        return env_val == "true"
+    try:
+        from core.config.domestic import CURRENT_SETTINGS
+        return bool(CURRENT_SETTINGS.get("mock_trading", True))
+    except Exception:
+        return bool(config.MOCK_TRADING_ONLY)
+
+
 class KISApiClient:
     """한국투자증권 Open API (REST API) 통신 클래스"""
     _shared_session: Optional[requests.Session] = None
@@ -35,7 +47,7 @@ class KISApiClient:
         self.app_secret = app_secret or config.APP_SECRET
         self.cano = cano or config.CANO
         self.acnt_prdt_cd = acnt_prdt_cd or config.ACNT_PRDT_CD
-        self.mock = mock if mock is not None else config.MOCK_TRADING_ONLY
+        self.mock = mock if mock is not None else resolve_mock_mode()
         self.url_base = config.URL_BASE_MOCK if self.mock else config.URL_BASE_REAL
         self.access_token: Optional[str] = None
         self.token_issued_at: float = 0
@@ -715,7 +727,12 @@ class KISApiClient:
         order_prc_str = str(int(price)) if order_division not in ("01",) and price > 0 else "0" if order_division == "01" else str(int(price))
 
         if not self.access_token or not self.cano:
-            # API 키/계좌 미설정 시 가상 주문 처리
+            # 실전매매 환경에서 토큰/계좌가 없으면 가상 성공 처리 금지 (실제 미발주를 성공으로 오인 방지)
+            if not self.mock:
+                reason = "Access Token이 유효하지 않아" if not self.access_token else "계좌번호(CANO)가 설정되지 않아"
+                logger.error(f"[{stock_code}] {reason} 실전 국내 주문을 발주할 수 없습니다.")
+                return {"success": False, "rt_cd": "-1", "msg1": f"{reason} 실전 주문을 발주할 수 없습니다.", "msg": f"{reason} 실전 주문을 발주할 수 없습니다."}
+            # 모의 모드에서 API 키/계좌 미설정 시 가상 주문 처리
             cur_price = price if price > 0 else self.get_stock_price(stock_code).get("price", 70000)
             total_cost = cur_price * qty
 
@@ -1311,9 +1328,9 @@ class KISApiClient:
         symbol_upper = symbol.upper()
         if not self.access_token:
             # 실전매매 환경(self.mock=False)인데 토큰 발급이 안된 경우 가상 성공 처리 방지
-            if not self.mock and (self.app_key and self.app_secret):
+            if not self.mock:
                 logger.error(f"[{symbol_upper}] KIS Access Token이 유효하지 않아 실전 해외 주문을 발주할 수 없습니다.")
-                return {"success": False, "msg": "Access Token이 유효하지 않아 실전 주문을 발주할 수 없습니다."}
+                return {"success": False, "rt_cd": "-1", "msg1": "Access Token이 유효하지 않아 실전 주문을 발주할 수 없습니다.", "msg": "Access Token이 유효하지 않아 실전 주문을 발주할 수 없습니다."}
 
             action_str = "매수" if buy else "매도"
             ord_name = "LOC " if ord_type == "34" else ""
