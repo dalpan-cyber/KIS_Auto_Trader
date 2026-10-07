@@ -3,6 +3,7 @@ KIS Auto Trading - Position & Cooldown Tracker Module
 라이브 보유 종목별 최고가/분할익절 상태 추적 및 손절 쿨다운 관리
 """
 import os
+import time
 import logging
 import datetime
 from contextlib import contextmanager
@@ -11,6 +12,8 @@ from time_utils import today, now_str
 from core.storage import safe_load_json, atomic_save_json
 
 logger = logging.getLogger("PositionTracker")
+
+COOLDOWN_API_CACHE_TTL = 300.0
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 POSITIONS_STATE_FILE = os.path.join(BASE_DIR, "positions_state.json")
@@ -271,12 +274,14 @@ class PositionTracker:
             start_date = start_dt.strftime("%Y%m%d")
 
             cache_key = f"{start_date}_{end_date}"
-            if cache_key not in self._cooldown_api_cache:
-                # 계좌 전체 거래이력 1회만 조회 (code=None)
+            cached = self._cooldown_api_cache.get(cache_key)
+            if not cached or time.time() - cached[0] >= COOLDOWN_API_CACHE_TTL:
+                # 계좌 전체 거래이력 1회만 조회 (code=None), 5분 TTL로 장중 신규 손절 반영
                 orders = api_client.get_order_history(start_date=start_date, end_date=end_date)
-                self._cooldown_api_cache[cache_key] = orders if orders is not None else []
+                cached = (time.time(), orders if orders is not None else [])
+                self._cooldown_api_cache[cache_key] = cached
 
-            orders = self._cooldown_api_cache.get(cache_key, [])
+            orders = cached[1]
             if not orders:
                 return None
 

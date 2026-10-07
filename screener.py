@@ -4,6 +4,7 @@ Stock Screener & Signal Engine
 core.indicators, core.strategy, core.position_tracker 모듈을 기반으로 동작합니다.
 """
 import os
+import time
 import logging
 import datetime
 import threading
@@ -28,6 +29,13 @@ EXECUTED_BUY_ORDERS_FILE = os.path.join(os.path.dirname(__file__), "executed_buy
 _SELL_CHECK_LOCK = threading.Lock()
 # 종가 매수 주문 집행 중복 실행 방지
 _BUY_EXECUTE_LOCK = threading.Lock()
+
+# 시장 국면 캐시 {market: (조회시각, 결과)} - 스크리닝 종목마다 지수 일봉을 재조회하지 않도록 공유
+_MARKET_REGIME_CACHE: Dict[str, Any] = {}
+_MARKET_REGIME_TTL = 600.0
+# 계좌 주문내역 캐시 {(시작일, 종료일): (조회시각, 결과)} - 보유 종목마다 계좌 전체 내역 재조회 방지
+_ORDER_HISTORY_CACHE: Dict[Any, Any] = {}
+_ORDER_HISTORY_TTL = 60.0
 
 class StockScreener:
     def __init__(self, api_client: Optional[KISApiClient] = None, strategy_name: Optional[str] = None):
@@ -124,14 +132,19 @@ class StockScreener:
     # 시장 국면 및 기술 지표 계산
     # =========================================================================
     def get_market_regime(self, market: str = "KOSPI") -> Dict[str, Any]:
-        """시장 국면 판단"""
+        """시장 국면 판단 (10분 TTL 캐시: 스크리닝/매도 평가 시 종목마다 지수 일봉 재조회 방지)"""
+        cached = _MARKET_REGIME_CACHE.get(market)
+        if cached and time.time() - cached[0] < _MARKET_REGIME_TTL:
+            return cached[1]
         index_code = "069500" if market == "KOSPI" else "229200"
         try:
             candles = self.api.get_daily_chart(index_code, count=40)
             if not candles or len(candles) < 20:
                 return {"regime": "NORMAL", "below_ma20": False, "downtrend": False, "ma20": 0.0, "current": 0.0}
             ma_period = int(config.CURRENT_SETTINGS.get("market_regime_ma_period", 20))
-            return self.strategy.get_market_regime(candles, ma_period=ma_period)
+            regime = self.strategy.get_market_regime(candles, ma_period=ma_period)
+            _MARKET_REGIME_CACHE[market] = (time.time(), regime)
+            return regime
         except Exception as e:
             self.logger.warning(f"[{market}] 시장 국면 판단 중 예외: {e}")
             return {"regime": "NORMAL", "below_ma20": False, "downtrend": False, "ma20": 0.0, "current": 0.0}
@@ -386,12 +399,22 @@ class StockScreener:
                 )
         return res
 
+    def _get_order_history_cached(self, start_date: str, end_date: str) -> List[Dict[str, Any]]:
+        """계좌 전체 주문내역 조회 (60초 TTL 캐시)"""
+        key = (start_date, end_date)
+        cached = _ORDER_HISTORY_CACHE.get(key)
+        if cached and time.time() - cached[0] < _ORDER_HISTORY_TTL:
+            return cached[1]
+        orders = self.api.get_order_history(start_date=start_date, end_date=end_date) or []
+        _ORDER_HISTORY_CACHE[key] = (time.time(), orders)
+        return orders
+
     def _is_recently_bought(self, code: str, days: int = 2) -> bool:
         """매수일로부터 지정된 일수 이내에 매수된 종목인지 확인"""
         try:
             end_date = today().strftime("%Y%m%d")
             start_date = (today() - datetime.timedelta(days=days)).strftime("%Y%m%d")
-            orders = self.api.get_order_history(start_date=start_date, end_date=end_date)
+            orders = self._get_order_history_cached(start_date, end_date)
             for order in orders:
                 if order.get("code") == code and order.get("buy_sell") == "매수":
                     return True
@@ -410,10 +433,10 @@ class StockScreener:
         market_regime = None
         if config.CURRENT_SETTINGS.get("market_regime_filter_enabled", True):
             if fast_mode:
-                market_regime = getattr(self, "_cached_market_regime", None) or {"regime": "BULL"}
+                cached = _MARKET_REGIME_CACHE.get(holding.get("market", "KOSPI")) or _MARKET_REGIME_CACHE.get("KOSPI")
+                market_regime = cached[1] if cached else {"regime": "BULL"}
             else:
                 market_regime = self.get_market_regime(market=holding.get("market", "KOSPI"))
-                self._cached_market_regime = market_regime
 
         # 유효 설정 (해당 종목의 진입 전략 및 시장 국면 프리셋 적용)
         holding_strat = self._get_holding_strategy(code)
@@ -578,13 +601,14 @@ class StockScreener:
             top_candidates = unqualified_candidates[:3]
 
         sell_proposals = []
-        for holding in holdings:
-            try:
-                sell_res = self.evaluate_sell_signals(holding)
-                if sell_res:
-                    sell_proposals.append(sell_res)
-            except Exception as e:
-                self.logger.warning(f"[{holding.get('name')}] 매도 분석 예외: {e}")
+        with self.position_tracker.batch_updates():
+            for holding in holdings:
+                try:
+                    sell_res = self.evaluate_sell_signals(holding)
+                    if sell_res:
+                        sell_proposals.append(sell_res)
+                except Exception as e:
+                    self.logger.warning(f"[{holding.get('name')}] 매도 분석 예외: {e}")
 
         # 현재 잔고 기준 실시간 재평가된 매도 신호만 최신 반영 (조건 해제 종목 자동 제외 및 실시간 가격/손익 동기화)
         merged_sell_proposals = sell_proposals

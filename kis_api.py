@@ -13,6 +13,7 @@ from typing import Dict, Any, List, Optional
 import config
 from time_utils import now, today
 from core.exceptions import KISApiError, KISAuthError, KISRateLimitError, KISOrderError
+from core.storage import atomic_save_json
 
 logger = logging.getLogger("KISApiClient")
 
@@ -33,6 +34,9 @@ class KISApiClient:
     """한국투자증권 Open API (REST API) 통신 클래스"""
     _shared_session: Optional[requests.Session] = None
     _session_lock = threading.Lock()
+    # 프로세스 내 모든 클라이언트(스케줄러 잡/Streamlit 세션)가 공유하는 호출 간격 제한
+    _rate_lock = threading.Lock()
+    _last_call_ts: float = 0.0
 
     def __init__(
         self,
@@ -53,7 +57,6 @@ class KISApiClient:
         self.token_issued_at: float = 0
         self.token_expires_in: int = 86400
 
-        self.last_call_time: float = 0
         self.last_token_attempt_time: float = 0
         self._token_file_path = "token_kis_mock.json" if self.mock else "token_kis_real.json"
         
@@ -100,11 +103,13 @@ class KISApiClient:
         return "NAS"
 
     def _rate_limit(self):
-        """API 연쇄 호출 제한 안전 딜레이"""
-        elapsed = time.time() - self.last_call_time
-        if elapsed < config.API_CALL_DELAY:
-            time.sleep(config.API_CALL_DELAY - elapsed)
-        self.last_call_time = time.time()
+        """API 연쇄 호출 제한 안전 딜레이 (프로세스 전역 공유: 여러 인스턴스 동시 호출로 KIS 초당 한도 초과 방지)"""
+        cls = KISApiClient
+        with cls._rate_lock:
+            elapsed = time.time() - cls._last_call_ts
+            if elapsed < config.API_CALL_DELAY:
+                time.sleep(config.API_CALL_DELAY - elapsed)
+            cls._last_call_ts = time.time()
 
     def _load_token_file(self):
         """로컬 파일에 저장된 유효한 Access Token이 있는지 로드"""
@@ -135,8 +140,8 @@ class KISApiClient:
                 "issued_at": self.token_issued_at,
                 "expires_in": self.token_expires_in
             }
-            with open(self._token_file_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            if not atomic_save_json(self._token_file_path, data):
+                raise IOError("atomic_save_json 실패")
             logger.info(f"새 KIS Access Token 로컬 파일 저장 완료 ({self._token_file_path})")
         except Exception as e:
             logger.warning(f"토큰 파일 저장 실패: {e}")
@@ -2222,29 +2227,43 @@ class KISApiClient:
             "CTX_AREA_FK100": "",
             "CTX_AREA_NK100": ""
         }
+        orders = []
         try:
-            res = self._request_with_retry("GET", url, headers=headers, params=params, timeout=7)
-            data = res.json()
-            output1 = data.get("output1", [])
-            orders = []
-            for item in output1:
-                orders.append({
-                    "order_no": item.get("odno"),
-                    "code": item.get("pdno"),
-                    "name": item.get("prdt_name"),
-                    "buy_sell": "매수" if item.get("sll_buy_dvsn_cd") == "02" else "매도",
-                    "order_qty": int(item.get("ord_qty", 0)),
-                    "order_price": float(item.get("ord_unpr", 0)),
-                    "ccld_qty": int(item.get("tot_ccld_qty", 0)),
-                    "ccld_price": float(item.get("avg_prvs", 0)),
-                    "order_time": item.get("ord_tmd"),
-                    "order_date": item.get("ord_dt", ""),
-                    "status": "체결완료" if int(item.get("ord_qty", 0)) == int(item.get("tot_ccld_qty", 0)) and int(item.get("ord_qty", 0)) > 0 else "미체결/부분체결"
-                })
+            # 연속조회(tr_cont/CTX_AREA)로 전체 페이지 수집 (첫 페이지 이후 내역 누락 방지)
+            for page in range(20):
+                res = self._request_with_retry("GET", url, headers=headers, params=params, timeout=7)
+                data = res.json()
+                if data.get("rt_cd") not in (None, "0"):
+                    self.logger.error(f"주문내역 조회 실패: [{data.get('msg_cd')}] {data.get('msg1')}")
+                    break
+                self._append_order_items(orders, data.get("output1", []))
+                if res.headers.get("tr_cont") not in ("F", "M"):
+                    break
+                params["CTX_AREA_FK100"] = data.get("ctx_area_fk100", "")
+                params["CTX_AREA_NK100"] = data.get("ctx_area_nk100", "")
+                headers = dict(headers, tr_cont="N")
             return orders
         except Exception as e:
             self.logger.error(f"주문내역 조회 에러: {e}")
-            return []
+            return orders
+
+    @staticmethod
+    def _append_order_items(orders: List[Dict[str, Any]], output1: List[Dict[str, Any]]) -> None:
+        """주문체결 조회 응답(output1)을 표준 주문 dict로 변환하여 추가"""
+        for item in output1:
+            orders.append({
+                "order_no": item.get("odno"),
+                "code": item.get("pdno"),
+                "name": item.get("prdt_name"),
+                "buy_sell": "매수" if item.get("sll_buy_dvsn_cd") == "02" else "매도",
+                "order_qty": int(item.get("ord_qty", 0)),
+                "order_price": float(item.get("ord_unpr", 0)),
+                "ccld_qty": int(item.get("tot_ccld_qty", 0)),
+                "ccld_price": float(item.get("avg_prvs", 0)),
+                "order_time": item.get("ord_tmd"),
+                "order_date": item.get("ord_dt", ""),
+                "status": "체결완료" if int(item.get("ord_qty", 0)) == int(item.get("tot_ccld_qty", 0)) and int(item.get("ord_qty", 0)) > 0 else "미체결/부분체결"
+            })
 
 
     def get_trade_history_with_profit(self, start_date: Optional[str] = None, end_date: Optional[str] = None) -> Dict[str, Any]:
