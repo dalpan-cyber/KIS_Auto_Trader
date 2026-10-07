@@ -22,6 +22,7 @@ class MonthlyTrendStrategy(BaseStrategy):
     """월봉 10개월 이동평균선 추세추종 (GTAA) 전략"""
 
     name = "monthly_trend"
+    prefer_own_common_defaults = True
     display_name = "월봉 10이평 추세추종 (GTAA)"
     description = "KOSPI 100 대형주 대상, 월봉 종가가 10개월 이동평균선(SMA 10)을 상향 돌파 시 매수하고 하향 이탈 시 전량 현금화하는 중장기 전술적 자산배분 전략"
 

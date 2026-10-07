@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Dict, Any, List, Optional
 
 from google_sheet_manager import GoogleSheetManager
+from core.storage import atomic_save_json
 
 logger = logging.getLogger("InfiniteStateManager")
 
@@ -104,12 +105,10 @@ class InfiniteStateManager:
 
     def save_state(self):
         """현재 무한매수 전략 상태를 로컬 JSON 파일로 저장 및 구글 시트 State 워크시트 백업"""
-        try:
-            with open(self.file_path, "w", encoding="utf-8") as f:
-                json.dump(self.states, f, ensure_ascii=False, indent=2)
+        if atomic_save_json(self.file_path, self.states):
             logger.debug("무한매수 상태 파일 저장 완료")
-        except Exception as e:
-            logger.error(f"무한매수 상태 파일 저장 실패: {e}")
+        else:
+            logger.error("무한매수 상태 파일 저장 실패")
 
         # 구글 시트 연동 시 State 워크시트에 진행 회차/전략 상태 실시간 동기화
         if hasattr(self, "gss_mgr") and self.gss_mgr and getattr(self.gss_mgr, "is_connected", False):
@@ -117,6 +116,25 @@ class InfiniteStateManager:
                 self.gss_mgr.sync_all_states(self.states)
             except Exception as e:
                 logger.debug(f"구글 시트 State 동기화 예외: {e}")
+
+    # =========================================================================
+    # 당일 주문 발주 원장 (GitHub Actions 재실행/UI 버튼/CLI 중복 발주 방지)
+    # =========================================================================
+    def is_order_placed(self, symbol: str, session_date: str, order_key: str) -> bool:
+        """해당 거래 세션에 같은 주문 슬롯이 이미 접수되었는지 확인"""
+        ledger = self.states.get(symbol.upper(), {}).get("order_ledger", {})
+        return ledger.get("session") == session_date and order_key in ledger.get("keys", [])
+
+    def mark_order_placed(self, symbol: str, session_date: str, order_key: str) -> None:
+        """주문 접수 성공 시 원장에 기록하고 즉시 저장"""
+        st = self.states.setdefault(symbol.upper(), {})
+        ledger = st.get("order_ledger") or {}
+        if ledger.get("session") != session_date:
+            ledger = {"session": session_date, "keys": []}
+        if order_key not in ledger["keys"]:
+            ledger["keys"].append(order_key)
+        st["order_ledger"] = ledger
+        self.save_state()
 
     def get_symbol_state(
         self,

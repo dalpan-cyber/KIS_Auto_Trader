@@ -24,6 +24,41 @@ _scheduler = None
 _thread_running = False
 _worker_thread = None
 
+# 프로세스 간 스케줄러 단일 실행 보장용 락 파일 (Streamlit 핫리로드 / scheduler.py 동시 실행 시 잡 중복 방지)
+SCHEDULER_LOCK_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scheduler.lock")
+_lock_handle = None
+_lock_held_elsewhere = False
+
+
+def _acquire_process_lock() -> bool:
+    """OS 파일 락으로 머신 내 단 하나의 스케줄러만 동작하도록 보장 (프로세스 종료 시 자동 해제)"""
+    global _lock_handle
+    if _lock_handle is not None:
+        return True
+    handle = open(SCHEDULER_LOCK_FILE, "a+")
+    try:
+        if os.name == "nt":
+            import msvcrt
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return False
+    handle.seek(0)
+    handle.truncate()
+    handle.write(f"pid={os.getpid()} started={now()}\n")
+    handle.flush()
+    _lock_handle = handle
+    return True
+
+
+def is_scheduler_active() -> bool:
+    """이 프로세스 또는 다른 프로세스에서 스케줄러가 동작 중인지 여부"""
+    return _lock_held_elsewhere or (_scheduler is not None and getattr(_scheduler, "running", False))
+
 # =============================================================================
 # 5단계 정기 스케줄 작업 함수 정의
 # =============================================================================
@@ -154,10 +189,16 @@ class SimpleFallbackScheduler:
 
 def start_scheduler():
     """백그라운드 스케줄러 시작 (APScheduler 또는 내장 스케줄러 사용)"""
-    global _scheduler
+    global _scheduler, _lock_held_elsewhere
     if _scheduler is not None and getattr(_scheduler, "running", False):
         logger.info("스케줄러가 이미 실행 중입니다.")
         return _scheduler
+
+    if not _acquire_process_lock():
+        _lock_held_elsewhere = True
+        logger.warning(f"다른 프로세스(또는 이전 로드된 모듈)에서 스케줄러가 이미 실행 중이어서 시작하지 않습니다. ({SCHEDULER_LOCK_FILE})")
+        return None
+    _lock_held_elsewhere = False
 
     try:
         from apscheduler.schedulers.background import BackgroundScheduler

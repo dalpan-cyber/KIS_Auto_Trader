@@ -122,8 +122,31 @@ class TraderBot:
             except Exception as e:
                 self.logger.error(f"[{code}] 현재가 조회 실패: {e}")
 
+    @staticmethod
+    def _us_session_date() -> str:
+        """주문이 적용될 미국 정규장 세션 일자 (미 동부시간 16시 이후 발주분은 다음 거래일 세션)"""
+        from zoneinfo import ZoneInfo
+        et_now = datetime.datetime.now(ZoneInfo("America/New_York"))
+        session = et_now.date()
+        if et_now.hour >= 16:
+            session += datetime.timedelta(days=1)
+        while session.weekday() >= 5:
+            session += datetime.timedelta(days=1)
+        return session.strftime("%Y-%m-%d")
+
+    @staticmethod
+    def _assign_order_keys(orders: List[Dict[str, Any]]) -> None:
+        """당일 주문 목록의 각 주문에 슬롯 키(액션_주문유형_순번) 부여 (가격 변동과 무관하게 동일 슬롯 식별)"""
+        seq: Dict[str, int] = {}
+        for order in orders:
+            base = f"{order['action']}_{order['ord_type']}"
+            seq[base] = seq.get(base, 0) + 1
+            order["order_key"] = f"{base}_{seq[base]}"
+
     def fetch_account_balance(self):
         """계좌 잔고, 국내 예수금 및 해외 외화(USD) 예수금 수신"""
+        # 해외주식 보유 수량을 실제 API로 정상 확인했는지 여부 (실패/시뮬레이션 시 0주를 '전량 매도'로 오판 방지)
+        self.overseas_balance_verified = False
         res = self.api.get_account_balance()
         if res.get("success"):
             self.available_cash = float(res.get("deposit", 0))
@@ -157,6 +180,7 @@ class TraderBot:
             overseas_stock_res = self.api.get_overseas_stock_balance()
             self.logger.info(f"[계좌잔고] 해외주식 잔고 API 응답: success={overseas_stock_res.get('success')}, 보유종목수={len(overseas_stock_res.get('holdings', []))}, is_simulated={overseas_stock_res.get('is_simulated')}, msg={overseas_stock_res.get('msg', '')}")
             if overseas_stock_res.get("success"):
+                self.overseas_balance_verified = bool(self.api.mock or not overseas_stock_res.get("is_simulated", False))
                 overseas_items = overseas_stock_res.get("holdings", [])
                 self.logger.info(f"[계좌잔고] 해외주식 잔고 상세: {[(item.get('code'), item.get('name'), item.get('qty')) for item in overseas_items]}")
                 for item in overseas_items:
@@ -325,6 +349,15 @@ class TraderBot:
                 held_qty = int(self.holdings.get(symbol, {}).get("qty", 0))
                 peak_qty = st.get("peak_qty", 0)
 
+                # 케이스 A 가드: 잔고 조회 실패/시뮬레이션 응답으로 0주가 된 경우 사이클 완료로 오판하지 않음
+                if (prev_status in ("BUYING", "PAUSED") and prev_round > 0 and peak_qty > 0 and held_qty == 0
+                        and not getattr(self, "overseas_balance_verified", False)):
+                    self.logger.warning(
+                        f"⚠️ [{symbol}] 해외주식 잔고를 정상 조회하지 못해 보유 0주로 표시됩니다. "
+                        f"사이클 완료 처리를 보류합니다. ({prev_round}회차, 직전 보유 {peak_qty}주 유지)"
+                    )
+                    continue
+
                 # 케이스 A: 전량 매도 체결 후 잔고가 0주인 경우 (LOC 매수 미체결)
                 if prev_status in ("BUYING", "PAUSED") and prev_round > 0 and peak_qty > 0 and held_qty == 0:
                     self.logger.info(
@@ -361,7 +394,7 @@ class TraderBot:
                         cur_p = self.current_prices.get(symbol, 0.0)
                         if cur_p <= 0 and hasattr(self.api, "get_overseas_stock_price"):
                             try:
-                                cur_p = self.api.get_overseas_stock_price(symbol)
+                                cur_p = float(self.api.get_overseas_stock_price(symbol).get("price", 0.0) or 0.0)
                             except Exception:
                                 cur_p = 0.0
                         sell_exec_price = cur_p
@@ -618,8 +651,15 @@ class TraderBot:
         self.logger.info(f"✅ [{symbol}] 사용자가 매매 제안을 승인하였습니다! {prop['action_kr']} 주문을 전송합니다 ({qty}주)")
 
         if self.api.is_overseas_symbol(symbol):
+            order_key = prop.get("order_key")
+            session_date = prop.get("session_date")
+            if order_key and session_date and self.infinite_state_mgr.is_order_placed(symbol, session_date, order_key):
+                self.logger.warning(f"⏭ [{symbol}] {session_date} 세션에 이미 접수된 주문 슬롯({order_key})이어서 중복 발주를 건너뜁니다.")
+                return False
             order_res = self.api.order_overseas_cash(symbol, qty, price=price, buy=is_buy, ord_type=ord_type)
             if order_res.get("success"):
+                if order_key and session_date:
+                    self.infinite_state_mgr.mark_order_placed(symbol, session_date, order_key)
                 if is_buy:
                     self.logger.info(f"ℹ️ [{symbol}] 매수 주문 접수 완료 (진행 회차는 실계좌 체결/잔고 동기화 시 정석 공식으로 자동 갱신됩니다)")
                 else:
@@ -729,6 +769,10 @@ class TraderBot:
             daily_candles=daily_candles
         )
 
+        # 슬롯 키는 필터 적용 전 전체 주문 기준으로 부여 (필터와 무관하게 동일 슬롯 식별)
+        self._assign_order_keys(orders)
+        session_date = self._us_session_date()
+
         # 필터 적용
         if action_filter != "ALL":
             orders = [o for o in orders if o["action"] == action_filter]
@@ -746,6 +790,12 @@ class TraderBot:
             ord_type = order["ord_type"]
             desc = order["desc"]
             round_inc = order.get("round_inc", 1.0)
+
+            if self.infinite_state_mgr.is_order_placed(symbol, session_date, order["order_key"]):
+                msg = f"⏭ [{symbol}] {desc} 주문은 {session_date} 세션에 이미 접수되어 중복 발주를 건너뜁니다."
+                self.logger.info(msg)
+                result["messages"].append(msg)
+                continue
 
             # 전량 익절 매도 시 실시간 계좌 수량과 자동 맞춤
             if action == "SELL":
@@ -767,6 +817,7 @@ class TraderBot:
 
             order_res = self.api.order_overseas_cash(symbol, qty, price=price, buy=is_buy, ord_type=ord_type)
             if order_res.get("success"):
+                self.infinite_state_mgr.mark_order_placed(symbol, session_date, order["order_key"])
                 result["executed"] += 1
                 msg = f"✅ [{symbol}] {action_kr} 주문 접수 성공! ({qty}주 @ ${price:.2f})"
                 result["messages"].append(msg)
@@ -861,6 +912,8 @@ class TraderBot:
                     daily_candles=daily_candles
                 )
                 orders_sent = False
+                self._assign_order_keys(orders)
+                session_date = self._us_session_date()
 
                 for order in orders:
                     action = order["action"]
@@ -880,6 +933,10 @@ class TraderBot:
                             qty = actual_held_qty
                             order["qty"] = qty
 
+                    if self.infinite_state_mgr.is_order_placed(symbol, session_date, order["order_key"]):
+                        self.logger.info(f"⏭ [{symbol}] {desc} 주문은 {session_date} 세션에 이미 접수되어 중복 발주를 건너뜁니다.")
+                        continue
+
                     total_ord_amt = qty * price
                     proposal_id = f"INFINITE_{symbol}_{action}_{ord_type}_{price:.2f}"
 
@@ -896,6 +953,8 @@ class TraderBot:
                                 "total_price": total_ord_amt,
                                 "ord_type": ord_type,
                                 "round_inc": round_inc,
+                                "order_key": order["order_key"],
+                                "session_date": session_date,
                                 "reason": desc,
                                 "timestamp": time.strftime("%H:%M:%S")
                             }
@@ -913,6 +972,7 @@ class TraderBot:
                         )
                         order_res = self.api.order_overseas_cash(symbol, qty, price=price, buy=is_buy, ord_type=ord_type)
                         if order_res.get("success"):
+                            self.infinite_state_mgr.mark_order_placed(symbol, session_date, order["order_key"])
                             orders_sent = True
                             if is_buy:
                                 self.logger.info(

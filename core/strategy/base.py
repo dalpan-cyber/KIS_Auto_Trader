@@ -37,6 +37,10 @@ class BaseStrategy(ABC):
     # }
     settings_schema: List[Dict[str, Any]] = []
 
+    # True: 공통(common) 리스크 설정보다 이 전략의 스키마 기본값을 우선 적용
+    # (예: 월봉 GTAA 전략은 단기 전략용 공통 손절/익절과 성격이 달라 자체 기본값 유지)
+    prefer_own_common_defaults: bool = False
+
     @classmethod
     def get_settings_schema(cls) -> List[Dict[str, Any]]:
         """전략별 설정 스키마 반환"""

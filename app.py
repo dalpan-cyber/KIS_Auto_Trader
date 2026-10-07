@@ -10,7 +10,7 @@ import streamlit as st
 import app_config as config
 from kis_api import KISApiClient, resolve_mock_mode
 from screener import StockScreener
-from scheduler import start_scheduler
+from scheduler import start_scheduler, is_scheduler_active
 from time_utils import now_str
 from ui import (
     apply_custom_styles,
@@ -76,6 +76,11 @@ def realtime_detection_fragment():
     now_ts = time.time()
     if now_ts - last_check >= 300:
         st.session_state["last_realtime_check"] = now_ts
+        # 장중(09:05~15:05)에는 백그라운드 스케줄러가 5분 감시를 수행하므로 결과 화면 갱신만 수행
+        hm = int(now_str("%H%M"))
+        if is_scheduler_active() and 905 <= hm <= 1505:
+            st.session_state["last_check_time"] = StockScreener.load_proposals(force_sheet_sync=False).get("sell_checked_at", "-")
+            st.rerun()
         with st.spinner("⚡ 5분 주기 고속 리스크 감시 중 (손익·트레일링스탑)..."):
             active_screener = st.session_state.get("screener")
             if active_screener is None or type(active_screener) is not StockScreener:

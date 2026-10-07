@@ -397,12 +397,18 @@ def get_effective_strategy_settings(
     base = base_settings.copy() if base_settings is not None else CURRENT_SETTINGS.copy()
     base.pop("strategy_settings", None)
 
-    # 1. 전략 클래스의 스키마 기본값(defaults) 우선 병합 (각 전략마다 고유 기본값이 다를 수 있음)
+    # 1. 전략 스키마 기본값 병합
+    #    - 일반 전략: 전역(공통 탭) 설정에 없는 키만 기본값으로 채움 (사용자 공통 설정 우선)
+    #    - prefer_own_common_defaults 전략(월봉 GTAA 등): 전략 기본값이 공통 설정보다 우선
     try:
-        from core.strategy import get_strategy_settings_defaults
+        from core.strategy import get_strategy_settings_defaults, get_strategy_class
         defaults = get_strategy_settings_defaults(name)
         if defaults:
-            base.update(defaults)
+            if getattr(get_strategy_class(name), "prefer_own_common_defaults", False):
+                base.update(defaults)
+            else:
+                for k, v in defaults.items():
+                    base.setdefault(k, v)
     except Exception as e:
         logger.debug(f"전략 기본값 스키마 로드 생략: {e}")
 
