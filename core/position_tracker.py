@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from typing import Dict, Any, Optional
 from time_utils import today, now_str
 from core.storage import safe_load_json, atomic_save_json
+from core.stock_code import normalize_stock_code
 
 logger = logging.getLogger("PositionTracker")
 
@@ -53,8 +54,7 @@ class PositionTracker:
         """종목 코드를 6자리 문자열로 정규화하여 딕셔너리 키 일관성 보장"""
         normalized: Dict[str, Dict[str, Any]] = {}
         for k, v in state.items():
-            k_str = str(k).strip().lstrip("'")
-            code_6 = k_str.zfill(6) if k_str.isdigit() and len(k_str) < 6 else k_str
+            code_6 = normalize_stock_code(k)
             if isinstance(v, dict):
                 v["code"] = code_6
             normalized[code_6] = v
@@ -116,7 +116,7 @@ class PositionTracker:
     ) -> Dict[str, Any]:
         """신규 매수 체결 종목의 포지션 정보 및 진입 전략 기록"""
         c_str = str(code).strip().lstrip("'")
-        code_6 = c_str.zfill(6) if c_str.isdigit() and len(c_str) < 6 else c_str
+        code_6 = normalize_stock_code(c_str)
         state = self.load_positions_state()
         pos = state.get(code_6, {})
         pos["code"] = code_6
@@ -136,7 +136,7 @@ class PositionTracker:
     def get_position_strategy(self, code: str) -> Optional[str]:
         """보유 종목의 매수 진입 전략 반환"""
         c_str = str(code).strip().lstrip("'")
-        code_6 = c_str.zfill(6) if c_str.isdigit() and len(c_str) < 6 else c_str
+        code_6 = normalize_stock_code(c_str)
         state = self.load_positions_state()
         pos = state.get(code_6) or state.get(c_str)
         if pos and pos.get("strategy"):
@@ -154,7 +154,7 @@ class PositionTracker:
     ) -> Dict[str, Any]:
         """보유 종목의 진입 전략을 수동으로 변경하거나 신규 지정"""
         c_str = str(code).strip().lstrip("'")
-        code_6 = c_str.zfill(6) if c_str.isdigit() and len(c_str) < 6 else c_str
+        code_6 = normalize_stock_code(c_str)
         state = self.load_positions_state()
         pos = state.get(code_6, {})
         pos["code"] = code_6
@@ -185,7 +185,7 @@ class PositionTracker:
     ) -> Dict[str, Any]:
         """라이브 종목별 최고가 갱신 및 상태 반환"""
         c_str = str(code).strip().lstrip("'")
-        code_6 = c_str.zfill(6) if c_str.isdigit() and len(c_str) < 6 else c_str
+        code_6 = normalize_stock_code(c_str)
         state = self.load_positions_state()
         is_new = code_6 not in state
         pos = state.get(code_6, {})
@@ -216,7 +216,7 @@ class PositionTracker:
     def clear_position_state(self, code: str) -> None:
         """전량 매도된 종목의 포지션 상태 정리"""
         c_str = str(code).strip().lstrip("'")
-        code_6 = c_str.zfill(6) if c_str.isdigit() and len(c_str) < 6 else c_str
+        code_6 = normalize_stock_code(c_str)
         state = self.load_positions_state()
         changed = False
         for c in (code_6, c_str, c_str.lstrip("0")):

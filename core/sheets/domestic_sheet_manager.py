@@ -11,6 +11,7 @@ from typing import Dict, Any, List, Optional
 
 from core.sheets.base_sheet import BaseSheetManager, GSPREAD_AVAILABLE
 import time_utils
+from core.stock_code import normalize_stock_code
 import app_config as config
 
 logger = logging.getLogger("DomesticSheetManager")
@@ -379,8 +380,7 @@ class DomesticSheetManager(BaseSheetManager):
             now_str = time_utils.now_str()
             rows = []
             for raw_code, data in positions.items():
-                code_str = str(raw_code).strip().lstrip("'")
-                code_6 = code_str.zfill(6) if code_str.isdigit() and len(code_str) < 6 else code_str
+                code_6 = normalize_stock_code(raw_code)
 
                 # 종목명이 코드와 같거나 비어있으면 매핑에서 검색
                 name = data.get("name", code_6)
@@ -456,7 +456,7 @@ class DomesticSheetManager(BaseSheetManager):
                 raw_code = str(rec.get("종목코드", "")).strip().lstrip("'")
                 if not raw_code:
                     continue
-                code = raw_code.zfill(6) if raw_code.isdigit() and len(raw_code) < 6 else raw_code
+                code = normalize_stock_code(raw_code)
 
                 strat_raw = str(rec.get("매수전략", "") or "").strip()
                 # 과거 6열 시절 갱신일시 컬럼에 전략이 들어갔던 경우 보정
@@ -486,7 +486,7 @@ class DomesticSheetManager(BaseSheetManager):
 
                 last_upd = str(rec.get("갱신일시", ""))
                 if last_upd in ("momentum", "rebound", "monthly_trend", "multi"):
-                    last_upd = now_str()
+                    last_upd = time_utils.now_str()
 
                 positions[code] = {
                     "code": code,

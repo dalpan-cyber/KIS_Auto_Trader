@@ -15,18 +15,26 @@ API 정보:
   - URL: /uapi/overseas-stock/v1/trading/inquire-ccnl
 
 사용법:
-  python test_inquire_ccnl.py                    # 기본 실행 (실전)
-  python test_inquire_ccnl.py --mock             # 모의투자 모드로 실행
-  python test_inquire_ccnl.py --days 90          # 조회 기간 (일)
-  python test_inquire_ccnl.py --pdno TQQQ        # 특정 종목 조회
-  python test_inquire_ccnl.py --excg NASD        # 특정 거래소 조회
-  python test_inquire_ccnl.py --sll-buy 01       # 매도/매수 구분 (00:전체, 01:매도, 02:매수)
-  python test_inquire_ccnl.py --ccld 00          # 체결/미체결 구분 (00:전체, 01:체결, 02:미체결)
-  python test_inquire_ccnl.py --sort AS          # 정렬순서 (DS:정순, AS:역순)
-  python test_inquire_ccnl.py --debug            # 디버그 모드 (다양한 파라미터 조합 시도)
+  python scripts/check_inquire_ccnl.py                    # 기본 실행 (실전)
+  python scripts/check_inquire_ccnl.py --mock             # 모의투자 모드로 실행
+  python scripts/check_inquire_ccnl.py --days 90          # 조회 기간 (일)
+  python scripts/check_inquire_ccnl.py --pdno TQQQ        # 특정 종목 조회
+  python scripts/check_inquire_ccnl.py --excg NASD        # 특정 거래소 조회
+  python scripts/check_inquire_ccnl.py --sll-buy 01       # 매도/매수 구분 (00:전체, 01:매도, 02:매수)
+  python scripts/check_inquire_ccnl.py --ccld 00          # 체결/미체결 구분 (00:전체, 01:체결, 02:미체결)
+  python scripts/check_inquire_ccnl.py --sort AS          # 정렬순서 (DS:정순, AS:역순)
+  python scripts/check_inquire_ccnl.py --debug            # 디버그 모드 (다양한 파라미터 조합 시도)
 """
 import os
 import sys
+# 수동 점검 스크립트: 프로젝트 루트 모듈(kis_api, config 등) import 경로 추가
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def mask(value) -> str:
+    """토큰/키/계좌번호 출력 시 앞 2자리와 마지막 2자리만 노출 (CI 로그 유출 방지)"""
+    v = str(value or "")
+    return "(미설정)" if not v else (v[:2] + "*" * max(len(v) - 4, 2) + v[-2:] if len(v) > 4 else "*" * len(v))
 import json
 import time
 import logging
@@ -240,9 +248,9 @@ def debug_api_call(url_base: str, access_token: str, params: dict, tr_id: str, u
 
     headers = build_headers(access_token, APP_KEY, APP_SECRET, tr_id)
     print(f"  Headers (일부):")
-    print(f"    authorization = Bearer {access_token[:20]}...")
-    print(f"    appkey = {APP_KEY[:10]}...")
-    print(f"    appsecret = {APP_SECRET[:10]}...")
+    print(f"    authorization = Bearer {mask(access_token)}")
+    print(f"    appkey = {mask(APP_KEY)}")
+    print(f"    appsecret = {mask(APP_SECRET)}")
     print(f"    tr_id = {tr_id}")
     print(f"    tr_cont = {headers.get('tr_cont')}")
     print(f"    custtype = {headers.get('custtype')}")
@@ -554,7 +562,7 @@ def main():
     print(f"  .env 로드: MOCK_TRADING_ONLY={MOCK_TRADING_ONLY}")
     print(f"  실행 모드: {'모의투자' if mock_mode else '실전투자'}")
     print(f"  URL_BASE: {url_base}")
-    print(f"  CANO: {CANO}")
+    print(f"  CANO: {mask(CANO)}")
     print(f"  ACNT_PRDT_CD: {ACNT_PRDT_CD}")
     print(f"  APP_KEY 설정됨: {bool(APP_KEY)}")
     print(f"  APP_SECRET 설정됨: {bool(APP_SECRET)}")

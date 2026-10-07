@@ -4,11 +4,20 @@ CTOS4001R (기간별거래) 단일 쿼리 테스트 스크립트
 목적: 해외주식 체결이력 조회 API(CTOS4001R) 하나만 단일 쿼리로 시험한다.
 
 사용법:
-  python test_ctos4001r_single.py                    # 기본 실행 (실거래)
-  python test_ctos4001r_single.py --mock             # 모의투자 모드로 실행
-  python test_ctos4001r_single.py --days 90          # 조회 기간 (일)
+  python scripts/check_ctos4001r_single.py                    # 기본 실행 (실거래)
+  python scripts/check_ctos4001r_single.py --mock             # 모의투자 모드로 실행
+  python scripts/check_ctos4001r_single.py --days 90          # 조회 기간 (일)
 """
+import os
 import sys
+# 수동 점검 스크립트: 프로젝트 루트 모듈(kis_api, config 등) import 경로 추가
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def mask(value) -> str:
+    """토큰/키/계좌번호 출력 시 앞 2자리와 마지막 2자리만 노출 (CI 로그 유출 방지)"""
+    v = str(value or "")
+    return "(미설정)" if not v else (v[:2] + "*" * max(len(v) - 4, 2) + v[-2:] if len(v) > 4 else "*" * len(v))
 import json
 import time
 import logging
@@ -50,7 +59,7 @@ def main():
     print(f"  현재 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"  MOCK_TRADING_ONLY: {config.MOCK_TRADING_ONLY}")
     print(f"  URL_BASE: {config.URL_BASE}")
-    print(f"  CANO: {config.CANO}")
+    print(f"  CANO: {mask(config.CANO)}")
     print(f"  ACNT_PRDT_CD: {config.ACNT_PRDT_CD}")
     print(f"  APP_KEY 설정됨: {bool(config.APP_KEY)}")
     print(f"  APP_SECRET 설정됨: {bool(config.APP_SECRET)}")
@@ -100,7 +109,7 @@ def main():
     headers = client._get_headers(tr_id)
     headers["tr_cont"] = ""  # 초기 조회 (연속 조회 시 "N")
     print(f"  Headers (일부):")
-    print(f"    authorization = Bearer {client.access_token[:20]}...")
+    print(f"    authorization = Bearer {mask(client.access_token)}")
     print(f"    appkey = {client.app_key[:10]}...")
     print(f"    appsecret = {client.app_secret[:10]}...")
     print(f"    tr_id = {tr_id}")

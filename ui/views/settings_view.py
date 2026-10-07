@@ -7,6 +7,7 @@ KIS Auto Trading - Settings View
 import time
 from typing import Dict, Any, List
 import streamlit as st
+from ui.flash import flash
 import app_config as config
 from core.strategy import list_strategies, get_strategy_settings_schema, get_strategy_specific_settings_keys
 
@@ -293,8 +294,7 @@ def render_settings():
 
             if ok:
                 active_labels = [strategy_options.get(s, s) for s in selected_active]
-                st.success(f"✅ 전략 및 시스템 설정이 성공적으로 저장되었습니다! (운영 모드: {preset_options[selected_mode_key]}, 활성 전략: {', '.join(active_labels)})")
-                time.sleep(0.8)
+                flash(f"✅ 전략 및 시스템 설정이 성공적으로 저장되었습니다! (운영 모드: {preset_options[selected_mode_key]}, 활성 전략: {', '.join(active_labels)})")
                 st.rerun()
             else:
                 st.error("❌ 설정 저장에 실패했습니다.")

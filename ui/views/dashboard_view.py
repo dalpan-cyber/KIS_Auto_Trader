@@ -6,6 +6,8 @@ import time
 import datetime
 import pandas as pd
 import streamlit as st
+from core.stock_code import normalize_stock_code
+from ui.flash import flash
 import streamlit.components.v1 as components
 import plotly.graph_objects as go
 from time_utils import now_str, today
@@ -221,7 +223,7 @@ def render_overview_tab(api, screener, summary, holdings, proposals, holding_cod
             cr_color = "#ff4d4f" if cr > 0 else "#38bdf8" if cr < 0 else "#94a3b8"
 
             h_code = str(h.get("code", "")).strip().lstrip("'")
-            code_6 = h_code.zfill(6) if h_code.isdigit() and len(h_code) < 6 else h_code
+            code_6 = normalize_stock_code(h_code)
             pos_info = positions_state.get(code_6) or positions_state.get(h_code) or positions_state.get(h_code.lstrip("0")) or {}
 
             # positions_state에 없으면 proposals(추천 이력)에서 진입 전략 역추적
@@ -364,7 +366,7 @@ def render_overview_tab(api, screener, summary, holdings, proposals, holding_cod
                 )
             with col_strat:
                 target_h = next((h for h in holdings if h["code"] == strat_edit_code), {})
-                target_code_6 = strat_edit_code.zfill(6) if strat_edit_code.isdigit() else strat_edit_code
+                target_code_6 = normalize_stock_code(strat_edit_code)
                 curr_pos = positions_state.get(target_code_6) or positions_state.get(strat_edit_code) or {}
                 curr_st = curr_pos.get("strategy", "momentum")
                 strat_options = {
@@ -396,8 +398,7 @@ def render_overview_tab(api, screener, summary, holdings, proposals, holding_cod
                             avg_buy_price=float(target_h.get("avg_buy_price", target_h.get("avg_price", 0))),
                             current_price=float(target_h.get("current_price", 0))
                         )
-                        st.success(f"✅ [{target_h.get('name', strat_edit_code)}] 전략이 '{strat_options[new_strat]}'(으)로 변경 및 저장되었습니다!")
-                        time.sleep(1.0)
+                        flash(f"✅ [{target_h.get('name', strat_edit_code)}] 전략이 '{strat_options[new_strat]}'(으)로 변경 및 저장되었습니다!")
                         st.rerun()
 
         holding_options = [
@@ -411,7 +412,7 @@ def render_overview_tab(api, screener, summary, holdings, proposals, holding_cod
             key="overview_holding_chart_select"
         )
         selected_h = holdings[selected_idx]
-        sel_code_6 = selected_h["code"].zfill(6) if selected_h["code"].isdigit() else selected_h["code"]
+        sel_code_6 = normalize_stock_code(selected_h["code"])
         sel_pos = positions_state.get(sel_code_6) or positions_state.get(selected_h["code"]) or {}
         sel_cond = _calculate_holding_sell_conditions(selected_h, sel_pos)
 
@@ -521,30 +522,16 @@ def render_risk_tab(api, screener, holdings, proposals, realtime_detection_fragm
         with sub_c1:
             if st.button("⚡ 고속 체크", key="btn_fast_check", width="stretch", help="손절/익절/트레일링스탑 리스크 신호를 즉시 검사합니다 (소요시간 < 1초)."):
                 with st.spinner("리스크 신호 고속 분석 중..."):
-                    try:
-                        updated = screener.check_sell_signals_now(fast_mode=True)
-                    except TypeError:
-                        from screener import StockScreener
-                        screener = StockScreener(api)
-                        st.session_state["screener"] = screener
-                        updated = screener.check_sell_signals_now(fast_mode=True)
+                    updated = screener.check_sell_signals_now(fast_mode=True)
                     st.session_state["last_check_time"] = now_str()
-                    st.success(f"✅ 고속 체크 완료: {len(updated.get('sell_proposals', []))}건 감지")
-                    time.sleep(1)
+                    flash(f"✅ 고속 체크 완료: {len(updated.get('sell_proposals', []))}건 감지")
                     st.rerun()
         with sub_c2:
             if st.button("🔍 정밀 분석", key="btn_full_check", width="stretch", help="일봉 차트 60개와 보조지표(데드크로스, 볼린저밴드 등)를 포함하여 전체 매도 신호를 정밀 분석합니다."):
                 with st.spinner("보유 주식 기술적 지표 정밀 분석 중..."):
-                    try:
-                        updated = screener.check_sell_signals_now(fast_mode=False)
-                    except TypeError:
-                        from screener import StockScreener
-                        screener = StockScreener(api)
-                        st.session_state["screener"] = screener
-                        updated = screener.check_sell_signals_now(fast_mode=False)
+                    updated = screener.check_sell_signals_now(fast_mode=False)
                     st.session_state["last_check_time"] = now_str()
-                    st.success(f"✅ 정밀 매도 신호 재분석 완료: {len(updated.get('sell_proposals', []))}건 감지")
-                    time.sleep(1)
+                    flash(f"✅ 정밀 매도 신호 재분석 완료: {len(updated.get('sell_proposals', []))}건 감지")
                     st.rerun()
 
     if realtime_on:
@@ -629,7 +616,7 @@ def render_risk_tab(api, screener, holdings, proposals, realtime_detection_fragm
                                 ord_dv=sell_ord_dv
                             )
                             if res.get("rt_cd") == "0":
-                                st.success(f"✅ 매도 완료 (No. {res.get('order_no')})")
+                                flash(f"매도 완료 (No. {res.get('order_no')})")
                                 
                                 # 포지션 상태 갱신 (실제 주문 체결/전송 시점에만 반영)
                                 try:
@@ -669,7 +656,6 @@ def render_risk_tab(api, screener, holdings, proposals, realtime_detection_fragm
                                     order_no=res.get("order_no", ""),
                                     order_type=sell_ord_type
                                 )
-                                time.sleep(1.5)
                                 st.rerun()
                             else:
                                 st.error(f"❌ 매도 실패: {res.get('msg1')}")
@@ -918,10 +904,7 @@ def render_performance_tab(api):
             yaxis_title="실현 손익 (원)",
             margin=dict(l=20, r=20, t=40, b=20)
         )
-        try:
-            st.plotly_chart(fig_profit, width="stretch", key="dash_profit_summary_chart")
-        except TypeError:
-            st.plotly_chart(fig_profit, width="stretch", key="dash_profit_summary_chart")
+        st.plotly_chart(fig_profit, width="stretch", key="dash_profit_summary_chart")
     else:
         st.info("선택 기간 내 매도 완료된 종목이 없습니다.")
 

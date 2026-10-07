@@ -174,7 +174,6 @@ def render_backtest():
                     "universe_count": len(bt_universe),
                     "mode": bt_mode
                 }
-                time.sleep(0.5)
                 st.rerun()
 
     if "bt_result" in st.session_state:
@@ -247,10 +246,7 @@ def render_backtest():
                     hovermode="x unified",
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
                 )
-                try:
-                    st.plotly_chart(fig, width="stretch", key="backtest_result_chart")
-                except TypeError:
-                    st.plotly_chart(fig, width="stretch", key="backtest_result_chart")
+                st.plotly_chart(fig, width="stretch", key="backtest_result_chart")
 
             # -------------------------------------------------------------
             # [매매 내역 테이블]

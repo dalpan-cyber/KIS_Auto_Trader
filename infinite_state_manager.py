@@ -273,9 +273,9 @@ class InfiniteStateManager:
         self.save_state()
 
     def start_buying(self, symbol: str):
-        """수동 무한매수 시작 (상태를 BUYING으로 설정, 미지정 시에만 시작일 자동 갱신)"""
+        """수동 무한매수 시작 (상태를 BUYING으로 설정, 완료 후 새 사이클이거나 미지정 시 시작일을 오늘로 갱신)"""
         state = self.get_symbol_state(symbol)
-        if state.get("current_round", 0) == 0 and (not state.get("start_date") or state.get("start_date") in ("-", "None", "")):
+        if state.get("current_round", 0) == 0 and (state.get("status") == "COMPLETED" or not state.get("start_date") or state.get("start_date") in ("-", "None", "")):
             state["start_date"] = datetime.now().strftime("%Y-%m-%d")
         state["status"] = "BUYING"
         logger.info(f"▶ [{symbol}] 무한매수 매매 루프 수동 시작! (상태: BUYING, 시작일: {state.get('start_date')})")
@@ -361,7 +361,7 @@ class InfiniteStateManager:
     def advance_round(self, symbol: str, round_inc: float = 0.5):
         """매수 주문 접수/체결 시 진행 회차 증가 (미지정 시에만 시작일 자동 최신화)"""
         state = self.get_symbol_state(symbol)
-        if state.get("current_round", 0) == 0 and (not state.get("start_date") or state.get("start_date") in ("-", "None", "")):
+        if state.get("current_round", 0) == 0 and (state.get("status") == "COMPLETED" or not state.get("start_date") or state.get("start_date") in ("-", "None", "")):
             state["start_date"] = datetime.now().strftime("%Y-%m-%d")
         state["current_round"] = min(state.get("division_count", 40), state.get("current_round", 0) + round_inc)
         state["status"] = "BUYING"

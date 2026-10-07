@@ -386,10 +386,7 @@ def render_interactive_stock_chart(api_client, screener_engine, code: str, name:
             fig = cached_data["fig"]
             latest = cached_data["latest"]
             prev_rsi = cached_data["prev_rsi"]
-            try:
-                st.plotly_chart(fig, width="stretch", key=final_key)
-            except TypeError:
-                st.plotly_chart(fig, width="stretch", key=final_key)
+            st.plotly_chart(fig, width="stretch", key=final_key)
             m1, m2, m3, m4, m5 = st.columns(5)
             with m1:
                 st.metric("현재가", f"{latest['close']:,.0f}원", delta=f"{latest.get('change_rate', 0):+.2f}%")
@@ -572,10 +569,7 @@ def render_interactive_stock_chart(api_client, screener_engine, code: str, name:
                 linecolor="#334155"
             )
 
-            try:
-                st.plotly_chart(fig, width="stretch", key=final_key)
-            except TypeError:
-                st.plotly_chart(fig, width="stretch", key=final_key)
+            st.plotly_chart(fig, width="stretch", key=final_key)
 
             latest = df_tech.iloc[-1]
             prev_rsi = df_tech.iloc[-2]['rsi14'] if len(df_tech) >= 2 else latest['rsi14']

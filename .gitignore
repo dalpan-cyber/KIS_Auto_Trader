@@ -24,6 +24,7 @@ sell_notify_history.json
 recent_search_stocks.json
 executed_buy_orders.json
 scheduler.lock
+logs/
 
 
 # Temp & IDE Files

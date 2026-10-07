@@ -9,6 +9,7 @@ import logging
 import pandas as pd
 import numpy as np
 import streamlit as st
+from ui.flash import flash
 from typing import Dict, Any, List, Optional
 
 PLOTLY_AVAILABLE = False
@@ -273,8 +274,7 @@ def render_stock_detail(symbol: str, bot: TraderBot):
             if st.button("시작일 저장", key=f"sd_save_{symbol}", width="stretch"):
                 new_sd_str = new_sd.strftime("%Y-%m-%d")
                 bot.infinite_state_mgr.update_start_date(symbol, new_sd_str)
-                st.success(f"전략 시작일이 {new_sd_str}로 저장되었습니다 (구글 시트 State 워크시트 실시간 동기화).")
-                time.sleep(1.0)
+                flash(f"전략 시작일이 {new_sd_str}로 저장되었습니다 (구글 시트 State 워크시트 실시간 동기화).")
                 st.rerun()
 
     # 일시중지 상태 안내 배너
@@ -569,10 +569,7 @@ def render_stock_detail(symbol: str, bot: TraderBot):
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
         )
 
-        try:
-            st.plotly_chart(fig, width="stretch", key=f"infinite_chart_{symbol}")
-        except TypeError:
-            st.plotly_chart(fig, width="stretch", key=f"infinite_chart_{symbol}")
+        st.plotly_chart(fig, width="stretch", key=f"infinite_chart_{symbol}")
     else:
         if chart_data:
             df_c = pd.DataFrame(chart_data)

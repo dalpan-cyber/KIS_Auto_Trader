@@ -118,10 +118,7 @@ def render_history(api):
                 yaxis_title="평가손익 (원)",
                 margin=dict(l=20, r=20, t=50, b=20)
             )
-            try:
-                st.plotly_chart(fig_unreal, width="stretch", key="hist_unreal_chart")
-            except TypeError:
-                st.plotly_chart(fig_unreal, width="stretch", key="hist_unreal_chart")
+            st.plotly_chart(fig_unreal, width="stretch", key="hist_unreal_chart")
         else:
             st.info("현재 보유 중인 종목이 없습니다.")
 
@@ -161,10 +158,7 @@ def render_history(api):
                 yaxis_title="실현 손익 (원)",
                 margin=dict(l=20, r=20, t=50, b=20)
             )
-            try:
-                st.plotly_chart(fig_profit, width="stretch", key="hist_profit_chart")
-            except TypeError:
-                st.plotly_chart(fig_profit, width="stretch", key="hist_profit_chart")
+            st.plotly_chart(fig_profit, width="stretch", key="hist_profit_chart")
         else:
             st.info("선택 기간 내 매도 완료된 종목이 없습니다.")
 
@@ -198,7 +192,4 @@ def render_history(api):
                     template="plotly_dark",
                     height=350
                 )
-                try:
-                    st.plotly_chart(fig_pie, width="stretch", key="hist_pie_chart")
-                except TypeError:
-                    st.plotly_chart(fig_pie, width="stretch", key="hist_pie_chart")
+                st.plotly_chart(fig_pie, width="stretch", key="hist_pie_chart")

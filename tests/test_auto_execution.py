@@ -335,6 +335,7 @@ def test_soxl_exchange_and_execution():
     from infinite_state_manager import InfiniteStateManager
     bot.infinite_state_mgr = InfiniteStateManager(file_path=TEST_STATE_FILE, enable_gss=False)
     bot.fetch_account_balance = lambda: None  # 테스트 중 불필요한 네트워크 API 호출 방지
+    bot.overseas_balance_verified = True  # 잔고 조회를 대체했으므로 정상 조회로 간주
     bot.holdings["SOXL"] = {"qty": 0, "avg_price": 0.0}
     bot.current_prices["SOXL"] = 25.0
 
@@ -427,6 +428,7 @@ def test_pause_and_resume_flow():
     bot.infinite_state_mgr = mgr
     bot.infinite_stocks = ["SOXL"]
     bot.fetch_account_balance = lambda: None  # 네트워크 API 호출 방지
+    bot.overseas_balance_verified = True  # 잔고 조회를 대체했으므로 정상 조회로 간주
     bot.holdings["SOXL"] = {"qty": 10, "avg_price": 25.0}
 
     # 1. 초기 운용 상태 (BUYING)
@@ -535,6 +537,7 @@ def test_cycle_completion_and_rebalance_fixes():
     bot.infinite_state_mgr = mgr
     bot.infinite_stocks = ["TQQQ"]
     bot.fetch_account_balance = lambda: None  # 네트워크 API 호출 방지
+    bot.overseas_balance_verified = True  # 잔고 조회를 대체했으므로 정상 조회로 간주
 
     # 이전 사이클 시작일 과거 날짜로 설정
     mgr.states["TQQQ"] = {
@@ -671,6 +674,7 @@ def test_intraday_sell_and_loc_rebuy_cycle_completion():
     bot.infinite_state_mgr = mgr
     bot.infinite_stocks = ["SOXL"]
     bot.fetch_account_balance = lambda: None  # API 실호출 방지
+    bot.overseas_balance_verified = True  # 잔고 조회를 대체했으므로 정상 조회로 간주
 
     # 1. 직전 상태: 5.0회차, 20주 보유, 평단가 $25.00
     mgr.states["SOXL"] = {
@@ -802,6 +806,7 @@ def test_raoer_formula_round_calculation():
     bot.infinite_state_mgr = mgr
     bot.infinite_stocks = ["TQQQ"]
     bot.fetch_account_balance = lambda: None
+    bot.overseas_balance_verified = True  # 잔고 조회를 대체했으므로 정상 조회로 간주
     bot.holdings["TQQQ"] = {"qty": 42, "avg_price": 71.43}
 
     res = bot.execute_daily_orders("TQQQ", action_filter="BUY")
@@ -846,6 +851,7 @@ def test_v21_first_and_second_half_execution():
     bot.infinite_state_mgr = mgr
     bot.infinite_stocks = ["TQQQ"]
     bot.fetch_account_balance = lambda: None
+    bot.overseas_balance_verified = True  # 잔고 조회를 대체했으므로 정상 조회로 간주
 
     # 1. 전반전 시뮬레이션: TQQQ 5.0회차 (40분할 중 5회차 < 20회차)
     mgr.states["TQQQ"] = {
@@ -871,6 +877,7 @@ def test_v21_first_and_second_half_execution():
 
     # 2. 후반전 시뮬레이션: TQQQ 25.0회차 (40분할 중 25회차 >= 20회차)
     mgr.states["TQQQ"]["current_round"] = 25.0
+    mgr.states["TQQQ"].pop("order_ledger", None)  # 다음 거래 세션 시뮬레이션 (당일 중복 발주 원장 초기화)
     bot.holdings["TQQQ"] = {"qty": 50, "avg_price": 50.00}
     orders_placed.clear()
 

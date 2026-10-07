@@ -4,6 +4,7 @@ KIS Auto Trading - Screening & Order View
 """
 import time
 import streamlit as st
+from ui.flash import flash
 from telegram_notifier import notifier
 from ui.styles import render_interactive_stock_chart
 
@@ -178,7 +179,7 @@ def _render_buy_card(api, screener, item, idx, holding_codes, key_prefix="buy", 
                         except Exception as e:
                             screener.logger.warning(f"포지션 상태 기록 예외: {e}")
 
-                        st.success(f"✅ 주문 완료 (No. {res.get('order_no')})")
+                        flash(f"주문 완료 (No. {res.get('order_no')})")
                         notifier.send_buy_success(
                             name=item["name"],
                             code=item["code"],
@@ -187,7 +188,6 @@ def _render_buy_card(api, screener, item, idx, holding_codes, key_prefix="buy", 
                             order_no=res.get("order_no", ""),
                             order_type=ord_type
                         )
-                        time.sleep(1.5)
                         st.rerun()
                     else:
                         st.error(f"❌ 주문 실패: {res.get('msg1')}")
@@ -214,8 +214,7 @@ def render_screener(api, screener, proposals, holding_codes):
         if st.button("🔄 즉시 종가 스크리닝 실행", key="btn_run_screener_page", type="primary", width="stretch"):
             with st.spinner("유니버스 종목 분석 및 종가 매수 스크리닝 중..."):
                 screener.run_closing_price_screening()
-                st.success("✅ 종가 스크리닝 완료!")
-                time.sleep(1)
+                flash("✅ 종가 스크리닝 완료!")
                 st.rerun()
 
     buy_list = proposals.get("buy_proposals", [])

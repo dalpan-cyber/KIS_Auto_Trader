@@ -6,6 +6,7 @@ KIS Auto Trader - Unified Control Center
 """
 import time
 import streamlit as st
+from ui.flash import flash, render_flash
 
 import app_config as config
 from kis_api import KISApiClient, resolve_mock_mode
@@ -32,6 +33,9 @@ st.set_page_config(
 
 # 커스텀 테마 및 스타일 적용
 apply_custom_styles()
+
+# 직전 실행에서 st.rerun() 전에 등록한 결과 메시지 표시
+render_flash()
 
 # 기본 네비게이션 상태 초기화
 if "nav_page" not in st.session_state or st.session_state["nav_page"] not in ["dashboard", "infinite", "screener", "stock_checker", "backtest", "settings"]:
@@ -86,17 +90,10 @@ def realtime_detection_fragment():
             if active_screener is None or type(active_screener) is not StockScreener:
                 active_screener = StockScreener(api)
                 st.session_state["screener"] = active_screener
-            try:
-                updated = active_screener.check_sell_signals_now(fast_mode=True)
-            except TypeError:
-                # 핫리로드 직후 남아있던 구버전 인스턴스 즉시 갱신
-                active_screener = StockScreener(api)
-                st.session_state["screener"] = active_screener
-                updated = active_screener.check_sell_signals_now(fast_mode=True)
+            updated = active_screener.check_sell_signals_now(fast_mode=True)
 
             st.session_state["last_check_time"] = now_str("%H:%M:%S")
-            st.success(f"⚡ 고속 감시 완료: {len(updated.get('sell_proposals', []))}건의 리스크 신호 감지")
-            time.sleep(1)
+            flash(f"고속 감시 완료: {len(updated.get('sell_proposals', []))}건의 리스크 신호 감지", icon="⚡")
             st.rerun()
     else:
         st.caption("⏳ 5분 주기로 고속 리스크 감시가 실행됩니다. (손절·목표익절·트레일링스탑 즉시 체크)")

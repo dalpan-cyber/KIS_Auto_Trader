@@ -3,7 +3,9 @@ KIS Auto Trading - Common Configuration Module (core/config/common.py)
 공통 환경 변수, KIS API 기본 인증 정보, 텔레그램 및 로깅 설정
 """
 import os
+import sys
 import logging
+import logging.handlers
 import datetime
 from zoneinfo import ZoneInfo
 from typing import Any, Optional
@@ -19,13 +21,48 @@ class KSTFormatter(logging.Formatter):
             return dt.strftime(datefmt)
         return dt.strftime('%Y-%m-%d %H:%M:%S')
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] (%(name)s) %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
+# Windows에서 파이프/리다이렉트(Git Bash, 파일 등) 출력 시 cp949로 인코딩되어
+# 한글이 깨지고 이모지에서 'Logging error'가 나는 문제 방지 (실제 콘솔은 이미 UTF-8)
+for _stream in (sys.stdout, sys.stderr):
+    if _stream and hasattr(_stream, "reconfigure") and (getattr(_stream, "encoding", "") or "").lower().replace("-", "") != "utf8":
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+_LOG_FORMAT = '%(asctime)s [%(levelname)s] (%(name)s) %(message)s'
+_LOG_DATEFMT = '%Y-%m-%d %H:%M:%S'
+
+logging.basicConfig(level=logging.INFO, format=_LOG_FORMAT, datefmt=_LOG_DATEFMT)
 for handler in logging.getLogger().handlers:
-    handler.setFormatter(KSTFormatter(fmt='%(asctime)s [%(levelname)s] (%(name)s) %(message)s', datefmt='%Y-%m-%d %H:%M:%S'))
+    handler.setFormatter(KSTFormatter(fmt=_LOG_FORMAT, datefmt=_LOG_DATEFMT))
+
+
+def _setup_file_logging() -> None:
+    """무인 운영 추적용 UTF-8 회전 로그 파일 (logs/kis_auto_trader.log, 5MB x 5개). LOG_TO_FILE=false로 끔"""
+    if os.getenv("LOG_TO_FILE", "true").lower() == "false":
+        return
+    root_logger = logging.getLogger()
+    if any(getattr(h, "_kis_file_handler", False) for h in root_logger.handlers):
+        return
+    log_dir = os.getenv("LOG_DIR") or os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "logs"
+    )
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+        fh = logging.handlers.RotatingFileHandler(
+            os.path.join(log_dir, "kis_auto_trader.log"),
+            maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8"
+        )
+    except OSError:
+        return
+    fh.setFormatter(KSTFormatter(fmt=_LOG_FORMAT, datefmt=_LOG_DATEFMT))
+    fh.setLevel(logging.INFO)
+    fh._kis_file_handler = True
+    root_logger.addHandler(fh)
+
+
+_setup_file_logging()
 
 logger = logging.getLogger("Config")
 
