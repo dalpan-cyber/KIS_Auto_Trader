@@ -2,8 +2,10 @@
 KIS Auto Trading - Single Stock Diagnosis View
 특정 종목의 매수 조건을 실시간 시세 및 검색 시점 종가 예상 거래량 기준으로 진단하는 전용 뷰
 """
+import os
 import time
 import datetime
+from typing import List, Dict, Any, Optional
 import pandas as pd
 import streamlit as st
 from zoneinfo import ZoneInfo
@@ -14,6 +16,42 @@ from core.indicators import get_intraday_volume_scaling_factor
 from core.strategy import get_active_strategies
 from ui.styles import render_interactive_stock_chart
 from telegram_notifier import notifier
+from core.storage import safe_load_json, atomic_save_json
+
+# 최근 검색 기록 파일 경로
+_VIEW_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(_VIEW_DIR))
+RECENT_SEARCHES_FILE = os.path.join(_PROJECT_ROOT, "recent_search_stocks.json")
+
+
+def _load_recent_searches() -> List[Dict[str, Any]]:
+    """최근 검색 종목 목록 로드 (최신순)"""
+    data = safe_load_json(RECENT_SEARCHES_FILE, default=[])
+    if isinstance(data, list):
+        return data
+    return []
+
+
+def _save_recent_search(code: str, name: str, market: str):
+    """최근 검색 종목 추가 (최신순 정렬, 중복 제거, 최대 10개)"""
+    if not code:
+        return
+    history = _load_recent_searches()
+    # 기존 동일 코드 제거
+    history = [item for item in history if isinstance(item, dict) and item.get("code") != code]
+    clean_name = name if name and not name.startswith("종목_") else code
+    history.insert(0, {
+        "code": code,
+        "name": clean_name,
+        "market": market or "KOSDAQ"
+    })
+    history = history[:10]
+    atomic_save_json(RECENT_SEARCHES_FILE, history)
+
+
+def _clear_recent_searches():
+    """최근 검색 종목 모두 삭제"""
+    atomic_save_json(RECENT_SEARCHES_FILE, [])
 
 # 내장 종목 매핑 (자주 찾는 주요 종목 및 기본 유니버스)
 DEFAULT_STOCKS = [
@@ -40,22 +78,35 @@ def _resolve_stock(input_str: str, default_market: str = "KOSDAQ"):
     if not raw:
         return None, None, default_market
 
+    # 검색 대상 풀 (기본 종목 + 관심종목 + 최근 검색 기록)
+    recent = _load_recent_searches()
+    pool = DEFAULT_STOCKS + config.CURRENT_SETTINGS.get("watchlist", []) + recent
+
     # 1. 6자리 숫자 코드인 경우
     if raw.isdigit() and len(raw) == 6:
-        # watchlist나 기본 매핑에서 이름 찾기
-        for s in DEFAULT_STOCKS + config.CURRENT_SETTINGS.get("watchlist", []):
+        for s in pool:
             if s.get("code") == raw:
                 return raw, s.get("name", f"종목_{raw}"), s.get("market", default_market)
         return raw, f"종목_{raw}", default_market
 
-    # 2. 이름으로 일치하는 종목 찾기
-    for s in DEFAULT_STOCKS + config.CURRENT_SETTINGS.get("watchlist", []):
-        if raw.lower() in s.get("name", "").lower() or raw == s.get("name"):
-            return s.get("code"), s.get("name"), s.get("market", default_market)
+    # 2. 이름으로 완전 일치 먼저 확인
+    for s in pool:
+        s_name = str(s.get("name", ""))
+        if raw.lower() == s_name.lower():
+            return s.get("code"), s_name, s.get("market", default_market)
 
-    # 3. 매핑 실패 시 숫자만 추출 시도
+    # 3. 이름 부분 일치 확인
+    for s in pool:
+        s_name = str(s.get("name", ""))
+        if raw.lower() in s_name.lower():
+            return s.get("code"), s_name, s.get("market", default_market)
+
+    # 4. 문자열 내 6자리 숫자 추출 시도
     digits = "".join(filter(str.isdigit, raw))
     if len(digits) == 6:
+        for s in pool:
+            if s.get("code") == digits:
+                return digits, s.get("name", f"종목_{digits}"), s.get("market", default_market)
         return digits, raw, default_market
 
     return None, raw, default_market
@@ -66,20 +117,37 @@ def render_stock_checker(api, screener, holding_codes):
     st.title("🔍 개별 종목 매수 조건 진단 (종가 예상 거래량 반영)")
     st.caption("관심 종목을 입력하면 실시간 시세와 **현재 시점 기준 종가 예상 거래량**을 자동 산출하여 시스템의 모든 알고리즘 매수 적합도를 심층 진단합니다.")
 
+    # 0. 칩 클릭 또는 검색 변경 예약 처리 (위젯 렌더링 전 session_state에 주입)
+    recent_searches = _load_recent_searches()
+    if "_pending_search" in st.session_state:
+        pending = st.session_state.pop("_pending_search")
+        st.session_state["input_stock_query"] = pending.get("code") or pending.get("name", "")
+        st.session_state["select_stock_market"] = pending.get("market", "KOSDAQ")
+    elif "input_stock_query" not in st.session_state:
+        if recent_searches:
+            st.session_state["input_stock_query"] = recent_searches[0]["code"]
+            st.session_state["select_stock_market"] = recent_searches[0].get("market", "KOSDAQ")
+        else:
+            st.session_state["input_stock_query"] = "파두"
+            st.session_state["select_stock_market"] = "KOSDAQ"
+
+    # 시장 옵션 유효성 확인
+    market_options = ["KOSDAQ", "KOSPI"]
+    if st.session_state.get("select_stock_market") not in market_options:
+        st.session_state["select_stock_market"] = "KOSDAQ"
+
     # 1. 상단 입력 바
     c_in1, c_in2, c_in3 = st.columns([3.0, 1.2, 1.2])
     with c_in1:
         query = st.text_input(
             "종목명 또는 종목코드(6자리) 입력",
-            value=st.session_state.get("_stock_checker_query", "파두"),
-            placeholder="예: 파두, 에이직랜드, 440110, 005930",
-            key="input_stock_query"
+            key="input_stock_query",
+            placeholder="예: 파두, 에이직랜드, 440110, 005930"
         )
     with c_in2:
         market_choice = st.selectbox(
             "소속 시장",
-            ["KOSDAQ", "KOSPI"],
-            index=0 if "파두" in query or "에이직랜드" in query or "440110" in query or "445090" in query else 0,
+            market_options,
             key="select_stock_market"
         )
     with c_in3:
@@ -87,8 +155,35 @@ def render_stock_checker(api, screener, holding_codes):
         st.write("")
         btn_run = st.button("🚀 매수 조건 진단", type="primary", width="stretch", key="btn_run_stock_diag")
 
+    # 최근 검색 종목 칩 버튼
+    if recent_searches:
+        st.markdown("<div style='margin-top:6px;'></div>", unsafe_allow_html=True)
+        r_head1, r_head2 = st.columns([5, 1])
+        with r_head1:
+            st.markdown("<small style='color:#94a3b8;'>🕒 <b>최근 검색 종목:</b> (클릭 시 즉시 진단)</small>", unsafe_allow_html=True)
+        with r_head2:
+            if st.button("🗑️ 전체 삭제", key="btn_clear_recent_searches", help="최근 검색 기록을 초기화합니다."):
+                _clear_recent_searches()
+                st.rerun()
+
+        displayed_recent = recent_searches[:6]
+        recent_cols = st.columns(6)
+        for idx, item in enumerate(displayed_recent):
+            rcode = item.get("code", "")
+            rname = item.get("name", rcode)
+            rmkt = item.get("market", "KOSDAQ")
+            btn_label = f"{rname} ({rcode})"
+            with recent_cols[idx]:
+                if st.button(btn_label, key=f"chip_recent_{rcode}_{idx}", width="stretch"):
+                    st.session_state["_pending_search"] = {
+                        "code": rcode,
+                        "name": rname,
+                        "market": rmkt
+                    }
+                    st.rerun()
+
     # 빠른 선택 칩 버튼
-    st.markdown("<small style='color:#94a3b8;'>빠른 진단 추천:</small> ", unsafe_allow_html=True)
+    st.markdown("<small style='color:#94a3b8;'>⭐ <b>빠른 진단 추천:</b></small>", unsafe_allow_html=True)
     chip_cols = st.columns(6)
     quick_stocks = [
         ("파두 (440110)", "440110", "KOSDAQ"),
@@ -100,10 +195,12 @@ def render_stock_checker(api, screener, holding_codes):
     ]
     for idx, (label, qcode, qmkt) in enumerate(quick_stocks):
         with chip_cols[idx]:
-            if st.button(label, key=f"chip_{qcode}", width="stretch"):
-                st.session_state["_stock_checker_query"] = qcode
-                st.session_state["_target_code"] = qcode
-                st.session_state["_target_market"] = qmkt
+            if st.button(label, key=f"chip_quick_{qcode}", width="stretch"):
+                st.session_state["_pending_search"] = {
+                    "code": qcode,
+                    "name": label.split()[0],
+                    "market": qmkt
+                }
                 st.rerun()
 
     code, name, market = _resolve_stock(query, market_choice)
@@ -148,6 +245,15 @@ def render_stock_checker(api, screener, holding_codes):
         if realtime.get("rt_cd") != "0" or realtime.get("price", 0) <= 0:
             st.error(f"❌ 종목 시세 조회 실패: {realtime.get('msg1', '종목코드를 확인하세요.')}")
             return
+
+        # KIS API에서 수신한 정규 종목명이 있으면 이름 보정
+        real_name = realtime.get("name")
+        if real_name and (not name or name.startswith("종목_")):
+            name = real_name
+            st.session_state["_target_name"] = name
+
+        # 정상 조회된 유효 종목을 최근 검색 목록에 저장
+        _save_recent_search(code, name, market)
 
         cur_price = float(realtime["price"])
         chg_rate = float(realtime.get("prdy_ctrt", 0.0))

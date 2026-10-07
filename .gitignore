@@ -21,6 +21,7 @@ kis-auto-trader-*.json
 *_backup.py
 positions_state.json
 sell_notify_history.json
+recent_search_stocks.json
 
 
 # Temp & IDE Files
