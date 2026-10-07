@@ -6,6 +6,7 @@ core.indicators, core.strategy, core.position_tracker 모듈을 기반으로 동
 import os
 import logging
 import datetime
+import threading
 from typing import Dict, Any, List, Optional, Set
 import pandas as pd
 
@@ -20,6 +21,9 @@ from core.strategy import get_strategy, get_default_strategy_name, get_active_st
 
 PROPOSALS_FILE = os.path.join(os.path.dirname(__file__), "proposals.json")
 PROPOSALS_FALLBACK_FILE = os.path.join(os.path.dirname(__file__), "proposals_fallback.json")
+
+# 스케줄러 잡과 UI fragment가 같은 프로세스에서 동시에 매도 감시를 돌리지 않도록 보호
+_SELL_CHECK_LOCK = threading.Lock()
 
 class StockScreener:
     def __init__(self, api_client: Optional[KISApiClient] = None, strategy_name: Optional[str] = None):
@@ -654,6 +658,15 @@ class StockScreener:
     def check_sell_signals_now(self, fast_mode: bool = False, *args, **kwargs) -> Dict[str, Any]:
         """장중 실시간 매도 신호 분석 및 제안서 갱신 (fast_mode=True: 손절/익절/트레일링스탑 고속 감시)"""
         mode_label = "초고속 리스크 감시(손익·트레일링스탑)" if fast_mode else "정밀 매도 신호 재분석"
+        if not _SELL_CHECK_LOCK.acquire(blocking=False):
+            self.logger.info(f"다른 매도 감시 작업이 진행 중이어서 {mode_label} 중복 실행을 건너뜁니다.")
+            return self.load_proposals(force_sheet_sync=False)
+        try:
+            return self._check_sell_signals_locked(fast_mode, mode_label)
+        finally:
+            _SELL_CHECK_LOCK.release()
+
+    def _check_sell_signals_locked(self, fast_mode: bool, mode_label: str) -> Dict[str, Any]:
         self.logger.info(f"=== 보유 주식 실시간 {mode_label} 시작 ===")
         existing = self.load_proposals()
         buy_proposals = existing.get("buy_proposals", [])
@@ -662,13 +675,15 @@ class StockScreener:
         holdings = balance.get("holdings", [])
         holding_codes = {h.get("code") for h in holdings if h.get("code")}
         sell_proposals = []
-        for holding in holdings:
-            try:
-                sell_res = self.evaluate_sell_signals(holding, fast_mode=fast_mode)
-                if sell_res:
-                    sell_proposals.append(sell_res)
-            except Exception as e:
-                self.logger.warning(f"[{holding.get('name')}] 매도 분석 예외: {e}")
+        # 포지션 상태(최고가 등)는 메모리에서 갱신 후 종료 시 1회만 저장
+        with self.position_tracker.batch_updates():
+            for holding in holdings:
+                try:
+                    sell_res = self.evaluate_sell_signals(holding, fast_mode=fast_mode)
+                    if sell_res:
+                        sell_proposals.append(sell_res)
+                except Exception as e:
+                    self.logger.warning(f"[{holding.get('name')}] 매도 분석 예외: {e}")
 
         # 현재 실시간 잔고 기준 매도 신호만 최신 반영 (조건 해제 종목 자동 제외 및 최신 현재가/평가손익 동기화)
         merged_sell_proposals = sell_proposals
@@ -692,7 +707,11 @@ class StockScreener:
             "status": "READY"
         }
 
-        self.save_proposals(proposals_data)
+        # 매도 신호 구성(종목/유형)이 직전과 같으면 'Proposals' 이력 시트 누적 기록 생략
+        def _signal_keys(items):
+            return sorted((p.get("code", ""), p.get("sell_type", "")) for p in items)
+        signals_changed = _signal_keys(merged_sell_proposals) != _signal_keys(existing.get("sell_proposals", []))
+        self.save_proposals(proposals_data, append_history=signals_changed)
         self.logger.info(f"실시간 {mode_label} 완료: 매도 추천 {len(merged_sell_proposals)}건")
         self._notify_sell_recommendations(sell_proposals)
         return proposals_data
@@ -806,7 +825,7 @@ class StockScreener:
         except Exception as e:
             self.logger.warning(f"스크리닝 요약 알림 전송 실패: {e}")
 
-    def save_proposals(self, data: dict) -> bool:
+    def save_proposals(self, data: dict, append_history: bool = True) -> bool:
         ok = atomic_save_json(PROPOSALS_FILE, data)
         # fallback 백업 파일에도 저장
         try:
@@ -819,7 +838,8 @@ class StockScreener:
             sheet_mgr = get_sheet_manager()
             if sheet_mgr.is_connected:
                 sheet_mgr.sync_proposals_state_to_sheet(data)
-                sheet_mgr.sync_proposals_to_sheet(data)
+                if append_history:
+                    sheet_mgr.sync_proposals_to_sheet(data)
         except Exception as e:
             self.logger.debug(f"Google Sheet Proposals 동기화 생략: {e}")
         return ok

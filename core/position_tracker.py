@@ -5,6 +5,7 @@ KIS Auto Trading - Position & Cooldown Tracker Module
 import os
 import logging
 import datetime
+from contextlib import contextmanager
 from typing import Dict, Any, Optional
 from time_utils import today, now_str
 from core.storage import safe_load_json, atomic_save_json
@@ -20,6 +21,26 @@ class PositionTracker:
         self.positions_file = positions_file
         self.cooldown_file = cooldown_file
         self._cooldown_api_cache: Dict[str, Any] = {}
+        # 일괄 처리 모드: 포지션 상태를 메모리에서만 갱신하고 종료 시 1회만 저장 (Google Sheet 호출 최소화)
+        self._batch_state: Optional[Dict[str, Dict[str, Any]]] = None
+        self._batch_dirty = False
+
+    @contextmanager
+    def batch_updates(self):
+        """보유 종목 일괄 감시 시 포지션 상태를 1회 로드/1회 저장하도록 묶는 컨텍스트"""
+        if self._batch_state is not None:
+            yield
+            return
+        self._batch_state = self.load_positions_state()
+        self._batch_dirty = False
+        try:
+            yield
+        finally:
+            state, dirty = self._batch_state, self._batch_dirty
+            self._batch_state = None
+            self._batch_dirty = False
+            if dirty:
+                self.save_positions_state(state)
 
     # =========================================================================
     # =========================================================================
@@ -38,6 +59,8 @@ class PositionTracker:
 
     def load_positions_state(self) -> Dict[str, Dict[str, Any]]:
         """라이브 보유 종목별 최고가 및 1차 익절 상태 로드 (로컬 JSON + Google Sheet 동기화)"""
+        if self._batch_state is not None:
+            return self._batch_state
         local_state = safe_load_json(self.positions_file, default={})
         local_state = self._normalize_state_keys(local_state)
         try:
@@ -62,6 +85,12 @@ class PositionTracker:
 
     def save_positions_state(self, state: Dict[str, Dict[str, Any]]) -> bool:
         """라이브 보유 종목별 최고가 및 1차 익절 상태 저장 (로컬 JSON + Google Sheet)"""
+        if self._batch_state is not None:
+            if state is not self._batch_state:
+                self._batch_state.clear()
+                self._batch_state.update(state)
+            self._batch_dirty = True
+            return True
         norm_state = self._normalize_state_keys(state)
         ok = atomic_save_json(self.positions_file, norm_state)
         try:
@@ -155,14 +184,26 @@ class PositionTracker:
         c_str = str(code).strip().lstrip("'")
         code_6 = c_str.zfill(6) if c_str.isdigit() and len(c_str) < 6 else c_str
         state = self.load_positions_state()
+        is_new = code_6 not in state
         pos = state.get(code_6, {})
         highest_price = max(pos.get("highest_price", avg_buy_price or current_price), current_price)
         is_partial_sold = pos.get("is_partial_sold", False) or is_partial_take
+        set_strategy = bool(strategy and not pos.get("strategy"))
+
+        # 최고가/익절상태/전략 변화가 없으면 저장(Google Sheet 재작성) 생략
+        changed = (
+            is_new
+            or highest_price != pos.get("highest_price")
+            or is_partial_sold != pos.get("is_partial_sold", False)
+            or set_strategy
+        )
+        if not changed:
+            return pos
 
         pos["code"] = code_6
         pos["highest_price"] = highest_price
         pos["is_partial_sold"] = is_partial_sold
-        if strategy and ("strategy" not in pos or not pos["strategy"]):
+        if set_strategy:
             pos["strategy"] = strategy
         pos["last_updated"] = now_str()
         state[code_6] = pos
