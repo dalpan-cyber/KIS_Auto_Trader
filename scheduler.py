@@ -48,7 +48,7 @@ def job_intraday_monitoring():
     logger.info(f"🔄 [장중 감시] 실시간 매도/익절 신호 체크 ({now_dt.strftime('%H:%M:%S')})")
     try:
         screener = StockScreener()
-        proposals = screener.check_sell_signals_now()
+        proposals = screener.check_sell_signals_now(fast_mode=True)
         sell_count = len(proposals.get("sell_proposals", []))
         if sell_count > 0:
             logger.warning(f"⚠️ [장중 감시] 매도 신호 {sell_count}건 감지됨")
@@ -178,13 +178,17 @@ def start_scheduler():
             job_intraday_monitoring,
             CronTrigger(day_of_week="mon-fri", hour="9-14", minute="*/5", timezone="Asia/Seoul"),
             id="job_intraday_monitoring_morning",
-            replace_existing=True
+            replace_existing=True,
+            misfire_grace_time=60,
+            coalesce=True
         )
         _scheduler.add_job(
             job_intraday_monitoring,
             CronTrigger(day_of_week="mon-fri", hour=15, minute="0,5", timezone="Asia/Seoul"),
             id="job_intraday_monitoring_afternoon",
-            replace_existing=True
+            replace_existing=True,
+            misfire_grace_time=60,
+            coalesce=True
         )
 
         # 3. 15:10 종가 매수 스크리닝
