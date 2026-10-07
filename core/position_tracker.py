@@ -213,10 +213,16 @@ class PositionTracker:
 
     def get_stop_loss_date_from_api(self, api_client: Any, code: str, current_date: Optional[str] = None) -> Optional[str]:
         """
-        KIS API 거래이력에서 해당 종목의 최근 손절 매도일 조회 (FIFO 기준)
+        KIS API 거래이력에서 해당 종목의 최근 손절 매도일 조회 (FIFO 기준).
+        계좌 전체의 거래이력(30일)을 메모리에 캐싱하여 종목별 중복 API 조회를 방지합니다.
         """
         if not api_client:
             return None
+
+        # 1. 로컬 쿨다운 파일에 이미 등록된 경우 API 호출 없이 즉시 반환
+        local_cooldown = self.load_cooldown()
+        if code in local_cooldown:
+            return local_cooldown[code]
 
         try:
             end_date = current_date or today().strftime("%Y%m%d")
@@ -225,7 +231,9 @@ class PositionTracker:
 
             cache_key = f"{start_date}_{end_date}"
             if cache_key not in self._cooldown_api_cache:
-                self._cooldown_api_cache[cache_key] = api_client.get_order_history(start_date=start_date, end_date=end_date)
+                # 계좌 전체 거래이력 1회만 조회 (code=None)
+                orders = api_client.get_order_history(start_date=start_date, end_date=end_date)
+                self._cooldown_api_cache[cache_key] = orders if orders is not None else []
 
             orders = self._cooldown_api_cache.get(cache_key, [])
             if not orders:
@@ -287,7 +295,11 @@ class PositionTracker:
             cooldown_map = self.load_cooldown()
             stop_date = cooldown_map.get(code)
         else:
-            stop_date = self.get_stop_loss_date_from_api(api_client, code, current_date=current)
+            # 먼저 로컬/구글시트 쿨다운 확인 후 없을 때만 API 거래이력 조회
+            cooldown_map = self.load_cooldown()
+            stop_date = cooldown_map.get(code)
+            if not stop_date:
+                stop_date = self.get_stop_loss_date_from_api(api_client, code, current_date=current)
 
         if not stop_date:
             return False

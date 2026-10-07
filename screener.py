@@ -226,9 +226,16 @@ class StockScreener:
         is_intraday: bool = True,
         market: str = "KOSPI",
         return_raw_eval: bool = False,
-        eval_time: Optional[Any] = None
+        eval_time: Optional[Any] = None,
+        use_file_cooldown: bool = False
     ) -> Optional[Dict[str, Any]]:
         """라이브 환경에서 API 데이터 수집 후 매수 신호 평가 (eval_time 기준 거래량 스케일링)"""
+        # [Early Exit 1] 손절 쿨다운 대상 종목이면 추가 API 호출(선물/수급/월봉 등) 없이 조기 판단
+        is_cooldown = self._is_in_cooldown(code, use_file_cooldown=use_file_cooldown)
+        if is_cooldown and not return_raw_eval:
+            self.logger.info(f"[{name}({code})] 손절 쿨다운 대상 종목 - 조기 제외 (API 절약)")
+            return None
+
         candles = self.api.get_daily_chart(code, count=65)
 
         realtime = self.api.get_stock_price(code)
@@ -319,7 +326,7 @@ class StockScreener:
             df, code, name,
             held_codes=held_codes,
             market_regime=market_regime,
-            use_file_cooldown=False,
+            use_file_cooldown=use_file_cooldown,
             futures_data=futures_data,
             return_raw_eval=return_raw_eval,
             investor_data=investor_data,
