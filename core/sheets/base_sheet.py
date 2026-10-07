@@ -6,7 +6,8 @@ import os
 import glob
 import json
 import logging
-from typing import Optional, Any, List
+import time
+from typing import Optional, Any, List, Dict
 
 logger = logging.getLogger("BaseSheetManager")
 
@@ -28,6 +29,28 @@ class BaseSheetManager:
         "https://www.googleapis.com/auth/drive"
     ]
 
+    _rate_limit_cooldown_until: float = 0.0
+
+    @classmethod
+    def is_rate_limited(cls) -> bool:
+        """429 Quota Exceeded 쿨다운 상태인지 확인"""
+        return time.time() < cls._rate_limit_cooldown_until
+
+    @classmethod
+    def handle_quota_error(cls, error: Exception, seconds: float = 65.0) -> bool:
+        """429 Quota Exceeded 에러 감지 시 쿨다운 설정 및 경고 1회 출력"""
+        err_str = str(error)
+        if "429" in err_str or "Quota exceeded" in err_str:
+            now_ts = time.time()
+            if now_ts >= cls._rate_limit_cooldown_until:
+                cls._rate_limit_cooldown_until = now_ts + seconds
+                logger.warning(
+                    f"⚠️ Google Sheets API 분당 요청 한도(429 Quota Exceeded) 감지: "
+                    f"{int(seconds)}초 동안 추가 조회를 일시 중단하고 로컬 데이터를 우선 사용합니다."
+                )
+            return True
+        return False
+
     def __init__(
         self,
         sheet_name: str,
@@ -43,6 +66,7 @@ class BaseSheetManager:
         self.client: Optional[Any] = None
         self.spreadsheet: Optional[Any] = None
         self.is_connected: bool = False
+        self._worksheet_cache: Dict[str, Any] = {}
 
         if self.enabled and GSPREAD_AVAILABLE:
             self._connect()
@@ -106,6 +130,9 @@ class BaseSheetManager:
 
     def _connect(self) -> bool:
         """Google Sheets 클라이언트 인증 및 스프레드시트 오픈"""
+        if self.is_rate_limited():
+            return False
+
         creds = self._get_credentials()
         if not creds:
             logger.warning("GCP 인증 실패로 구글 시트 연동이 비활성화됩니다.")
@@ -122,7 +149,8 @@ class BaseSheetManager:
                     self._init_worksheets()
                     return True
                 except Exception as e:
-                    logger.warning(f"시트 ID({self.sheet_key}) 오픈 실패: {e}. 시트 이름({self.sheet_name})으로 대체 시도...")
+                    if not self.handle_quota_error(e):
+                        logger.warning(f"시트 ID({self.sheet_key}) 오픈 실패: {e}. 시트 이름({self.sheet_name})으로 대체 시도...")
 
             # 2. sheet_name으로 접근
             if self.sheet_name:
@@ -133,7 +161,8 @@ class BaseSheetManager:
                 return True
 
         except Exception as e:
-            logger.warning(f"Google Sheets 연결 실패: {e}")
+            if not self.handle_quota_error(e):
+                logger.warning(f"Google Sheets 연결 실패: {e}")
             self.is_connected = False
             return False
 
@@ -150,11 +179,18 @@ class BaseSheetManager:
         rows: str = "100",
         cols: str = "10"
     ) -> Optional[Any]:
-        """워크시트를 조회하고, 존재하지 않으면 신규 생성 및 헤더 초기화"""
-        if not self.spreadsheet:
+        """워크시트를 조회하고, 존재하지 않으면 신규 생성 및 헤더 초기화 (인메모리 캐싱 및 429 쿨다운 보호)"""
+        if self.is_rate_limited() or not self.spreadsheet:
             return None
+
+        if not hasattr(self, "_worksheet_cache"):
+            self._worksheet_cache = {}
+        if title in self._worksheet_cache and self._worksheet_cache[title] is not None:
+            return self._worksheet_cache[title]
+
         try:
             ws = self.spreadsheet.worksheet(title)
+            self._worksheet_cache[title] = ws
             return ws
         except gspread.WorksheetNotFound:
             try:
@@ -162,10 +198,13 @@ class BaseSheetManager:
                 if headers:
                     ws.append_row(headers)
                 logger.info(f"Google Sheets 신규 워크시트 '{title}' 생성 완료")
+                self._worksheet_cache[title] = ws
                 return ws
             except Exception as e:
-                logger.warning(f"워크시트 '{title}' 생성 실패: {e}")
+                if not self.handle_quota_error(e):
+                    logger.warning(f"워크시트 '{title}' 생성 실패: {e}")
                 return None
         except Exception as e:
-            logger.warning(f"워크시트 '{title}' 조회 실패: {e}")
+            if not self.handle_quota_error(e):
+                logger.warning(f"워크시트 '{title}' 조회 실패: {e}")
             return None

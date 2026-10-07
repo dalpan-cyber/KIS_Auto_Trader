@@ -6,6 +6,7 @@ import os
 import json
 import logging
 import datetime
+import time
 from typing import Dict, Any, List, Optional
 
 from core.sheets.base_sheet import BaseSheetManager, GSPREAD_AVAILABLE
@@ -55,12 +56,36 @@ class DomesticSheetManager(BaseSheetManager):
         self.cooldown_worksheet: Optional[Any] = None
         self.trade_history_worksheet: Optional[Any] = None
 
+        # TTL 인메모리 캐시 (불필요한 반복 네트워크 요청 억제)
+        self._cache_data: Dict[str, Any] = {}
+        self._cache_expiry: Dict[str, float] = {}
+
         super().__init__(
             sheet_name=name,
             sheet_key=key,
             enabled=is_enabled,
             service_account_file=service_account_file
         )
+
+    def _get_cached_data(self, key: str) -> Optional[Any]:
+        """TTL 유효한 캐시 데이터 반환"""
+        if key in self._cache_data and time.time() < self._cache_expiry.get(key, 0.0):
+            return self._cache_data[key]
+        return None
+
+    def _set_cached_data(self, key: str, val: Any, ttl: float = 30.0):
+        """TTL 만료시간과 함께 데이터 캐싱"""
+        self._cache_data[key] = val
+        self._cache_expiry[key] = time.time() + ttl
+
+    def invalidate_cache(self, key: Optional[str] = None):
+        """캐시 무효화 (데이터 쓰기 후 호출)"""
+        if key:
+            self._cache_data.pop(key, None)
+            self._cache_expiry.pop(key, None)
+        else:
+            self._cache_data.clear()
+            self._cache_expiry.clear()
 
     def _init_worksheets(self):
         """국내 퀀트 전용 워크시트 초기화"""
@@ -84,14 +109,15 @@ class DomesticSheetManager(BaseSheetManager):
             headers=["종목코드", "종목명", "매수단가", "최고가", "1차익절완료", "매수전략", "갱신일시"],
             rows="100", cols="8"
         )
-        if self.positions_worksheet:
+        if self.positions_worksheet and not self.is_rate_limited():
             try:
                 cur_hdrs = self.positions_worksheet.row_values(1)
                 exp_hdrs = ["종목코드", "종목명", "매수단가", "최고가", "1차익절완료", "매수전략", "갱신일시"]
                 if cur_hdrs != exp_hdrs:
                     self.positions_worksheet.update(range_name="A1:G1", values=[exp_hdrs])
-            except Exception:
-                pass
+            except Exception as e:
+                if not self.handle_quota_error(e):
+                    pass
 
         # 4. 'Cooldown' 워크시트 (손절 쿨다운 관리)
         self.cooldown_worksheet = self._get_or_create_worksheet(
@@ -119,7 +145,7 @@ class DomesticSheetManager(BaseSheetManager):
     # =========================================================================
     def sync_settings_to_sheet(self, settings: Dict[str, Any]) -> bool:
         """설정값을 'Settings' 워크시트에 저장"""
-        if not self.is_connected or not self.settings_worksheet:
+        if self.is_rate_limited() or not self.is_connected or not self.settings_worksheet:
             return False
 
         try:
@@ -137,20 +163,27 @@ class DomesticSheetManager(BaseSheetManager):
                 all_records = self.settings_worksheet.get_all_records()
                 if all_records:
                     self.settings_worksheet.delete_rows(2, len(all_records) + 1)
-            except Exception:
-                pass
+            except Exception as ex:
+                if self.handle_quota_error(ex):
+                    return False
 
             if rows:
                 self.settings_worksheet.append_rows(rows)
                 logger.info(f"📊 Google Sheet 'Settings'에 {len(rows)}개 설정값 동기화 완료")
+            self.invalidate_cache("settings")
             return True
         except Exception as e:
-            logger.warning(f"Google Sheet Settings 동기화 실패: {e}")
+            if not self.handle_quota_error(e):
+                logger.warning(f"Google Sheet Settings 동기화 실패: {e}")
             return False
 
     def read_settings_from_sheet(self) -> Dict[str, Any]:
-        """Google Sheet 'Settings'에서 설정값 읽기"""
-        if not self.is_connected or not self.settings_worksheet:
+        """Google Sheet 'Settings'에서 설정값 읽기 (60초 TTL 캐싱 적용)"""
+        cached = self._get_cached_data("settings")
+        if cached is not None:
+            return cached
+
+        if self.is_rate_limited() or not self.is_connected or not self.settings_worksheet:
             return {}
 
         settings = {}
@@ -183,9 +216,11 @@ class DomesticSheetManager(BaseSheetManager):
                     except ValueError:
                         settings[key] = val
 
+            self._set_cached_data("settings", settings, ttl=60.0)
             return settings
         except Exception as e:
-            logger.warning(f"Google Sheet Settings 읽기 실패: {e}")
+            if not self.handle_quota_error(e):
+                logger.warning(f"Google Sheet Settings 읽기 실패: {e}")
             return {}
 
     # =========================================================================
@@ -193,7 +228,7 @@ class DomesticSheetManager(BaseSheetManager):
     # =========================================================================
     def sync_proposals_to_sheet(self, proposals_data: Dict[str, Any]) -> bool:
         """15:10 스크리닝 매수/매도 제안을 'Proposals' 워크시트에 누적 기록"""
-        if not self.is_connected or not self.proposals_worksheet:
+        if self.is_rate_limited() or not self.is_connected or not self.proposals_worksheet:
             return False
 
         try:
@@ -250,15 +285,17 @@ class DomesticSheetManager(BaseSheetManager):
                         self.proposals_worksheet.resize(rows=max(120, len(trimmed) + 20), cols=len(header))
                         logger.info(f"🧹 Google Sheet 'Proposals' 최신 {len(trimmed)}건 유지 (오래된 제안 자동 롤링 정리 완료)")
                 except Exception as ex:
-                    logger.warning(f"Google Sheet Proposals 롤링 정리 중 오류 발생 (계속 진행): {ex}")
+                    if not self.handle_quota_error(ex):
+                        logger.warning(f"Google Sheet Proposals 롤링 정리 중 오류 발생 (계속 진행): {ex}")
             return True
         except Exception as e:
-            logger.warning(f"Google Sheet Proposals 동기화 실패: {e}")
+            if not self.handle_quota_error(e):
+                logger.warning(f"Google Sheet Proposals 동기화 실패: {e}")
             return False
 
     def sync_proposals_state_to_sheet(self, proposals_data: Dict[str, Any]) -> bool:
         """마지막 스크리닝 결과(추천, 관망 후보 등)를 'ProposalsState' 워크시트에 최신화"""
-        if not self.is_connected or not self.proposals_state_worksheet:
+        if self.is_rate_limited() or not self.is_connected or not self.proposals_state_worksheet:
             return False
 
         try:
@@ -284,19 +321,26 @@ class DomesticSheetManager(BaseSheetManager):
                 all_records = self.proposals_state_worksheet.get_all_records()
                 if all_records:
                     self.proposals_state_worksheet.delete_rows(2, len(all_records) + 1)
-            except Exception:
-                pass
+            except Exception as ex:
+                if self.handle_quota_error(ex):
+                    return False
 
             self.proposals_state_worksheet.append_rows(rows)
             logger.info("📊 Google Sheet 'ProposalsState'에 스크리닝 상태 최신화 완료")
+            self.invalidate_cache("proposals_state")
             return True
         except Exception as e:
-            logger.warning(f"Google Sheet ProposalsState 동기화 실패: {e}")
+            if not self.handle_quota_error(e):
+                logger.warning(f"Google Sheet ProposalsState 동기화 실패: {e}")
             return False
 
     def read_proposals_state_from_sheet(self) -> Dict[str, Any]:
-        """Google Sheet 'ProposalsState'에서 마지막 스크리닝 상태 복원"""
-        if not self.is_connected or not self.proposals_state_worksheet:
+        """Google Sheet 'ProposalsState'에서 마지막 스크리닝 상태 복원 (30초 TTL 캐싱 적용)"""
+        cached = self._get_cached_data("proposals_state")
+        if cached is not None:
+            return cached
+
+        if self.is_rate_limited() or not self.is_connected or not self.proposals_state_worksheet:
             return {}
 
         try:
@@ -315,9 +359,12 @@ class DomesticSheetManager(BaseSheetManager):
                         data[key] = val
                 except Exception as ex:
                     logger.debug(f"ProposalsState 필드 '{key}' 파싱 실패: {ex}")
+
+            self._set_cached_data("proposals_state", data, ttl=30.0)
             return data
         except Exception as e:
-            logger.warning(f"Google Sheet ProposalsState 읽기 실패: {e}")
+            if not self.handle_quota_error(e):
+                logger.warning(f"Google Sheet ProposalsState 읽기 실패: {e}")
             return {}
 
     # =========================================================================
@@ -325,7 +372,7 @@ class DomesticSheetManager(BaseSheetManager):
     # =========================================================================
     def sync_positions_state_to_sheet(self, positions: Dict[str, Dict[str, Any]]) -> bool:
         """포지션 상태를 'PositionsState' 워크시트에 최신화"""
-        if not self.is_connected or not self.positions_worksheet:
+        if self.is_rate_limited() or not self.is_connected or not self.positions_worksheet:
             return False
 
         try:
@@ -371,27 +418,35 @@ class DomesticSheetManager(BaseSheetManager):
                 cur_headers = self.positions_worksheet.row_values(1)
                 if cur_headers != expected_headers:
                     self.positions_worksheet.update(range_name="A1:G1", values=[expected_headers])
-            except Exception:
-                pass
+            except Exception as ex:
+                if self.handle_quota_error(ex):
+                    return False
 
             # 기존 데이터 삭제 후 최신 상태 작성
             try:
                 all_records = self.positions_worksheet.get_all_records()
                 if all_records:
                     self.positions_worksheet.delete_rows(2, len(all_records) + 1)
-            except Exception:
-                pass
+            except Exception as ex:
+                if self.handle_quota_error(ex):
+                    return False
 
             if rows:
                 self.positions_worksheet.append_rows(rows)
+            self.invalidate_cache("positions_state")
             return True
         except Exception as e:
-            logger.warning(f"Google Sheet PositionsState 동기화 실패: {e}")
+            if not self.handle_quota_error(e):
+                logger.warning(f"Google Sheet PositionsState 동기화 실패: {e}")
             return False
 
     def read_positions_state_from_sheet(self) -> Dict[str, Dict[str, Any]]:
-        """Google Sheet 'PositionsState'에서 포지션 상태 읽기"""
-        if not self.is_connected or not self.positions_worksheet:
+        """Google Sheet 'PositionsState'에서 포지션 상태 읽기 (30초 TTL 캐싱 적용)"""
+        cached = self._get_cached_data("positions_state")
+        if cached is not None:
+            return cached
+
+        if self.is_rate_limited() or not self.is_connected or not self.positions_worksheet:
             return {}
 
         positions = {}
@@ -444,9 +499,11 @@ class DomesticSheetManager(BaseSheetManager):
                     "last_updated": last_upd,
                     "updated_at": last_upd
                 }
+            self._set_cached_data("positions_state", positions, ttl=30.0)
             return positions
         except Exception as e:
-            logger.warning(f"Google Sheet PositionsState 읽기 실패: {e}")
+            if not self.handle_quota_error(e):
+                logger.warning(f"Google Sheet PositionsState 읽기 실패: {e}")
             return {}
 
     # =========================================================================
@@ -454,7 +511,7 @@ class DomesticSheetManager(BaseSheetManager):
     # =========================================================================
     def sync_cooldown_to_sheet(self, cooldown_map: Dict[str, str]) -> bool:
         """쿨다운 목록을 'Cooldown' 워크시트에 최신화"""
-        if not self.is_connected or not self.cooldown_worksheet:
+        if self.is_rate_limited() or not self.is_connected or not self.cooldown_worksheet:
             return False
 
         try:
@@ -468,19 +525,26 @@ class DomesticSheetManager(BaseSheetManager):
                 all_records = self.cooldown_worksheet.get_all_records()
                 if all_records:
                     self.cooldown_worksheet.delete_rows(2, len(all_records) + 1)
-            except Exception:
-                pass
+            except Exception as ex:
+                if self.handle_quota_error(ex):
+                    return False
 
             if rows:
                 self.cooldown_worksheet.append_rows(rows)
+            self.invalidate_cache("cooldown")
             return True
         except Exception as e:
-            logger.warning(f"Google Sheet Cooldown 동기화 실패: {e}")
+            if not self.handle_quota_error(e):
+                logger.warning(f"Google Sheet Cooldown 동기화 실패: {e}")
             return False
 
     def read_cooldown_from_sheet(self) -> Dict[str, str]:
-        """Google Sheet 'Cooldown'에서 쿨다운 목록 읽기"""
-        if not self.is_connected or not self.cooldown_worksheet:
+        """Google Sheet 'Cooldown'에서 쿨다운 목록 읽기 (60초 TTL 캐싱 적용)"""
+        cached = self._get_cached_data("cooldown")
+        if cached is not None:
+            return cached
+
+        if self.is_rate_limited() or not self.is_connected or not self.cooldown_worksheet:
             return {}
 
         cd_map = {}
@@ -491,9 +555,11 @@ class DomesticSheetManager(BaseSheetManager):
                 end_date = str(rec.get("재매수가능일자", "")).strip()
                 if code and end_date:
                     cd_map[code] = end_date
+            self._set_cached_data("cooldown", cd_map, ttl=60.0)
             return cd_map
         except Exception as e:
-            logger.warning(f"Google Sheet Cooldown 읽기 실패: {e}")
+            if not self.handle_quota_error(e):
+                logger.warning(f"Google Sheet Cooldown 읽기 실패: {e}")
             return {}
 
     # =========================================================================
@@ -501,7 +567,7 @@ class DomesticSheetManager(BaseSheetManager):
     # =========================================================================
     def record_trade(self, trade_info: Dict[str, Any]) -> bool:
         """체결된 매수/매도 건을 'TradeHistory'에 누적 기록"""
-        if not self.is_connected or not self.trade_history_worksheet:
+        if self.is_rate_limited() or not self.is_connected or not self.trade_history_worksheet:
             return False
 
         try:
@@ -521,9 +587,11 @@ class DomesticSheetManager(BaseSheetManager):
             ]
             self.trade_history_worksheet.append_row(row)
             logger.info(f"📊 Google Sheet 'TradeHistory'에 [{trade_info.get('name')}] 체결 기록 저장 성공")
+            self.invalidate_cache("trade_history")
             return True
         except Exception as e:
-            logger.warning(f"Google Sheet TradeHistory 기록 실패: {e}")
+            if not self.handle_quota_error(e):
+                logger.warning(f"Google Sheet TradeHistory 기록 실패: {e}")
             return False
 
 
