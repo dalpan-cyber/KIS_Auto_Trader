@@ -12,7 +12,15 @@
     "peak_qty": 15,
     "paused_sell_price": 0.0,
     "last_avg_price": 78.8553,
-    "last_completed_sell_order_no": ""
+    "last_completed_sell_order_no": "",
+    "order_ledger": {
+      "session": "2026-10-07",
+      "keys": [
+        "SELL_00_1",
+        "BUY_34_1",
+        "BUY_34_2"
+      ]
+    }
   },
   "SOXL": {
     "symbol": "SOXL",
@@ -27,6 +35,14 @@
     "peak_qty": 3,
     "paused_sell_price": 0.0,
     "last_avg_price": 164.2633,
-    "last_completed_sell_order_no": ""
+    "last_completed_sell_order_no": "",
+    "order_ledger": {
+      "session": "2026-10-07",
+      "keys": [
+        "SELL_00_1",
+        "BUY_34_1",
+        "BUY_34_2"
+      ]
+    }
   }
 }
