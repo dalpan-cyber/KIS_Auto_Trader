@@ -565,9 +565,30 @@ class TraderBot:
         """특정 종목의 무한매수 강제 중지"""
         self.infinite_state_mgr.stop_buying(symbol)
 
-    def pause_infinite_buying(self, symbol: str, sell_price: float = 0.0):
-        """특정 종목의 투자 일시중지 (매수 차단, 지정 매도가 설정 시 매도만 허용)"""
-        self.infinite_state_mgr.pause_buying(symbol, sell_price=sell_price)
+    def pause_infinite_buying(self, symbol: str, sell_price: float = 0.0, cancel_open_buys: bool = True) -> Dict[str, Any]:
+        """특정 종목의 투자 일시중지 (매수 차단, 미체결 LOC 매수 주문 자동 취소, 지정 매도가 설정 시 매도만 허용)"""
+        symbol_upper = str(symbol).strip().upper()
+        self.infinite_state_mgr.pause_buying(symbol_upper, sell_price=sell_price)
+
+        # 승인 대기 중인 해당 종목의 BUY 제안도 즉시 제거
+        for pid in list(self.pending_proposals.keys()):
+            prop = self.pending_proposals.get(pid, {})
+            if str(prop.get("symbol", "")).upper() == symbol_upper and prop.get("action") == "BUY":
+                self.pending_proposals.pop(pid, None)
+                self.logger.info(f"🗑️ [{symbol_upper}] 일시중지에 따라 승인 대기 중인 매수 제안({pid})을 제거했습니다.")
+
+        # 증권사에 이미 접수된 미체결 매수(LOC 포함) 주문 일괄 취소
+        cancel_res: Dict[str, Any] = {"success": True, "cancelled": 0, "failed": 0, "messages": []}
+        if cancel_open_buys and self.api.is_overseas_symbol(symbol_upper) and hasattr(self.api, "cancel_unexecuted_overseas_buy_orders"):
+            try:
+                cancel_res = self.api.cancel_unexecuted_overseas_buy_orders(symbol_upper)
+                if cancel_res.get("cancelled", 0) > 0:
+                    self.logger.info(f"🛑 [{symbol_upper}] 일시중지 시점 미체결 매수 주문 {cancel_res['cancelled']}건 취소 완료")
+            except Exception as e:
+                self.logger.warning(f"[{symbol_upper}] 미체결 매수 주문 취소 중 예외 발생: {e}")
+                cancel_res = {"success": False, "cancelled": 0, "failed": 1, "messages": [str(e)]}
+
+        return cancel_res
 
     def resume_infinite_buying(self, symbol: str):
         """특정 종목의 투자 재개 (정상 매수/매도 재개)"""

@@ -259,6 +259,155 @@ class TestInfiniteGSSAndSafety(unittest.TestCase):
         # 구글 시트 sync_execution_history가 호출되었는지 확인
         mock_gss.sync_execution_history.assert_called_once_with(mock_history)
 
+    def test_pause_resume_sync_with_google_sheets(self):
+        """웹 UI에서 일시중지(PAUSED) 및 지정매도가 설정 시 Google Sheets를 통해 GitHub Actions(로컬 BUYING 상태)에 동기화되는지 검증"""
+        # 1. Git 저장소에 커밋된 기존 상태 가정 (status=BUYING, paused_sell_price=0.0)
+        initial_data = {
+            "TQQQ": {
+                "symbol": "TQQQ",
+                "start_date": "2026-09-22",
+                "total_budget_usd": 5000.0,
+                "division_count": 40,
+                "current_round": 8.0,
+                "target_roi": 0.1,
+                "status": "BUYING",
+                "paused_sell_price": 0.0,
+            }
+        }
+        with open(self.test_state_file, "w", encoding="utf-8") as f:
+            json.dump(initial_data, f)
+
+        # 2. Google Sheets 'State' 워크시트에서 PAUSED 및 지정매도가($88.50)를 반환하도록 모킹
+        mock_gss = MagicMock()
+        mock_gss.is_connected = True
+        mock_gss.read_settings_from_sheet.return_value = {}
+        mock_gss.read_states_from_sheet.return_value = {
+            "TQQQ": {
+                "symbol": "TQQQ",
+                "division_count": 40,
+                "start_date": "2026-09-22",
+                "current_round": 8.0,
+                "total_budget_usd": 5000.0,
+                "target_roi": 0.1,
+                "status": "PAUSED",
+                "paused_sell_price": 88.5,
+            }
+        }
+
+        with patch("infinite_state_manager.GoogleSheetManager", return_value=mock_gss):
+            mgr = InfiniteStateManager(file_path=self.test_state_file, enable_gss=True)
+
+        st = mgr.get_symbol_state("TQQQ")
+        self.assertEqual(st["status"], "PAUSED")
+        self.assertEqual(st["paused_sell_price"], 88.5)
+
+        # 3. 이후 웹 UI에서 투자 재개(BUYING, paused_sell_price=0.0)했을 때 다시 BUYING으로 복원되는지 검증
+        mock_gss.read_states_from_sheet.return_value = {
+            "TQQQ": {
+                "symbol": "TQQQ",
+                "division_count": 40,
+                "start_date": "2026-09-22",
+                "current_round": 8.0,
+                "total_budget_usd": 5000.0,
+                "target_roi": 0.1,
+                "status": "BUYING",
+                "paused_sell_price": 0.0,
+            }
+        }
+
+        with patch("infinite_state_manager.GoogleSheetManager", return_value=mock_gss):
+            mgr_resumed = InfiniteStateManager(file_path=self.test_state_file, enable_gss=True)
+
+        st_resumed = mgr_resumed.get_symbol_state("TQQQ")
+        self.assertEqual(st_resumed["status"], "BUYING")
+        self.assertEqual(st_resumed["paused_sell_price"], 0.0)
+
+    def test_pause_cancels_unexecuted_buy_orders(self):
+        """일시중지 시 미체결 LOC 매수 주문만 선별하여 취소하고 당일 매수 원장(order_ledger)을 초기화하는지 검증"""
+        api_client = KISApiClient(app_key="test", app_secret="test", cano="12345678", acnt_prdt_cd="01", mock=True)
+        api_client.access_token = "mock_token"
+        api_client.token_issued_at = 9999999999
+
+        # 미체결 LOC 매수 2건 + 미체결 매도 1건 + 이미 취소된 매수 1건 모킹
+        api_client.get_overseas_order_ccnl = MagicMock(return_value=[
+            {
+                "order_no": "00101",
+                "symbol": "TQQQ",
+                "order_type": "매수",
+                "sll_buy_dvsn_cd": "02",
+                "qty": 3,
+                "executed_qty": 0,
+                "nccs_qty": "3",
+                "price": 78.50,
+                "status": "접수",
+                "rvse_cncl_dvsn": "00",
+                "rvse_cncl_dvsn_name": "",
+                "ovrs_excg_cd": "NASD",
+            },
+            {
+                "order_no": "00102",
+                "symbol": "TQQQ",
+                "order_type": "매수",
+                "sll_buy_dvsn_cd": "02",
+                "qty": 2,
+                "executed_qty": 0,
+                "nccs_qty": "2",
+                "price": 82.00,
+                "status": "전송",
+                "rvse_cncl_dvsn": "00",
+                "rvse_cncl_dvsn_name": "",
+                "ovrs_excg_cd": "NASD",
+            },
+            {
+                "order_no": "00103",
+                "symbol": "TQQQ",
+                "order_type": "매도",
+                "sll_buy_dvsn_cd": "01",
+                "qty": 16,
+                "executed_qty": 0,
+                "nccs_qty": "16",
+                "price": 87.07,
+                "status": "접수",
+                "rvse_cncl_dvsn": "00",
+                "rvse_cncl_dvsn_name": "",
+                "ovrs_excg_cd": "NASD",
+            },
+            {
+                "order_no": "00104",
+                "symbol": "TQQQ",
+                "order_type": "매수",
+                "sll_buy_dvsn_cd": "02",
+                "qty": 2,
+                "executed_qty": 0,
+                "nccs_qty": "0",
+                "price": 75.00,
+                "status": "취소",
+                "rvse_cncl_dvsn": "02",
+                "rvse_cncl_dvsn_name": "취소",
+                "ovrs_excg_cd": "NASD",
+            },
+        ])
+        api_client.cancel_overseas_order = MagicMock(return_value={"success": True, "msg": "취소 성공"})
+
+        mgr = InfiniteStateManager(file_path=self.test_state_file, enable_gss=False)
+        st = mgr.get_symbol_state("TQQQ")
+        st["status"] = "BUYING"
+        st["order_ledger"] = {"session": "2026-10-13", "keys": ["SELL_00_1", "BUY_34_1", "BUY_34_2"]}
+        mgr.save_state()
+
+        # pause_buying 호출 및 미체결 매수 취소 실행
+        mgr.pause_buying("TQQQ", sell_price=88.0)
+        res = api_client.cancel_unexecuted_overseas_buy_orders("TQQQ")
+
+        self.assertTrue(res["success"])
+        self.assertEqual(res["cancelled"], 2)
+        self.assertEqual(api_client.cancel_overseas_order.call_count, 2)
+        # 매도 주문(00103)이나 이미 취소된 주문(00104)은 건드리지 않고 미체결 매수(00101, 00102)만 취소
+        called_odnos = [c.kwargs["order_no"] for c in api_client.cancel_overseas_order.call_args_list]
+        self.assertEqual(called_odnos, ["00101", "00102"])
+        # 당일 order_ledger에서 BUY_ 슬롯만 제거되고 SELL_00_1은 유지되는지 확인
+        self.assertEqual(mgr.get_symbol_state("TQQQ")["order_ledger"]["keys"], ["SELL_00_1"])
+
 
 if __name__ == "__main__":
     unittest.main()

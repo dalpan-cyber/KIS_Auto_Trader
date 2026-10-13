@@ -77,7 +77,7 @@ class InfiniteSheetManager(BaseSheetManager):
         # 3. 'State' 워크시트 (진행 회차 및 상태)
         self.state_worksheet = self._get_or_create_worksheet(
             title="State",
-            headers=["티커", "시작일", "진행회차", "총예산($)", "목표수익률(%)", "상태", "최종갱신시각"],
+            headers=["티커", "시작일", "진행회차", "총예산($)", "목표수익률(%)", "상태", "최종갱신시각", "지정매도가($)"],
             rows="50",
             cols="10"
         )
@@ -89,18 +89,36 @@ class InfiniteSheetManager(BaseSheetManager):
 
         try:
             now_str = time_utils.now_str()
-            try:
-                all_records = self.state_worksheet.get_all_records()
-            except Exception:
-                all_records = []
-
+            expected_headers = ["티커", "시작일", "진행회차", "총예산($)", "목표수익률(%)", "상태", "최종갱신시각", "지정매도가($)"]
             ticker_row_map = {}
-            for idx, rec in enumerate(all_records, start=2):
-                if rec.get("티커"):
-                    ticker_row_map[str(rec["티커"]).upper()] = idx
+
+            try:
+                all_values = self.state_worksheet.get_all_values()
+            except Exception:
+                all_values = []
+
+            if isinstance(all_values, list) and len(all_values) > 0:
+                header_row = [str(h).strip() for h in all_values[0]]
+                if len(header_row) < len(expected_headers) or header_row[:len(expected_headers)] != expected_headers:
+                    try:
+                        self.state_worksheet.update([expected_headers], range_name="A1:H1")
+                    except Exception:
+                        pass
+                for idx, row in enumerate(all_values[1:], start=2):
+                    if row and str(row[0]).strip():
+                        ticker_row_map[str(row[0]).strip().upper()] = idx
+            else:
+                try:
+                    all_records = self.state_worksheet.get_all_records()
+                    for idx, rec in enumerate(all_records, start=2):
+                        if rec.get("티커"):
+                            ticker_row_map[str(rec["티커"]).upper()] = idx
+                except Exception:
+                    pass
 
             for symbol, state in states.items():
                 sym_upper = symbol.upper()
+                paused_sp = round(float(state.get("paused_sell_price", 0.0) or 0.0), 2)
                 row_data = [
                     sym_upper,
                     state.get("start_date", "-"),
@@ -108,12 +126,13 @@ class InfiniteSheetManager(BaseSheetManager):
                     state.get("total_budget_usd", 0.0),
                     round(state.get("target_roi", 0.10) * 100, 1),
                     state.get("status", "IDLE"),
-                    now_str
+                    now_str,
+                    paused_sp
                 ]
 
                 if sym_upper in ticker_row_map:
                     row_idx = ticker_row_map[sym_upper]
-                    self.state_worksheet.update([row_data], range_name=f"A{row_idx}:G{row_idx}")
+                    self.state_worksheet.update([row_data], range_name=f"A{row_idx}:H{row_idx}")
                 else:
                     self.state_worksheet.append_row(row_data)
 
@@ -125,13 +144,32 @@ class InfiniteSheetManager(BaseSheetManager):
                 logger.warning(f"Google Sheet State 동기화 예외: {e}")
 
     def read_states_from_sheet(self) -> Dict[str, Dict[str, Any]]:
-        """Google Sheet 'State' 워크시트에서 사용자가 수동 편집한 전략 상태 읽어오기"""
+        """Google Sheet 'State' 워크시트에서 저장된 전략 상태 읽어오기"""
         if not self.is_connected or not self.state_worksheet:
             return {}
 
         sheet_states = {}
         try:
-            records = self.state_worksheet.get_all_records()
+            records = []
+            try:
+                all_values = self.state_worksheet.get_all_values()
+                if isinstance(all_values, list) and len(all_values) > 1:
+                    headers = [str(h).strip() for h in all_values[0]]
+                    for row in all_values[1:]:
+                        if not row or not any(str(c).strip() for c in row):
+                            continue
+                        rec = {}
+                        for i, h in enumerate(headers):
+                            if h and i < len(row):
+                                rec[h] = row[i]
+                        if "지정매도가($)" not in rec and len(row) >= 8:
+                            rec["지정매도가($)"] = row[7]
+                        records.append(rec)
+                else:
+                    records = self.state_worksheet.get_all_records()
+            except Exception:
+                records = self.state_worksheet.get_all_records()
+
             for rec in records:
                 ticker = str(rec.get("티커", "")).strip().upper()
                 if not ticker:
@@ -142,6 +180,12 @@ class InfiniteSheetManager(BaseSheetManager):
                 except Exception:
                     roi_float = 0.10
 
+                paused_sp_val = rec.get("지정매도가($)", 0.0)
+                try:
+                    paused_sp_float = float(str(paused_sp_val).replace(",", "").replace("$", "").strip() or 0.0)
+                except Exception:
+                    paused_sp_float = 0.0
+
                 sheet_states[ticker] = {
                     "symbol": ticker,
                     "division_count": 40,
@@ -150,6 +194,7 @@ class InfiniteSheetManager(BaseSheetManager):
                     "total_budget_usd": float(rec.get("총예산($)", 5000.0) or 5000.0),
                     "target_roi": round(roi_float, 4),
                     "status": str(rec.get("상태", "IDLE")).strip().upper(),
+                    "paused_sell_price": round(paused_sp_float, 2),
                 }
             if sheet_states:
                 logger.info(f"📊 Google Sheet 'State'에서 {len(sheet_states)}개 종목 상태 불러오기 성공 ({', '.join(sheet_states.keys())})")

@@ -36,7 +36,7 @@ class InfiniteStateManager:
                 import config
                 config.load_settings_from_google_sheet(gss_instance=self.gss_mgr)
                 self._sync_states_with_config()
-                # 구글 시트 State 워크시트에서 진행 회차/상태/시작일 복원 (Streamlit Cloud 컨테이너 재시작 시 보존)
+                # 구글 시트 State 워크시트에서 진행 회차/상태/지정매도가/시작일 복원 (Streamlit Cloud 및 GitHub Actions 간 상태 동기화)
                 sheet_states = self.gss_mgr.read_states_from_sheet()
                 if sheet_states:
                     modified = False
@@ -45,8 +45,18 @@ class InfiniteStateManager:
                             if s_st.get("current_round", 0) > 0 and self.states[sym].get("current_round", 0) == 0:
                                 self.states[sym]["current_round"] = s_st["current_round"]
                                 modified = True
-                            if s_st.get("status") and s_st.get("status") != "IDLE" and self.states[sym].get("status") == "IDLE":
-                                self.states[sym]["status"] = s_st["status"]
+                            sheet_status = str(s_st.get("status", "")).strip().upper()
+                            if sheet_status and sheet_status != "IDLE":
+                                if self.states[sym].get("status") != sheet_status:
+                                    self.states[sym]["status"] = sheet_status
+                                    modified = True
+                            sheet_paused_sp = float(s_st.get("paused_sell_price", 0.0) or 0.0)
+                            if sheet_status == "PAUSED":
+                                if float(self.states[sym].get("paused_sell_price", 0.0) or 0.0) != sheet_paused_sp:
+                                    self.states[sym]["paused_sell_price"] = sheet_paused_sp
+                                    modified = True
+                            elif float(self.states[sym].get("paused_sell_price", 0.0) or 0.0) != 0.0:
+                                self.states[sym]["paused_sell_price"] = 0.0
                                 modified = True
                             # 구글 시트에 저장된 유효한 시작일 복원 (Streamlit Cloud 재부팅 시 영속화)
                             sheet_sd = str(s_st.get("start_date", "")).strip()
@@ -290,10 +300,13 @@ class InfiniteStateManager:
         self.save_state()
 
     def pause_buying(self, symbol: str, sell_price: float = 0.0):
-        """투자 일시중지 (상태를 PAUSED로 설정, 지정 매도가 설정 시 매도만 가능)"""
+        """투자 일시중지 (상태를 PAUSED로 설정, 지정 매도가 설정 시 매도만 가능, 당일 매수 발주 원장 초기화)"""
         state = self.get_symbol_state(symbol)
         state["status"] = "PAUSED"
         state["paused_sell_price"] = float(sell_price) if sell_price else 0.0
+        ledger = state.get("order_ledger")
+        if isinstance(ledger, dict) and isinstance(ledger.get("keys"), list):
+            ledger["keys"] = [k for k in ledger["keys"] if not str(k).startswith("BUY_")]
         sell_msg = f", 지정 매도가: ${sell_price:.2f}" if sell_price > 0 else " (매수 중단, 기본 익절 매도 유지)"
         logger.info(f"⏸ [{symbol}] 투자 일시중지 설정 완료!{sell_msg} (상태: PAUSED)")
         self.save_state()

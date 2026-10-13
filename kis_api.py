@@ -1402,6 +1402,189 @@ class KISApiClient:
             logger.error(f"[{symbol_upper}] 해외주식 주문 예외 발생: {e}")
             return {"success": False, "msg": str(e)}
 
+    def cancel_overseas_order(
+        self,
+        symbol: str,
+        order_no: str,
+        qty: int,
+        exchange: str = "NAS"
+    ) -> Dict[str, Any]:
+        """
+        해외주식 미체결 주문 취소 (TTTT1004U: 실전 / VTTT1004U: 모의)
+        - URL: /uapi/overseas-stock/v1/trading/order-rvsecncl
+        - RVSE_CNCL_DVSN_CD: "02" (취소)
+        - OVRS_ORD_UNPR: "0" (취소 시 단가 0)
+        """
+        self._ensure_token()
+        symbol_upper = str(symbol).strip().upper()
+        odno_clean = str(order_no).strip()
+        if not odno_clean or qty <= 0:
+            return {"success": False, "msg": "유효하지 않은 원주문번호 또는 취소 수량입니다."}
+
+        if not self.access_token or not self.cano:
+            if not self.mock:
+                logger.error(f"[{symbol_upper}] KIS Access Token이 유효하지 않아 실전 해외 주문 취소를 실행할 수 없습니다.")
+                return {"success": False, "rt_cd": "-1", "msg": "Access Token이 유효하지 않아 실전 주문 취소를 실행할 수 없습니다."}
+            logger.info(f"[시뮬레이션] 해외주식 {symbol_upper} 미체결 주문 취소 완료 (원주문번호: {odno_clean}, 수량: {qty}주)")
+            return {"success": True, "order_no": odno_clean, "msg": f"[시뮬레이션] 해외 {symbol_upper} 주문({odno_clean}) 취소 성공"}
+
+        target_exchange = exchange
+        if not target_exchange or target_exchange.upper() == "NAS":
+            auto_exch = self.get_symbol_exchange(symbol_upper)
+            if auto_exch:
+                target_exchange = auto_exch
+
+        exchange_map = {
+            "NAS": "NASD",
+            "NYS": "NYSE",
+            "AMS": "AMEX",
+            "NASD": "NASD",
+            "NYSE": "NYSE",
+            "AMEX": "AMEX"
+        }
+        ovrs_excg_cd = exchange_map.get(target_exchange.upper() if target_exchange else "NAS", "NASD")
+
+        url = f"{self.url_base}/uapi/overseas-stock/v1/trading/order-rvsecncl"
+        tr_id = "VTTT1004U" if self.mock else "TTTT1004U"
+
+        body = {
+            "CANO": self.cano,
+            "ACNT_PRDT_CD": self.acnt_prdt_cd,
+            "OVRS_EXCG_CD": ovrs_excg_cd,
+            "PDNO": symbol_upper,
+            "ORGN_ODNO": odno_clean,
+            "RVSE_CNCL_DVSN_CD": "02",  # 02: 취소
+            "ORD_QTY": str(qty),
+            "OVRS_ORD_UNPR": "0",
+            "ORD_SVR_DVSN_CD": "0"
+        }
+        hashkey = self.get_hashkey(body)
+        headers = self._get_headers(tr_id, hashkey=hashkey)
+
+        try:
+            self._rate_limit()
+            res = requests.post(url, headers=headers, data=json.dumps(body), timeout=10)
+            data = self._safe_json_response(res, context=f"해외주문취소[{symbol_upper}:{odno_clean}]")
+
+            if res.status_code == 200 and data.get("rt_cd") == "0":
+                cancel_odno = data.get("output", {}).get("ODNO", "")
+                logger.info(f"★ [{symbol_upper}] 해외주식 미체결 주문 취소 성공! (원주문번호: {odno_clean}, 취소수량: {qty}주, 취소주문번호: {cancel_odno})")
+                return {"success": True, "order_no": cancel_odno or odno_clean, "orgn_odno": odno_clean, "msg": "주문 취소 성공", "data": data.get("output")}
+            else:
+                msg = data.get("msg1", "주문 취소 실패")
+                msg_cd = data.get("msg_cd", "")
+                logger.error(f"[{symbol_upper}] 해외주식 주문 취소 실패 (원주문번호={odno_clean}, tr_id={tr_id}, msg_cd={msg_cd}): {msg}")
+                return {"success": False, "orgn_odno": odno_clean, "msg": f"{msg} (코드: {msg_cd})", "msg_cd": msg_cd}
+        except Exception as e:
+            logger.error(f"[{symbol_upper}] 해외주식 주문 취소 예외 발생 (원주문번호={odno_clean}): {e}")
+            return {"success": False, "orgn_odno": odno_clean, "msg": str(e)}
+
+    def cancel_unexecuted_overseas_buy_orders(self, symbol: str) -> Dict[str, Any]:
+        """
+        특정 해외 종목의 당일(최근 세션) 미체결 매수(LOC 포함) 주문을 일괄 조회하여 취소
+        :return: {"success": bool, "cancelled": int, "failed": int, "messages": List[str]}
+        """
+        symbol_upper = str(symbol).strip().upper()
+        result: Dict[str, Any] = {"success": True, "cancelled": 0, "failed": 0, "messages": []}
+
+        # 한국 시간 자정 경계를 넘나드는 미국장 세션을 포괄하기 위해 최근 2일 주문체결내역 조회
+        today_dt = datetime.date.today()
+        start_str = (today_dt - datetime.timedelta(days=2)).strftime("%Y%m%d")
+        end_str = today_dt.strftime("%Y%m%d")
+
+        try:
+            ccnl_list = self.get_overseas_order_ccnl(
+                symbol=symbol_upper,
+                start_date=start_str,
+                end_date=end_str
+            )
+        except Exception as e:
+            err_msg = f"[{symbol_upper}] 미체결 매수 주문 조회 실패: {e}"
+            logger.warning(err_msg)
+            return {"success": False, "cancelled": 0, "failed": 0, "messages": [err_msg]}
+
+        if not ccnl_list:
+            logger.info(f"[{symbol_upper}] 취소할 미체결 매수 주문 내역이 없습니다.")
+            return result
+
+        # 1. 이미 취소 접수/완료된 원주문번호(orgn_odno) 수집
+        cancelled_orgn_odnos = set()
+        for r in ccnl_list:
+            rvse_cd = str(r.get("rvse_cncl_dvsn", "")).strip()
+            rvse_nm = str(r.get("rvse_cncl_dvsn_name", "")).strip()
+            status = str(r.get("status", "")).strip()
+            orgn = str(r.get("orgn_odno", "")).strip()
+            odno = str(r.get("order_no", "")).strip()
+            if rvse_cd == "02" or "취소" in rvse_nm or "취소" in status:
+                if orgn:
+                    cancelled_orgn_odnos.add(orgn)
+                if odno:
+                    cancelled_orgn_odnos.add(odno)
+
+        # 2. 미체결 상태인 매수 주문 필터링 및 취소 실행
+        seen_odnos = set()
+        for r in ccnl_list:
+            rec_sym = str(r.get("symbol", "")).strip().upper()
+            if rec_sym and rec_sym != symbol_upper:
+                continue
+
+            odno = str(r.get("order_no", "")).strip()
+            if not odno or odno in seen_odnos or odno in cancelled_orgn_odnos:
+                continue
+
+            rvse_cd = str(r.get("rvse_cncl_dvsn", "")).strip()
+            rvse_nm = str(r.get("rvse_cncl_dvsn_name", "")).strip()
+            if rvse_cd in ("01", "02") or "취소" in rvse_nm:
+                continue
+
+            order_type = str(r.get("order_type", "")).strip()
+            sll_buy_cd = str(r.get("sll_buy_dvsn_cd", "")).strip()
+            is_buy = ("매수" in order_type) or (sll_buy_cd in ("02", "2"))
+            if not is_buy:
+                continue
+
+            status = str(r.get("status", "")).strip()
+            if any(tok in status for tok in ("취소", "거부", "실패", "전량체결")):
+                continue
+
+            # 미체결 수량 산출 (nccs_qty 우선, 없으면 주문수량 - 체결수량)
+            raw_nccs = str(r.get("nccs_qty", "")).replace(",", "").strip()
+            unexec_qty = 0
+            if raw_nccs and raw_nccs.replace(".", "").isdigit():
+                unexec_qty = int(float(raw_nccs))
+            elif status != "체결":
+                ord_q = int(r.get("qty", 0) or 0)
+                exec_q = int(r.get("executed_qty", 0) or 0)
+                unexec_qty = max(0, ord_q - exec_q)
+
+            if unexec_qty <= 0:
+                continue
+
+            seen_odnos.add(odno)
+            exch = str(r.get("ovrs_excg_cd", "")).strip() or self.get_symbol_exchange(symbol_upper)
+            ord_price = float(r.get("price", 0.0) or 0.0)
+
+            cancel_res = self.cancel_overseas_order(
+                symbol=symbol_upper,
+                order_no=odno,
+                qty=unexec_qty,
+                exchange=exch
+            )
+            if cancel_res.get("success"):
+                result["cancelled"] += 1
+                msg = f"✅ [{symbol_upper}] 미체결 매수 주문 취소 완료 (주문번호: {odno}, 수량: {unexec_qty}주 @ ${ord_price:.2f})"
+                result["messages"].append(msg)
+                logger.info(msg)
+            else:
+                result["failed"] += 1
+                err = cancel_res.get("msg", "취소 실패")
+                msg = f"⚠️ [{symbol_upper}] 미체결 매수 주문({odno}) 취소 실패: {err}"
+                result["messages"].append(msg)
+                logger.warning(msg)
+
+        result["success"] = (result["failed"] == 0)
+        return result
+
     def get_overseas_execution_history(
         self,
         symbol: str = "",

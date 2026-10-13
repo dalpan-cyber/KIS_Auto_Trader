@@ -249,7 +249,7 @@ def render_stock_detail(symbol: str, bot: TraderBot):
         else:
             with st.popover("⏸ 투자 일시중지", width="stretch"):
                 st.markdown(f"**[{symbol}] 투자 일시중지 설정**")
-                st.caption("일시중지 시 자동/수동 매수가 차단되며, 지정 매도가로 매도 주문만 가능합니다.")
+                st.caption("일시중지 시 미체결 LOC 매수 주문이 자동 취소되고 신규 매수가 차단되며, 지정 매도가로 매도 주문만 가능합니다.")
                 default_sp = float(round(avg_p * 1.10, 2)) if avg_p > 0 else float(round(cur_p, 2))
                 pause_sp_input = st.number_input(
                     "지정 매도가 ($)",
@@ -260,8 +260,15 @@ def render_stock_detail(symbol: str, bot: TraderBot):
                     help="일시중지 중 발주할 전량 매도 목표가 (0 입력 시 기본 익절가 유지)"
                 )
                 if st.button("일시중지 적용", key=f"confirm_pause_{symbol}", type="primary", width="stretch"):
-                    bot.pause_infinite_buying(symbol, sell_price=pause_sp_input)
-                    st.success(f"[{symbol}] 투자가 일시중지되었습니다.")
+                    cancel_res = bot.pause_infinite_buying(symbol, sell_price=pause_sp_input)
+                    cancelled_cnt = int(cancel_res.get("cancelled", 0)) if isinstance(cancel_res, dict) else 0
+                    failed_cnt = int(cancel_res.get("failed", 0)) if isinstance(cancel_res, dict) else 0
+                    if cancelled_cnt > 0:
+                        flash(f"⏸ [{symbol}] 투자가 일시중지되었으며, 미체결 매수 주문 {cancelled_cnt}건이 자동 취소되었습니다.")
+                    elif failed_cnt > 0:
+                        flash(f"⚠️ [{symbol}] 투자가 일시중지되었으나 미체결 매수 주문 취소 중 {failed_cnt}건이 실패했습니다.")
+                    else:
+                        flash(f"⏸ [{symbol}] 투자가 일시중지되었습니다. (취소할 미체결 매수 주문 없음)")
                     st.rerun()
     with c_btn2:
         with st.popover("⚙️ 시작일 변경", width="stretch"):
@@ -835,7 +842,12 @@ def page_main_dashboard(bot: Optional[TraderBot] = None):
                         "총 예산 ($)": f"${st_d.get('total_budget_usd', 0.0):,.2f}",
                         "평단가 ($)": f"${avg_p:.2f}" if avg_p > 0 else "-",
                         "보유 수량": f"{total_qty:,} 주",
-                        "상태": "🟢 운용 중" if st_d.get("status") == "BUYING" else ("🔵 익절 완료" if st_d.get("status") == "COMPLETED" else "🟡 대기 중")
+                        "상태": {
+                            "BUYING": "🟢 운용 중",
+                            "PAUSED": "⏸ 일시중지",
+                            "STOPPED": "🔴 강제중지",
+                            "COMPLETED": "🔵 익절 완료",
+                        }.get(st_d.get("status"), "🟡 대기 중")
                     })
                 st.dataframe(pd.DataFrame(summary_data), width="stretch", hide_index=True)
         else:
