@@ -188,6 +188,60 @@ class TestInfiniteStrategy(unittest.TestCase):
         self.assertEqual(buy_orders_30[0]["round_inc"], 1.0)
         self.assertIn("1.0회차 후반전(☆-5.0%)", buy_orders_30[0]["desc"])
 
+    def test_limit_price_aggressive_cap(self):
+        """
+        주가 급락 시 LOC 매수 가격이 현재가 대비 지나치게 높아
+        'Limit Price too aggressive' (에러 6008)로 거부되는 것을 방지하는 상한 캡 테스트
+        """
+        strategy = StrategyFactory.create_strategy("INFINITE_BUYING", division_count=40, target_roi=0.10)
+        symbol = "TQQQ"
+
+        # 1. 전반전 급락 시나리오: 평단가 $50.0, 현재가 $35.0 (약 -30% 하락)
+        state_drop = {
+            "symbol": symbol,
+            "total_budget_usd": 4000.0,
+            "division_count": 40,
+            "current_round": 1.0,
+            "target_roi": 0.10,
+            "max_loc_premium_ratio": 0.10  # 현재가의 최대 +10% ($38.50)
+        }
+        orders = strategy.generate_daily_orders(
+            symbol, current_price=35.0, state=state_drop,
+            avg_price=50.0, total_qty=10
+        )
+        buy_orders = [o for o in orders if o["action"] == "BUY"]
+        self.assertEqual(len(buy_orders), 2)
+
+        # 현재가 $35.0 기준 최대 허용가는 $38.50
+        max_allowed = 35.0 * 1.10
+        self.assertLessEqual(buy_orders[0]["price"], max_allowed)
+        self.assertLessEqual(buy_orders[1]["price"], max_allowed)
+        self.assertIn("상한캡", buy_orders[0]["desc"])
+        self.assertIn("상한캡", buy_orders[1]["desc"])
+        # 두 주문 가격이 서로 달라야 함 (0.01 차이 유지)
+        self.assertNotEqual(buy_orders[0]["price"], buy_orders[1]["price"])
+        self.assertEqual(buy_orders[1]["price"], 38.50)
+        self.assertEqual(buy_orders[0]["price"], 38.49)
+
+        # 2. 후반전 급락 시나리오: 평단가 $50.0, 현재가 $35.0
+        state_second_drop = {
+            "symbol": symbol,
+            "total_budget_usd": 4000.0,
+            "division_count": 40,
+            "current_round": 20.0,
+            "target_roi": 0.10,
+            "max_loc_premium_ratio": 0.10
+        }
+        orders_20 = strategy.generate_daily_orders(
+            symbol, current_price=35.0, state=state_second_drop,
+            avg_price=50.0, total_qty=40
+        )
+        buy_orders_20 = [o for o in orders_20 if o["action"] == "BUY"]
+        self.assertEqual(len(buy_orders_20), 1)
+        self.assertEqual(buy_orders_20[0]["price"], 38.50)
+        self.assertIn("상한캡", buy_orders_20[0]["desc"])
+
 
 if __name__ == "__main__":
     unittest.main()
+

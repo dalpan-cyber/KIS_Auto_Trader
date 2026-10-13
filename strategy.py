@@ -338,22 +338,47 @@ class InfiniteBuyingStrategy(BaseStrategy):
             # 40분할 기준: 10.0 - (T / 2.0)
             star_percent = 10.0 - (float(curr_round) * (10.0 / float(half_division)))
 
+            # 현재가 대비 과도한 괴리율 방지 (브로커/거래소 Limit Price too aggressive / 6008 거부 방어)
+            max_loc_premium_ratio = float(
+                state.get(
+                    "max_loc_premium_ratio",
+                    getattr(config, "INFINITE_MAX_LOC_PREMIUM_RATIO", 0.10)
+                )
+            )
+            max_allowed_loc_price = round(current_price * (1.0 + max_loc_premium_ratio), 2)
+
             if curr_round < half_division:
                 # [전반전] (0 <= T < half_division): 적극적 물량 확보 구간
                 # 1) 0.5회차 평단가 LOC 매수
-                loc1_price = round(base_price, 2)
-                qty1 = max(1, int(half_budget / loc1_price))
+                raw_loc1 = round(base_price, 2)
+                loc1_price = round(min(raw_loc1, max_allowed_loc_price), 2)
 
                 # 2) 0.5회차 큰수(☆%) LOC 매수
                 # 평단가가 없는 최초 매수(0회차)인 경우 현재가 기반 진입 보장
                 if avg_price <= 0:
-                    loc2_price = round(base_price * 1.05, 2)
+                    raw_loc2 = round(base_price * 1.05, 2)
                 else:
-                    loc2_price = round(base_price * (1.0 + star_percent / 100.0), 2)
-                    if loc2_price <= loc1_price:
-                        loc2_price = round(loc1_price + 0.01, 2)
+                    raw_loc2 = round(base_price * (1.0 + star_percent / 100.0), 2)
+                    if raw_loc2 <= raw_loc1:
+                        raw_loc2 = round(raw_loc1 + 0.01, 2)
 
+                loc2_price = round(min(raw_loc2, max_allowed_loc_price), 2)
+
+                # 상한 캡 적용 시 두 가격이 같아지거나 역전되지 않도록 분리 (loc1을 0.01 낮춤)
+                if loc2_price <= loc1_price and loc1_price > 0.01:
+                    loc1_price = round(max(0.01, loc2_price - 0.01), 2)
+
+                qty1 = max(1, int(half_budget / loc1_price))
                 qty2 = max(1, int(half_budget / loc2_price))
+
+                capped1_str = " (상한캡)" if loc1_price < raw_loc1 else ""
+                capped2_str = " (상한캡)" if loc2_price < raw_loc2 else ""
+
+                if loc1_price < raw_loc1 or loc2_price < raw_loc2:
+                    self.logger.info(
+                        f"🛡️ [{symbol}] LOC 매수가가 현재가(${current_price:.2f}) 대비 과도(Limit price too aggressive 방지)하여 상한 캡(+{max_loc_premium_ratio*100:.0f}%) 적용: "
+                        f"평단LOC ${raw_loc1:.2f}->${loc1_price:.2f}, 큰수LOC ${raw_loc2:.2f}->${loc2_price:.2f}"
+                    )
 
                 orders.append({
                     "action": "BUY",
@@ -362,7 +387,7 @@ class InfiniteBuyingStrategy(BaseStrategy):
                     "price": loc1_price,
                     "ord_type": "34",  # LOC 매수
                     "round_inc": 0.5,
-                    "desc": f"0.5회차 평단가 LOC 매수 (${loc1_price:.2f}, {qty1}주)"
+                    "desc": f"0.5회차 평단가 LOC 매수 (${loc1_price:.2f}, {qty1}주){capped1_str}"
                 })
 
                 orders.append({
@@ -372,12 +397,20 @@ class InfiniteBuyingStrategy(BaseStrategy):
                     "price": loc2_price,
                     "ord_type": "34",  # LOC 매수
                     "round_inc": 0.5,
-                    "desc": f"0.5회차 큰수(☆{star_percent:+.1f}%) LOC 매수 (${loc2_price:.2f}, {qty2}주)"
+                    "desc": f"0.5회차 큰수(☆{star_percent:+.1f}%) LOC 매수 (${loc2_price:.2f}, {qty2}주){capped2_str}"
                 })
             else:
                 # [후반전] (half_division <= T < division): 평단가 방어 및 리스크 통제 구간
                 # 하루 1회차 전체 예산을 1건의 보수적 별%(☆%) LOC 매수로 집행
-                loc_price = round(base_price * (1.0 + star_percent / 100.0), 2)
+                raw_loc = round(base_price * (1.0 + star_percent / 100.0), 2)
+                loc_price = round(min(raw_loc, max_allowed_loc_price), 2)
+                capped_str = ""
+                if loc_price < raw_loc:
+                    capped_str = " (상한캡)"
+                    self.logger.info(
+                        f"🛡️ [{symbol}] 후반전 LOC 매수가가 현재가(${current_price:.2f}) 대비 과도하여 상한 캡(+{max_loc_premium_ratio*100:.0f}%) 적용: "
+                        f"${raw_loc:.2f} -> ${loc_price:.2f}"
+                    )
                 qty = max(1, int(one_round_budget / loc_price))
 
                 orders.append({
@@ -387,7 +420,7 @@ class InfiniteBuyingStrategy(BaseStrategy):
                     "price": loc_price,
                     "ord_type": "34",  # LOC 매수
                     "round_inc": 1.0,
-                    "desc": f"1.0회차 후반전(☆{star_percent:+.1f}%) LOC 매수 (${loc_price:.2f}, {qty}주)"
+                    "desc": f"1.0회차 후반전(☆{star_percent:+.1f}%) LOC 매수 (${loc_price:.2f}, {qty}주){capped_str}"
                 })
         else:
             # 40회차 소진 시 3가지 대응 모드 분기 (effective_exhaust_action 기준)

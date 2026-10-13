@@ -32,6 +32,8 @@ INFINITE_DIVISION_COUNT = 40
 INFINITE_TARGET_ROI = 0.10
 INFINITE_EXHAUST_ACTION = "HOLD"
 INFINITE_EXHAUST_TARGET_ROI = 0.05
+# LOC 매수 시 현재가 대비 최대 프리미엄 허용 비율 (Limit Price too aggressive 방지 상한 캡)
+INFINITE_MAX_LOC_PREMIUM_RATIO = float(os.getenv("INFINITE_MAX_LOC_PREMIUM_RATIO", "0.10"))
 
 # 종목별 무한매수 설정
 INFINITE_STOCK_CONFIGS: Dict[str, Dict[str, Any]] = {}
@@ -70,6 +72,7 @@ def get_stock_config(symbol: str) -> dict:
         "target_roi": float(cfg.get("target_roi", INFINITE_TARGET_ROI)),
         "exhaust_action": str(cfg.get("exhaust_action", INFINITE_EXHAUST_ACTION)).strip().upper(),
         "exhaust_target_roi": float(cfg.get("exhaust_target_roi", INFINITE_EXHAUST_TARGET_ROI)),
+        "max_loc_premium_ratio": float(cfg.get("max_loc_premium_ratio", INFINITE_MAX_LOC_PREMIUM_RATIO)),
     }
 
 
@@ -77,7 +80,7 @@ def _apply_settings(_settings: dict):
     """설정 dict를 모듈 변수에 반영"""
     global INFINITE_STOCKS, TARGET_STOCKS, INFINITE_STOCK_CONFIGS
     global INFINITE_TOTAL_BUDGET_USD, INFINITE_DIVISION_COUNT, INFINITE_TARGET_ROI
-    global INFINITE_EXHAUST_ACTION, INFINITE_EXHAUST_TARGET_ROI
+    global INFINITE_EXHAUST_ACTION, INFINITE_EXHAUST_TARGET_ROI, INFINITE_MAX_LOC_PREMIUM_RATIO
     global MAX_STOCKS_HOLDING, API_CALL_DELAY
 
     if not isinstance(_settings, dict):
@@ -101,6 +104,7 @@ def _apply_settings(_settings: dict):
                 "target_roi": float(cfg.get("target_roi", INFINITE_TARGET_ROI)),
                 "exhaust_action": str(cfg.get("exhaust_action", INFINITE_EXHAUST_ACTION)).strip().upper(),
                 "exhaust_target_roi": float(cfg.get("exhaust_target_roi", INFINITE_EXHAUST_TARGET_ROI)),
+                "max_loc_premium_ratio": float(cfg.get("max_loc_premium_ratio", INFINITE_MAX_LOC_PREMIUM_RATIO)),
             }
 
     # 전역 기본값 반영 (하위 호환성: 종목별 설정이 없는 경우 사용)
@@ -114,6 +118,8 @@ def _apply_settings(_settings: dict):
         INFINITE_EXHAUST_ACTION = str(_settings["infinite_exhaust_action"]).strip().upper()
     if "infinite_exhaust_target_roi" in _settings:
         INFINITE_EXHAUST_TARGET_ROI = float(_settings["infinite_exhaust_target_roi"])
+    if "infinite_max_loc_premium_ratio" in _settings:
+        INFINITE_MAX_LOC_PREMIUM_RATIO = float(_settings["infinite_max_loc_premium_ratio"])
 
     # 리스크/시스템 설정값 반영
     if "max_stocks_holding" in _settings:
