@@ -15,10 +15,10 @@ from .common import (
 logger = logging.getLogger("Config.Infinite")
 
 # 모의투자 / 실전투자 모드 설정
-MOCK_TRADING_ONLY = os.getenv("MOCK_TRADING_ONLY", "false").lower() == "true"
+MOCK_TRADING_ONLY = _get_env_or_secret("MOCK_TRADING_ONLY", "false").lower() == "true"
 
 # 매매 주문 방식 설정 (True: 매매 제안 후 사용자 승인 시 주문, False: 완전 자동 주문)
-REQUIRE_USER_APPROVAL = os.getenv("REQUIRE_USER_APPROVAL", "true").lower() == "true"
+REQUIRE_USER_APPROVAL = _get_env_or_secret("REQUIRE_USER_APPROVAL", "true").lower() == "true"
 
 # API 서버 Base URL
 URL_BASE = URL_BASE_MOCK if MOCK_TRADING_ONLY else URL_BASE_REAL
