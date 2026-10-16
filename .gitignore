@@ -18,6 +18,7 @@ gcp_key.json
 service_account.json
 kis-auto-trader-*.json
 *service_account*.json
+red-context-*.json
 *_backup.py
 positions_state.json
 sell_notify_history.json

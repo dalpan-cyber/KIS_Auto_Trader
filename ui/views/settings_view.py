@@ -311,6 +311,7 @@ def render_settings():
         is_conn = sheet_mgr.is_connected
         status_color = "#22c55e" if is_conn else "#f59e0b"
         status_text = "🟢 연결 정상 (실시간 동기화 활성)" if is_conn else "⚠️ 미연결 (로컬 JSON 모드로 안전 동작 중)"
+        bot_email = getattr(sheet_mgr, "service_account_email", "") or "kis-sheet-bot@red-context-511807-g8.iam.gserviceaccount.com"
 
         g_col1, g_col2 = st.columns([2, 1])
         with g_col1:
@@ -323,7 +324,7 @@ def render_settings():
                     <div style='font-size:0.85em; color:#94a3b8; line-height:1.6;'>
                         • <b>스프레드시트 이름</b>: {sheet_mgr.sheet_name}<br>
                         • <b>스프레드시트 KEY</b>: {sheet_mgr.sheet_key or '(미지정 - .env의 GOOGLE_SHEET_KEY 설정 필요)'}<br>
-                        • <b>서비스 계정 봇 이메일</b>: <code>kis-sheets-bot@kis-auto-trader.iam.gserviceaccount.com</code>
+                        • <b>서비스 계정 봇 이메일</b>: <code>{bot_email}</code>
                     </div>
                 </div>
                 """,

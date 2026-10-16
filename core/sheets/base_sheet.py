@@ -66,6 +66,7 @@ class BaseSheetManager:
         self.client: Optional[Any] = None
         self.spreadsheet: Optional[Any] = None
         self.is_connected: bool = False
+        self.service_account_email: str = ""
         self._worksheet_cache: Dict[str, Any] = {}
 
         if self.enabled and GSPREAD_AVAILABLE:
@@ -88,15 +89,27 @@ class BaseSheetManager:
         except Exception:
             pass
 
-        # 2. 환경변수 GCP_SERVICE_ACCOUNT_JSON (JSON 문자열)
+        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+
+        # 2. 환경변수 GCP_SERVICE_ACCOUNT_JSON (JSON 문자열 또는 파일 경로)
         env_json = os.getenv("GCP_SERVICE_ACCOUNT_JSON", "")
-        if env_json and env_json.strip().startswith("{"):
-            try:
-                info = json.loads(env_json)
-                logger.info("환경변수 GCP_SERVICE_ACCOUNT_JSON에서 인증 정보 로드 성공")
-                return Credentials.from_service_account_info(info, scopes=self.SCOPES)
-            except Exception as e:
-                logger.warning(f"환경변수 GCP_SERVICE_ACCOUNT_JSON 파싱 실패: {e}")
+        if env_json:
+            stripped = env_json.strip()
+            if stripped.startswith("{"):
+                try:
+                    info = json.loads(stripped)
+                    logger.info("환경변수 GCP_SERVICE_ACCOUNT_JSON에서 인증 정보 로드 성공")
+                    return Credentials.from_service_account_info(info, scopes=self.SCOPES)
+                except Exception as e:
+                    logger.warning(f"환경변수 GCP_SERVICE_ACCOUNT_JSON 파싱 실패: {e}")
+            else:
+                target_path = stripped if os.path.isabs(stripped) else os.path.join(base_dir, stripped)
+                if os.path.exists(target_path):
+                    try:
+                        logger.info(f"환경변수 GCP_SERVICE_ACCOUNT_JSON 지정 파일 로드: {target_path}")
+                        return Credentials.from_service_account_file(target_path, scopes=self.SCOPES)
+                    except Exception as e:
+                        logger.warning(f"GCP 파일({target_path}) 로드 실패: {e}")
 
         # 3. 명시적 파일 경로 확인
         if self.service_account_file and os.path.exists(self.service_account_file):
@@ -106,10 +119,10 @@ class BaseSheetManager:
             except Exception as e:
                 logger.warning(f"GCP 파일({self.service_account_file}) 로드 실패: {e}")
 
-        # 4. 프로젝트 디렉토리 자동 탐색 (kis-auto-trader-*.json, gcp_key.json 등)
-        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        # 4. 프로젝트 디렉토리 자동 탐색 (kis-auto-trader-*.json, red-context-*.json, gcp_key.json 등)
         patterns = [
             os.path.join(base_dir, "kis-auto-trader-*.json"),
+            os.path.join(base_dir, "red-context-*.json"),
             os.path.join(base_dir, "*service_account*.json"),
             os.path.join(base_dir, "gcp_key.json"),
             os.path.join(base_dir, "service_account.json"),
@@ -137,6 +150,8 @@ class BaseSheetManager:
         if not creds:
             logger.warning("GCP 인증 실패로 구글 시트 연동이 비활성화됩니다.")
             return False
+
+        self.service_account_email = getattr(creds, "service_account_email", "")
 
         try:
             self.client = gspread.authorize(creds)
