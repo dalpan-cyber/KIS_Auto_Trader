@@ -132,7 +132,7 @@ with st.sidebar:
     # 6대 핵심 통합 네비게이션 메뉴
     st.markdown("<div class='nav-header'>🧭 NAVIGATION • 메인 메뉴</div>", unsafe_allow_html=True)
     main_menu = [
-        ("dashboard", "📊 국내 자산 & 포트폴리오"),
+        ("dashboard", "📊 국내 자산"),
         ("screener", "🎯 15:10 종가 스크리닝"),
         ("stock_checker", "🔍 개별 종목 매수 진단"),
         ("infinite", "🇺🇸 미국 라오어 무한매수법"),

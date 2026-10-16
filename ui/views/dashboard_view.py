@@ -910,7 +910,7 @@ def render_performance_tab(api):
 
 def render_dashboard(api, screener, summary, holdings, proposals, holding_codes, realtime_detection_fragment):
     """통합 자산 & 포트폴리오 메인 뷰 (4개 서브 탭)"""
-    st.title("📊 자산 & 포트폴리오 관제")
+    st.title("📊 내자산 관리")
     st.caption(f"서버 시각: {now_str()} (KST) | 계좌: {api.cano}-{api.acnt_prdt_cd}")
 
     tab1, tab2, tab3, tab4 = st.tabs([
