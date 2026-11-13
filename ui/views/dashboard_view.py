@@ -13,6 +13,7 @@ import plotly.graph_objects as go
 from time_utils import now_str, today
 from telegram_notifier import notifier
 from ui.styles import render_interactive_stock_chart
+import app_config as config
 
 def _extract_change_rate(h: dict) -> float:
     """보유 종목 데이터에서 당일 등락률을 다중 필드 및 전일대비 직접 계산으로 안전 추출"""
@@ -908,16 +909,277 @@ def render_performance_tab(api):
     else:
         st.info("선택 기간 내 매도 완료된 종목이 없습니다.")
 
+
+def render_principles_tab(api, screener):
+    """운용원칙 탭 (Operational Policy & Principles)"""
+    st.subheader("⚖️ 국내 퀀트 트레이딩 운용원칙 및 리스크 관리 헌장")
+    st.caption("원금 보호와 비대칭 손익비(Asymmetric Risk/Reward) 극대화를 위한 시스템 알고리즘 운용 규정입니다.")
+
+    # 현재 실시간 설정값 로드
+    try:
+        settings = config.load_settings()
+    except Exception:
+        settings = {}
+
+    regime_mode = settings.get("regime_preset_mode", "VOLATILE")
+    regime_label_map = {
+        "BULL": "🐂 상승장 (BULL)",
+        "VOLATILE": "🌊 변동성장 (VOLATILE)",
+        "BEAR": "🐻 약세장 (BEAR)",
+        "AUTO": "🤖 국면 자동감지 (AUTO)"
+    }
+    regime_display = regime_label_map.get(regime_mode, f"⚡ {regime_mode}")
+
+    tp_rate = float(settings.get("target_profit_rate", 0.05)) * 100
+    sl_rate = abs(float(settings.get("stop_loss_rate", -0.035))) * 100
+    trailing_pct = float(settings.get("trailing_stop_pct", 0.035)) * 100
+    partial_ratio = float(settings.get("partial_sell_ratio", 0.5)) * 100
+    max_stocks = int(settings.get("max_holding_stocks", 5))
+    max_budget = int(settings.get("max_buy_budget_per_stock", 500000))
+    time_days = int(settings.get("time_stop_days", 6))
+    time_min_profit = float(settings.get("time_stop_min_profit", 0.02)) * 100
+    score_threshold = int(settings.get("buy_score_threshold", 65))
+    active_strats = settings.get("active_strategies", ["momentum", "rebound", "monthly_trend", "cup_and_handle"])
+
+    # 1. 상단 현재 적용 파라미터 메트릭 바
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    with c1:
+        st.metric("현재 시장 국면", regime_display.split()[1] if len(regime_display.split()) > 1 else regime_display)
+    with c2:
+        st.metric("1차 분할 익절", f"+{tp_rate:.1f}%", delta=f"{partial_ratio:.0f}% 분할매도")
+    with c3:
+        st.metric("2차 트레일링", f"-{trailing_pct:.1f}%", delta="고점대비 방어")
+    with c4:
+        st.metric("원칙 손절선", f"-{sl_rate:.1f}%", delta="-전량손절", delta_color="inverse")
+    with c5:
+        st.metric("최대 보유 종목", f"{max_stocks}종목", delta=f"종목당 {max_budget//10000:,}만원")
+    with c6:
+        st.metric("타임컷 기준", f"{time_days}영업일", delta=f"+{time_min_profit:.1f}% 미만시")
+
+    st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
+
+    # 2. 💡 시스템 3대 핵심 운용 철학
+    st.markdown("""
+    <div style="background: linear-gradient(135deg, rgba(15, 23, 42, 0.95), rgba(30, 41, 59, 0.8)); border: 1px solid #334155; border-radius: 12px; padding: 18px 20px; margin-bottom: 22px;">
+        <div style="font-size: 0.95rem; font-weight: 800; color: #38bdf8; margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
+            <span>💡</span> 시스템 3대 핵심 운용 철학 (Core Philosophy)
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px;">
+            <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid #1e293b; border-left: 4px solid #10b981; border-radius: 8px; padding: 12px 14px;">
+                <div style="font-weight: 700; color: #10b981; font-size: 0.88rem; margin-bottom: 4px;">1. 비대칭 손익비 (Asymmetric Payoff)</div>
+                <div style="font-size: 0.8rem; color: #cbd5e1; line-height: 1.5;">
+                    1차 목표가 도달 시 50% 분할 매도로 투자 원금을 조기 회수하고, 잔여 50%는 트레일링 스탑을 통해 고수익 추세를 끝까지 추종하여 손익비를 극대화합니다.
+                </div>
+            </div>
+            <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid #1e293b; border-left: 4px solid #ef4444; border-radius: 8px; padding: 12px 14px;">
+                <div style="font-weight: 700; color: #ef4444; font-size: 0.88rem; margin-bottom: 4px;">2. 원금 보존 절대주의 (Capital Preservation)</div>
+                <div style="font-size: 0.8rem; color: #cbd5e1; line-height: 1.5;">
+                    원칙 손절선 도달 시 감정적 미련 없이 기계적으로 전량 손절합니다. 한 번의 큰 손실로 계좌가 무너지는 것을 원천 차단하는 것이 장기 복리의 제1법칙입니다.
+                </div>
+            </div>
+            <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid #1e293b; border-left: 4px solid #38bdf8; border-radius: 8px; padding: 12px 14px;">
+                <div style="font-weight: 700; color: #38bdf8; font-size: 0.88rem; margin-bottom: 4px;">3. 감정 배제 100% 퀀트 검증 (Quant Discipline)</div>
+                <div style="font-size: 0.8rem; color: #cbd5e1; line-height: 1.5;">
+                    15:10 종가 기준 거래량 1.054배 보정, 추세·수급·모멘텀·선물 헤지 4대 팩터 검증 및 필수 수급 게이트를 통과한 종목에만 엄격히 진입합니다.
+                </div>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # 3. ⏱️ 일일 5단계 운용 타임라인 상세
+    with st.expander("⏱️ 일일 5단계 운용 사이클 타임라인 (Daily Operational Cycle)", expanded=True):
+        st.markdown("""
+        <div style="display: flex; flex-direction: column; gap: 10px; font-size: 0.83rem;">
+            <div style="display: flex; align-items: flex-start; gap: 12px; background: #0f172a; padding: 10px 14px; border-radius: 8px; border: 1px solid #1e293b;">
+                <div style="background: #ef4444; color: #ffffff; font-weight: 800; padding: 3px 8px; border-radius: 6px; font-size: 0.75rem; white-space: nowrap;">09:00</div>
+                <div>
+                    <b style="color: #f8fafc;">시초가 갭하락 및 긴급 손절 감시</b><br>
+                    <span style="color: #94a3b8;">장 시작 즉시 시초가 형성 결과를 반영하여 보유 종목의 비상 손절선 도달 여부를 점검하고, 급락 위험 발생 시 즉각 대응합니다.</span>
+                </div>
+            </div>
+            <div style="display: flex; align-items: flex-start; gap: 12px; background: #0f172a; padding: 10px 14px; border-radius: 8px; border: 1px solid #1e293b;">
+                <div style="background: #3b82f6; color: #ffffff; font-weight: 800; padding: 3px 8px; border-radius: 6px; font-size: 0.75rem; white-space: nowrap;">09:05 ~ 15:05</div>
+                <div>
+                    <b style="color: #f8fafc;">장중 5분 주기 실시간 고속 리스크 감시</b><br>
+                    <span style="color: #94a3b8;">차트 로딩 부하 없이 계좌 잔고를 기반으로 1차 목표 익절(50%), 최고점 대비 트레일링 스탑(-3.5%), 기계적 손절(-3.5%)을 초고속(&lt;1초) 감시합니다.</span>
+                </div>
+            </div>
+            <div style="display: flex; align-items: flex-start; gap: 12px; background: #0f172a; padding: 10px 14px; border-radius: 8px; border: 1px solid #1e293b;">
+                <div style="background: #0284c7; color: #ffffff; font-weight: 800; padding: 3px 8px; border-radius: 6px; font-size: 0.75rem; white-space: nowrap;">15:10</div>
+                <div>
+                    <b style="color: #38bdf8;">15:10 종가 스크리닝 (거래량 1.054배 보정 엔진 가동)</b><br>
+                    <span style="color: #cbd5e1;">동시호가(15:20~15:30) 예상 거래량을 1.054배로 환산 보정하여 20일 평균 대비 거래량 급증 여부를 확정하고, 4대 퀀트 점수(100점 만점)를 종합 산출합니다.</span>
+                </div>
+            </div>
+            <div style="display: flex; align-items: flex-start; gap: 12px; background: #0f172a; padding: 10px 14px; border-radius: 8px; border: 1px solid #1e293b;">
+                <div style="background: #10b981; color: #ffffff; font-weight: 800; padding: 3px 8px; border-radius: 6px; font-size: 0.75rem; white-space: nowrap;">15:15</div>
+                <div>
+                    <b style="color: #f8fafc;">상위 추천 종목 주문 발주 (장마감 전 동시호가 진입)</b><br>
+                    <span style="color: #94a3b8;">스크리닝 기준(65점 이상 & 필수 수급 게이트 충족)을 통과한 상위 종목에 대해 포트폴리오 빈 슬롯 한도 내에서 분할 매수 주문을 전송합니다.</span>
+                </div>
+            </div>
+            <div style="display: flex; align-items: flex-start; gap: 12px; background: #0f172a; padding: 10px 14px; border-radius: 8px; border: 1px solid #1e293b;">
+                <div style="background: #6366f1; color: #ffffff; font-weight: 800; padding: 3px 8px; border-radius: 6px; font-size: 0.75rem; white-space: nowrap;">15:30</div>
+                <div>
+                    <b style="color: #f8fafc;">장마감 일일 결산 & 텔레그램 일일 리포트 발송</b><br>
+                    <span style="color: #94a3b8;">당일 체결 결과, 계좌 총자산 변동, 실현 및 미실현 손익 매트릭스를 정산하고 사용자 텔레그램으로 종합 요약 리포트를 발송합니다.</span>
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # 4. 🎯 4대 핵심 매매 전략 매트릭스
+    st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
+    st.markdown("#### 🎯 4대 퀀트 매매 전략 원칙 (Active Strategy Matrix)")
+
+    col_s1, col_s2 = st.columns(2)
+    with col_s1:
+        st.markdown(f"""
+        <div style="background:#0f172a; border:1px solid #1e293b; border-radius:10px; padding:14px; height:100%;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                <span style="font-weight:700; color:#38bdf8; font-size:0.95rem;">🚀 모멘텀 추세추종 (Momentum)</span>
+                <span style="font-size:0.72rem; background:{'#064e3b' if 'momentum' in active_strats else '#334155'}; color:{'#6ee7b7' if 'momentum' in active_strats else '#94a3b8'}; padding:2px 8px; border-radius:4px; font-weight:600;">
+                    {'활성화' if 'momentum' in active_strats else '비활성'}
+                </span>
+            </div>
+            <div style="font-size:0.8rem; color:#cbd5e1; line-height:1.5;">
+                • <b>핵심 원칙:</b> 5일선이 20일선을 돌파(골든크로스)하거나 20일선 위 정배열 상태에서 전일 대비 거래량이 1.3배 이상 폭증한 종목 공략<br>
+                • <b>진입 게이트:</b> RSI 30~65 구간(78 이상 과열 차단), 윗꼬리 40% 미만<br>
+                • <b>청산 원칙:</b> 1차 +{tp_rate:.1f}%(50% 분할 익절) ➔ 2차 고점대비 -{trailing_pct:.1f}% 트레일링 ➔ 손절 -{sl_rate:.1f}%
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
+
+        st.markdown(f"""
+        <div style="background:#0f172a; border:1px solid #1e293b; border-radius:10px; padding:14px; height:100%;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                <span style="font-weight:700; color:#38bdf8; font-size:0.95rem;">📅 월봉 10이평 추세 (Monthly GTAA)</span>
+                <span style="font-size:0.72rem; background:{'#064e3b' if 'monthly_trend' in active_strats else '#334155'}; color:{'#6ee7b7' if 'monthly_trend' in active_strats else '#94a3b8'}; padding:2px 8px; border-radius:4px; font-weight:600;">
+                    {'활성화' if 'monthly_trend' in active_strats else '비활성'}
+                </span>
+            </div>
+            <div style="font-size:0.8rem; color:#cbd5e1; line-height:1.5;">
+                • <b>핵심 원칙:</b> 10개월 월봉 이동평균선을 상회하는 강력한 우량 주도주 장기 추세 편승<br>
+                • <b>특징:</b> 일봉 잔파동에 흔들리지 않으며, 단기 타임컷 미적용<br>
+                • <b>청산 원칙:</b> <b>월봉 10이평 하향 이탈 시 전량 매도</b> (목표 익절 +20% / 트레일링 -8% / 비상손절 -7%)
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with col_s2:
+        st.markdown(f"""
+        <div style="background:#0f172a; border:1px solid #1e293b; border-radius:10px; padding:14px; height:100%;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                <span style="font-weight:700; color:#38bdf8; font-size:0.95rem;">📉 52주 신저가 반등 (Rebound)</span>
+                <span style="font-size:0.72rem; background:{'#064e3b' if 'rebound' in active_strats else '#334155'}; color:{'#6ee7b7' if 'rebound' in active_strats else '#94a3b8'}; padding:2px 8px; border-radius:4px; font-weight:600;">
+                    {'활성화' if 'rebound' in active_strats else '비활성'}
+                </span>
+            </div>
+            <div style="font-size:0.8rem; color:#cbd5e1; line-height:1.5;">
+                • <b>핵심 원칙:</b> 52주 최고가 대비 -35% 이상 하락한 과매도 구간에서 저가 매수세 유입 확인<br>
+                • <b>진입 게이트:</b> RSI 25~48 구간 탈출, 거래량 1.3배 이상 반등 양봉 형성<br>
+                • <b>청산 원칙:</b> 기술적 반등 시 1차 +{tp_rate:.1f}% 분할 익절, 전저점 이탈 시 -{sl_rate:.1f}% 즉각 손절
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
+
+        st.markdown(f"""
+        <div style="background:#0f172a; border:1px solid #1e293b; border-radius:10px; padding:14px; height:100%;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                <span style="font-weight:700; color:#38bdf8; font-size:0.95rem;">🏆 컵앤핸들 돌파 (Cup & Handle)</span>
+                <span style="font-size:0.72rem; background:{'#064e3b' if 'cup_and_handle' in active_strats else '#334155'}; color:{'#6ee7b7' if 'cup_and_handle' in active_strats else '#94a3b8'}; padding:2px 8px; border-radius:4px; font-weight:600;">
+                    {'활성화' if 'cup_and_handle' in active_strats else '비활성'}
+                </span>
+            </div>
+            <div style="font-size:0.8rem; color:#cbd5e1; line-height:1.5;">
+                • <b>핵심 원칙:</b> 20~80봉에 걸쳐 형성된 U자형 컵과 3~20봉의 얕은 핸들 조정을 거친 전고점 돌파<br>
+                • <b>진입 게이트:</b> 돌파 시 거래량 1.3배 이상 폭증, 핸들 깊이가 컵 깊이의 50% 이하<br>
+                • <b>청산 원칙:</b> 피봇 라인 재이탈 시 손절, 컵 깊이만큼의 목표치까지 트레일링 스탑 추종
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # 5. 🛡️ 100점 만점 퀀트 평가 모델 & 3중 안전 게이트 & 자금 관리 규정
+    st.markdown("<div style='margin-top: 20px;'></div>", unsafe_allow_html=True)
+    c_left, c_right = st.columns([1, 1])
+
+    with c_left:
+        st.markdown("#### 📊 100점 만점 퀀트 스코어링 모델")
+        st.markdown(f"""
+        <div style="background:#0f172a; border:1px solid #1e293b; border-radius:10px; padding:14px; font-size:0.82rem; color:#cbd5e1;">
+            <div style="margin-bottom:8px; display:flex; justify-content:space-between;">
+                <span>📈 <b>추세 팩터 (Trend)</b></span>
+                <span style="color:#38bdf8; font-weight:700;">최대 40점</span>
+            </div>
+            <div style="color:#94a3b8; font-size:0.75rem; margin-bottom:12px;">골든크로스(20점), 이평선 정배열(15점), 20일선 상회(10점), 눌림목 지지(10점)</div>
+
+            <div style="margin-bottom:8px; display:flex; justify-content:space-between;">
+                <span>👥 <b>수급 팩터 (Supply)</b></span>
+                <span style="color:#38bdf8; font-weight:700;">최대 25점</span>
+            </div>
+            <div style="color:#94a3b8; font-size:0.75rem; margin-bottom:12px;">외국인+기관 쌍끌이 순매수(+8점), 단독 순매수(+4점), 거래대금 회전율 가산점</div>
+
+            <div style="margin-bottom:8px; display:flex; justify-content:space-between;">
+                <span>🚀 <b>모멘텀 팩터 (Momentum)</b></span>
+                <span style="color:#38bdf8; font-weight:700;">최대 30점</span>
+            </div>
+            <div style="color:#94a3b8; font-size:0.75rem; margin-bottom:12px;">거래량 급증 비율(1.3~4.0배), 볼린저밴드 하단 반등, RSI 상승 탄력도</div>
+
+            <div style="margin-bottom:8px; display:flex; justify-content:space-between;">
+                <span>📊 <b>지수선물 헤지 팩터 (Futures)</b></span>
+                <span style="color:#38bdf8; font-weight:700;">최대 20점</span>
+            </div>
+            <div style="color:#94a3b8; font-size:0.75rem;">코스피200 선물 시장 베이시스 평가 (콘탱고 우호 / 백워데이션 위험 감점)</div>
+
+            <div style="margin-top:12px; padding-top:10px; border-top:1px solid #1e293b; display:flex; justify-content:space-between; align-items:center;">
+                <span style="font-weight:700; color:#f8fafc;">🎯 최종 매수 통과 기준선:</span>
+                <span style="background:#1e3a8a; color:#93c5fd; padding:3px 10px; border-radius:6px; font-weight:800; font-size:0.85rem;">총점 {score_threshold}점 이상</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with c_right:
+        st.markdown("#### 🛡️ 자금 관리 및 3중 리스크 게이트")
+        st.markdown(f"""
+        <div style="background:#0f172a; border:1px solid #1e293b; border-radius:10px; padding:14px; font-size:0.82rem; color:#cbd5e1;">
+            <div style="font-weight:700; color:#f8fafc; margin-bottom:6px;">🛑 3중 진입 차단 필터 (Gatekeeper)</div>
+            <ul style="margin:0 0 14px 0; padding-left:18px; color:#94a3b8; font-size:0.78rem; line-height:1.6;">
+                <li><b>체결강도 게이트:</b> 당일 체결강도 110% 미달 시 매수 차단</li>
+                <li><b>고점 추격 차단:</b> 5일/20일 이평선 이격도 과대 종목 제외</li>
+                <li><b>역망치 윗꼬리 차단:</b> 당일 윗꼬리 비율 40% 초과 종목 탈락</li>
+            </ul>
+
+            <div style="font-weight:700; color:#f8fafc; margin-bottom:6px;">💼 포트폴리오 슬롯 & 배분 원칙</div>
+            <ul style="margin:0 0 14px 0; padding-left:18px; color:#94a3b8; font-size:0.78rem; line-height:1.6;">
+                <li><b>최대 분산:</b> 계좌당 최대 <b>{max_stocks}개 종목</b> 분산 유지</li>
+                <li><b>한도 배분:</b> 종목당 최대 예산 <b>{max_budget:,.0f}원</b> 균등 배분</li>
+                <li><b>일일 한도:</b> 1일 최대 신규 매수 <b>2종목</b> 제한으로 일자별 분산</li>
+            </ul>
+
+            <div style="font-weight:700; color:#f8fafc; margin-bottom:6px;">⏳ 타임컷 (Time-Cut) 원칙</div>
+            <div style="color:#94a3b8; font-size:0.78rem; line-height:1.5;">
+                진입 후 <b>{time_days}영업일</b> 경과 시에도 수익률이 <b>+{time_min_profit:.1f}%</b>에 미치지 못하면, 기회비용을 회수하고 현금 유동성을 확보하기 위해 전량 청산합니다.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+
 def render_dashboard(api, screener, summary, holdings, proposals, holding_codes, realtime_detection_fragment):
-    """통합 자산 & 포트폴리오 메인 뷰 (4개 서브 탭)"""
+    """통합 자산 & 포트폴리오 메인 뷰 (5개 서브 탭)"""
     st.title("📊 내자산 관리")
     st.caption(f"서버 시각: {now_str()} (KST) | 계좌: {api.cano}-{api.acnt_prdt_cd}")
 
-    tab1, tab2, tab3, tab4 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "🏠 자산 요약 (Overview)",
         "🛡️ 포지션 & 리스크 관리",
         "⚡ 주문/체결 내역 (Execution)",
-        "📜 실현 손익 분석 (Performance)"
+        "📜 실현 손익 분석 (Performance)",
+        "⚖️ 운용원칙 (Policy & Rules)"
     ])
 
     with tab1:
@@ -928,3 +1190,5 @@ def render_dashboard(api, screener, summary, holdings, proposals, holding_codes,
         render_execution_tab(api)
     with tab4:
         render_performance_tab(api)
+    with tab5:
+        render_principles_tab(api, screener)
