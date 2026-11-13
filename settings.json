@@ -74,7 +74,7 @@
   "stop_loss_rate": -0.035,
   "max_buy_budget_per_stock": 500000,
   "max_holding_stocks": 5,
-  "premarket_time": "14:30",
+  "premarket_time": "14:40",
   "auto_execute_orders": false,
   "telegram_enabled": true,
   "use_futures_filter": true,

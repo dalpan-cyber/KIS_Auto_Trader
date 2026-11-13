@@ -121,11 +121,14 @@ with st.sidebar:
     else:
         st.markdown("<div class='badge-real'><span class='status-dot dot-real'></span>LIVE TRADING ACTIVE</div>", unsafe_allow_html=True)
         
+    # 설정된 종가 스크리닝 시각 동적 로드
+    premarket_time = config.get_setting("premarket_time", "15:10")
+
     st.markdown(f"""
         <div class="sidebar-account-box">
             <div style="font-size: 0.72rem; color: #64748b; font-weight: 600;">ACTIVE ACCOUNT</div>
             <div style="font-size: 0.88rem; font-weight: 700; color: #e2e8f0; font-family: monospace;">{config.CANO}-{config.ACNT_PRDT_CD}</div>
-            <div style="font-size: 0.72rem; color: #94a3b8; margin-top: 4px;">🇰🇷 국내 종가 15:10 | 🇺🇸 미국 개장 22:30</div>
+            <div style="font-size: 0.72rem; color: #94a3b8; margin-top: 4px;">🇰🇷 국내 종가 {premarket_time} | 🇺🇸 미국 개장 22:30</div>
         </div>
     """, unsafe_allow_html=True)
 
@@ -133,7 +136,7 @@ with st.sidebar:
     st.markdown("<div class='nav-header'>🧭 NAVIGATION • 메인 메뉴</div>", unsafe_allow_html=True)
     main_menu = [
         ("dashboard", "📊 국내 포트폴리오"),
-        ("screener", "🎯 15:10 종가 스크리닝"),
+        ("screener", f"🎯 {premarket_time} 종가 스크리닝"),
         ("stock_checker", "🔍 개별 종목 매수 진단"),
         ("infinite", "🇺🇸 미국 라오어 무한매수법"),
         ("backtest", "🧪 퀀트 백테스터"),

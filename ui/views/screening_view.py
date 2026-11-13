@@ -7,6 +7,7 @@ import streamlit as st
 from ui.flash import flash
 from telegram_notifier import notifier
 from ui.styles import render_interactive_stock_chart
+import app_config as config
 
 def _render_buy_card(api, screener, item, idx, holding_codes, key_prefix="buy", is_last_recommended=False):
     """매수 추천 종목 카드 및 주문 발주, 인터랙티브 주가 차트 렌더러"""
@@ -204,10 +205,11 @@ def _render_buy_card(api, screener, item, idx, holding_codes, key_prefix="buy", 
 
 
 def render_screener(api, screener, proposals, holding_codes):
-    """2. 15:10 종가 매수 스크리닝 & 발주 페이지"""
+    """2. 종가 매수 스크리닝 & 발주 페이지"""
+    premarket_time = config.get_setting("premarket_time", "15:10")
     col_t1, col_t2 = st.columns([3.2, 1.3])
     with col_t1:
-        st.title("🎯 15:10 종가 매수 • 스크리닝 & 발주")
+        st.title(f"🎯 {premarket_time} 종가 매수 • 스크리닝 & 발주")
         st.caption(f"스크리닝 기준 시각: **{proposals.get('generated_at', '-')}** | 개별주식선물 파생수급 & 100점 만점 척도 적용 (60점 이상)")
     with col_t2:
         st.write("")
@@ -223,7 +225,7 @@ def render_screener(api, screener, proposals, holding_codes):
     generated_at = proposals.get("generated_at", "-")
 
     if buy_list:
-        st.subheader(f"🚀 당일 15:10 종가 매수 추천 종목 ({len(buy_list)}건)")
+        st.subheader(f"🚀 당일 {premarket_time} 종가 매수 추천 종목 ({len(buy_list)}건)")
         st.caption(f"⏰ 스크리닝 분석 완료: `{generated_at}`")
         for idx, item in enumerate(buy_list):
             _render_buy_card(api, screener, item, idx, holding_codes, key_prefix="today_buy", is_last_recommended=False)

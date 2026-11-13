@@ -111,14 +111,22 @@ def _calculate_holding_sell_conditions(h: dict, pos_info: dict) -> dict:
 
 def render_overview_tab(api, screener, summary, holdings, proposals, holding_codes):
     """자산 개요 탭 (Overview)"""
-    st.markdown("""
+    premarket_time = config.get_setting("premarket_time", "15:10")
+    try:
+        from scheduler import get_screening_and_order_times
+        (s_h, s_m), (o_h, o_m) = get_screening_and_order_times()
+        order_time_str = f"{o_h:02d}:{o_m:02d}"
+    except Exception:
+        order_time_str = "15:15"
+
+    st.markdown(f"""
         <div class="timeline-container">
             <div style="font-size: 0.78rem; font-weight: 700; color: #38bdf8; margin-bottom: 8px;">⏱️ 일일 5단계 운영 타임라인</div>
             <div style="display: flex; gap: 10px; font-size: 0.75rem; color: #cbd5e1; flex-wrap: wrap;">
                 <span><b>09:00</b> 시초가 손절 감시</span> ➔
                 <span><b>09:05~15:05</b> 실시간 익절/손절 감시</span> ➔
-                <span style="color: #38bdf8; font-weight: 700;"><b>15:10</b> 거래량 1.054배 종가 평가</span> ➔
-                <span><b>15:15</b> 상위종목 주문 발주</span> ➔
+                <span style="color: #38bdf8; font-weight: 700;"><b>{premarket_time}</b> 거래량 1.054배 종가 평가</span> ➔
+                <span><b>{order_time_str}</b> 상위종목 주문 발주</span> ➔
                 <span><b>15:30</b> 장마감 정산</span>
             </div>
         </div>
@@ -139,7 +147,7 @@ def render_overview_tab(api, screener, summary, holdings, proposals, holding_cod
 
     c_left, c_right = st.columns([1, 1])
     with c_left:
-        st.subheader("🌅 15:10 종가 매수 추천 Top")
+        st.subheader(f"🌅 {premarket_time} 종가 매수 추천 Top")
         buy_list = proposals.get("buy_proposals", [])
         if not buy_list:
             st.info("현재 매수 조건을 통과한 추천 종목이 없습니다. (100점 만점 기준 60점 이상 & 수급 필수 게이트 충족 필요)")
@@ -940,6 +948,13 @@ def render_principles_tab(api, screener):
     time_min_profit = float(settings.get("time_stop_min_profit", 0.02)) * 100
     score_threshold = int(settings.get("buy_score_threshold", 65))
     active_strats = settings.get("active_strategies", ["momentum", "rebound", "monthly_trend", "cup_and_handle"])
+    premarket_time = settings.get("premarket_time", "15:10")
+    try:
+        from scheduler import get_screening_and_order_times
+        (s_h, s_m), (o_h, o_m) = get_screening_and_order_times()
+        order_time_str = f"{o_h:02d}:{o_m:02d}"
+    except Exception:
+        order_time_str = "15:15"
 
     # 1. 상단 현재 적용 파라미터 메트릭 바
     c1, c2, c3, c4, c5, c6 = st.columns(6)
@@ -1006,16 +1021,16 @@ def render_principles_tab(api, screener):
                 </div>
             </div>
             <div style="display: flex; align-items: flex-start; gap: 12px; background: #0f172a; padding: 10px 14px; border-radius: 8px; border: 1px solid #1e293b;">
-                <div style="background: #0284c7; color: #ffffff; font-weight: 800; padding: 3px 8px; border-radius: 6px; font-size: 0.75rem; white-space: nowrap;">15:10</div>
+                <div style="background: #0284c7; color: #ffffff; font-weight: 800; padding: 3px 8px; border-radius: 6px; font-size: 0.75rem; white-space: nowrap;">{premarket_time}</div>
                 <div>
-                    <b style="color: #38bdf8;">15:10 종가 스크리닝 (거래량 1.054배 보정 엔진 가동)</b><br>
-                    <span style="color: #cbd5e1;">동시호가(15:20~15:30) 예상 거래량을 1.054배로 환산 보정하여 20일 평균 대비 거래량 급증 여부를 확정하고, 4대 퀀트 점수(100점 만점)를 종합 산출합니다.</span>
+                    <b style="color: #38bdf8;">{premarket_time} 종가 스크리닝 (거래량 1.054배 보정 엔진 가동)</b><br>
+                    <span style="color: #cbd5e1;">장마감 전 거래량 데이터를 1.054배로 환산 보정하여 20일 평균 대비 거래량 급증 여부를 확정하고, 4대 퀀트 점수(100점 만점)를 종합 산출합니다.</span>
                 </div>
             </div>
             <div style="display: flex; align-items: flex-start; gap: 12px; background: #0f172a; padding: 10px 14px; border-radius: 8px; border: 1px solid #1e293b;">
-                <div style="background: #10b981; color: #ffffff; font-weight: 800; padding: 3px 8px; border-radius: 6px; font-size: 0.75rem; white-space: nowrap;">15:15</div>
+                <div style="background: #10b981; color: #ffffff; font-weight: 800; padding: 3px 8px; border-radius: 6px; font-size: 0.75rem; white-space: nowrap;">{order_time_str}</div>
                 <div>
-                    <b style="color: #f8fafc;">상위 추천 종목 주문 발주 (장마감 전 동시호가 진입)</b><br>
+                    <b style="color: #f8fafc;">상위 추천 종목 주문 발주 (스크리닝 5분 후 진입)</b><br>
                     <span style="color: #94a3b8;">스크리닝 기준(65점 이상 & 필수 수급 게이트 충족)을 통과한 상위 종목에 대해 포트폴리오 빈 슬롯 한도 내에서 분할 매수 주문을 전송합니다.</span>
                 </div>
             </div>
