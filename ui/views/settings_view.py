@@ -259,9 +259,16 @@ def render_settings():
         else:
             st.caption("텔레그램 알림이 꺼져 있습니다. 켜려면 위 토글을 활성화하세요.")
         f_time = st.text_input(
-            "종가 매수 스크리닝 시각 (KST)",
-            value=display_settings.get("premarket_time", "15:10")
+            "종가 매수 스크리닝 시각 (KST, HH:MM 형식)",
+            value=display_settings.get("premarket_time", "15:10"),
+            help="장마감 전 스크리닝을 실행할 시각(예: 14:30 또는 15:10)입니다. 저장 시 백그라운드 스케줄러의 실행 시각이 즉시 변경되며, 주문 발주는 스크리닝 5분 뒤에 자동 실행됩니다."
         )
+        try:
+            from scheduler import get_screening_and_order_times
+            (cur_s_h, cur_s_m), (cur_o_h, cur_o_m) = get_screening_and_order_times()
+            st.caption(f"⏱️ 현재 스케줄러 가동 시각: 종가 스크리닝 **{cur_s_h:02d}:{cur_s_m:02d}** ➔ 매수 주문 발주 **{cur_o_h:02d}:{cur_o_m:02d}**")
+        except Exception:
+            pass
         st.divider()
 
         save_btn = st.form_submit_button("💾 설정 저장하기 (Save Settings)", width="stretch")
@@ -293,8 +300,15 @@ def render_settings():
             )
 
             if ok:
+                # 백그라운드 스케줄러 실행 시각 실시간 갱신
+                try:
+                    from scheduler import reschedule_screening_jobs
+                    reschedule_screening_jobs(f_time)
+                except Exception as e_sched:
+                    config.logger.warning(f"스케줄러 작업 시간 재설정 예외: {e_sched}")
+
                 active_labels = [strategy_options.get(s, s) for s in selected_active]
-                flash(f"✅ 전략 및 시스템 설정이 성공적으로 저장되었습니다! (운영 모드: {preset_options[selected_mode_key]}, 활성 전략: {', '.join(active_labels)})")
+                flash(f"✅ 전략 및 시스템 설정이 성공적으로 저장되었습니다! (스크리닝 시각: {f_time}, 운영 모드: {preset_options[selected_mode_key]}, 활성 전략: {', '.join(active_labels)})")
                 st.rerun()
             else:
                 st.error("❌ 설정 저장에 실패했습니다.")
