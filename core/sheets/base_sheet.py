@@ -37,8 +37,21 @@ class BaseSheetManager:
         return time.time() < cls._rate_limit_cooldown_until
 
     @classmethod
+    def _is_transient_error(cls, error: Exception) -> bool:
+        """구글 서버의 일시적 장애(500, 502, 503, 504 등) 여부 판별"""
+        err_str = str(error)
+        return any(
+            token in err_str
+            for token in (
+                "[500]", "[502]", "[503]", "[504]",
+                "503", "currently unavailable", "Backend Error",
+                "Service Unavailable", "Connection aborted", "Read timed out"
+            )
+        )
+
+    @classmethod
     def handle_quota_error(cls, error: Exception, seconds: float = 65.0) -> bool:
-        """429 Quota Exceeded 에러 감지 시 쿨다운 설정 및 경고 1회 출력"""
+        """429 Quota Exceeded 또는 503 일시적 서버 지연 감지 시 쿨다운 설정 및 경고 1회 출력"""
         err_str = str(error)
         if "429" in err_str or "Quota exceeded" in err_str:
             now_ts = time.time()
@@ -49,7 +62,33 @@ class BaseSheetManager:
                     f"{int(seconds)}초 동안 추가 조회를 일시 중단하고 로컬 데이터를 우선 사용합니다."
                 )
             return True
+        if cls._is_transient_error(error):
+            now_ts = time.time()
+            transient_cooldown = 15.0
+            if now_ts >= cls._rate_limit_cooldown_until:
+                cls._rate_limit_cooldown_until = now_ts + transient_cooldown
+                logger.info(
+                    f"⏳ Google Sheets 서버 일시적 응답 지연(503/5xx) 감지: "
+                    f"{int(transient_cooldown)}초간 대기 후 재연동하며 캐시/로컬 데이터를 우선 사용합니다."
+                )
+            return True
         return False
+
+    def _get_all_records_with_retry(self, worksheet: Any, max_retries: int = 2) -> List[Dict[str, Any]]:
+        """워크시트 전체 레코드 조회 (일시적 503/5xx 서버 오류 발생 시 자동 재시도)"""
+        last_err: Optional[Exception] = None
+        for attempt in range(max_retries + 1):
+            try:
+                return worksheet.get_all_records()
+            except Exception as e:
+                last_err = e
+                if self._is_transient_error(e) and attempt < max_retries:
+                    time.sleep(0.6 * (attempt + 1))
+                    continue
+                raise
+        if last_err:
+            raise last_err
+        return []
 
     def __init__(
         self,

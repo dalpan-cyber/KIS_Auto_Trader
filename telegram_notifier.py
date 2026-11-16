@@ -278,6 +278,66 @@ class TelegramNotifier:
 
         return self.send_message(text)
 
+    def send_126_exit_notification(
+        self,
+        name: str,
+        code: str,
+        is_manual: bool,
+        buy_date: str,
+        avg_buy_price: float,
+        current_price: float,
+        profit_rate: float,
+        holding_qty: int,
+        target_stage: int,
+        action_label: str,
+        recommended_qty: int,
+        recommended_ratio_str: str,
+        rsi14: float,
+        macd_status: str,
+        cloud_pos_label: str,
+        reasons: List[str],
+        force: bool = False
+    ) -> bool:
+        """
+        후지모토 시게루 1:2:6 분할청산 구간 진입 알림 전송
+        (force=False인 자동 발송 시 당일 동일 종목·동일 단계 중복 발송 방지)
+        """
+        notify_type = f"FUJIMOTO_126_STAGE_{target_stage}"
+        if not force and self._is_sell_notified(code, notify_type):
+            logger.info(f"[{name}({code})] 당일 동일 1:2:6 단계({notify_type}) 알림이 이미 전송되어 건너뜁니다.")
+            return False
+
+        src_tag = "📝 수동등록" if is_manual else "🏦 KIS보유"
+        est_cash = int(round(recommended_qty * current_price))
+        stage_icon = "🚨" if target_stage >= 3 else ("🟠" if target_stage == 2 else "🟡")
+
+        text = (
+            f"{stage_icon} <b>[1:2:6 분할청산 알림] {html_escape(action_label)}</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            f"📌 <b>종목:</b> {html_escape(name)} ({html_escape(code)}) [{src_tag}]\n"
+            f"📅 <b>매수일:</b> {html_escape(buy_date or '-')}\n"
+            f"💹 <b>매수가(평단):</b> {avg_buy_price:,.0f}원 ➔ <b>현재가:</b> {current_price:,.0f}원 (<b>{profit_rate:+.2f}%</b>)\n"
+            f"📦 <b>보유 수량:</b> {holding_qty:,}주\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            f"🎯 <b>추천 청산:</b> <b>{recommended_qty:,}주 매도</b> ({html_escape(recommended_ratio_str)})\n"
+            f"💵 <b>예상 회수금:</b> 약 {est_cash:,.0f}원\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            f"📊 <b>3대 지표 현황:</b>\n"
+            f"• RSI(14): <b>{rsi14:.1f}</b>\n"
+            f"• MACD(12,26,9): <b>{html_escape(macd_status)}</b>\n"
+            f"• 일목 구름대: <b>{html_escape(cloud_pos_label)}</b>\n"
+            "📝 <b>판정 근거:</b>\n"
+        )
+        for r in reasons:
+            text += f"• {html_escape(r)}\n"
+        text += "━━━━━━━━━━━━━━━━━━\n"
+        text += f"⏰ {self._now_str()}"
+
+        sent = self.send_message(text)
+        if sent:
+            self._mark_sell_notified(code, notify_type)
+        return sent
+
     def send_test_message(self) -> bool:
         """테스트 메시지 전송 (연결 확인용)"""
         text = (

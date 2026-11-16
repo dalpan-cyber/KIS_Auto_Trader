@@ -168,7 +168,288 @@ def calculate_technical_indicators(
     ], axis=1).max(axis=1)
     df["atr"] = tr.rolling(window=atr_period, min_periods=1).mean().fillna(0.0)
 
+    # 7. MACD (12, 26, 9) - 후지모토 시게루 1:2:6 2단계(모멘텀) 지표
+    ema12 = df["close"].ewm(span=12, adjust=False).mean()
+    ema26 = df["close"].ewm(span=26, adjust=False).mean()
+    df["macd_line"] = ema12 - ema26
+    df["macd_signal"] = df["macd_line"].ewm(span=9, adjust=False).mean()
+    df["macd_hist"] = df["macd_line"] - df["macd_signal"]
+
+    # 8. 일목균형표 (Ichimoku Cloud, 9-26-52) - 후지모토 시게루 1:2:6 3단계(구름대 추세) 지표
+    high_9 = df["high"].rolling(window=9, min_periods=1).max()
+    low_9 = df["low"].rolling(window=9, min_periods=1).min()
+    df["tenkan_sen"] = (high_9 + low_9) / 2.0  # 전환선 (9일)
+
+    high_26 = df["high"].rolling(window=26, min_periods=1).max()
+    low_26 = df["low"].rolling(window=26, min_periods=1).min()
+    df["kijun_sen"] = (high_26 + low_26) / 2.0  # 기준선 (26일)
+
+    # 선행스팬 A, B (원시값 및 현재 캔들 위치에 선행 배치된 구름대 값)
+    span_a_raw = (df["tenkan_sen"] + df["kijun_sen"]) / 2.0
+    high_52 = df["high"].rolling(window=52, min_periods=1).max()
+    low_52 = df["low"].rolling(window=52, min_periods=1).min()
+    span_b_raw = (high_52 + low_52) / 2.0
+
+    # 표준 일목균형표: 26일 전 계산된 선행스팬이 오늘의 구름대를 형성 (데이터 초반 결측은 원시값으로 보정)
+    df["senkou_span_a"] = span_a_raw.shift(26).fillna(span_a_raw)
+    df["senkou_span_b"] = span_b_raw.shift(26).fillna(span_b_raw)
+    df["cloud_top"] = df[["senkou_span_a", "senkou_span_b"]].max(axis=1)
+    df["cloud_bottom"] = df[["senkou_span_a", "senkou_span_b"]].min(axis=1)
+
     return df
+
+
+def evaluate_fujimoto_126_exit(
+    df: pd.DataFrame,
+    avg_buy_price: float,
+    holding_qty: int = 9,
+    buy_date: Optional[str] = None,
+    current_exit_stage: int = 0,
+    stop_loss_rate: float = -0.05
+) -> Dict[str, Any]:
+    """
+    후지모토 시게루 1:2:6 매매법 기반 보유 종목 구간 진단 및 분할청산 추천 계산
+
+    [청산 3단계 기준 (역방향 1:2:6)]
+    - 1차 청산 (1/9, 약 11.1%):
+      매수일 이후(또는 최근 5영업일 내) RSI(14) >= 70 과열 도달 후 현재 RSI < 70으로 하향 이탈 시
+      (보조: 수익률 +3% 이상에서 RSI >= 65 후 꺾이며 전환선(9일) 하향 이탈 시에도 1차 경계 발동)
+    - 2차 청산 (2/9, 약 22.2%, 누적 3/9):
+      MACD 데드크로스 발생 (MACD 선 < 시그널 선으로 전환되었거나, 매수일 이후 골든 상태였다가 음전환 유지)
+    - 3차 청산 (6/9, 약 66.7%, 잔여 전량):
+      일목균형표 구름대 하향 이탈 (현재가 < 구름대 하단 cloud_bottom)
+      또는 비상 손절선 침범 (현재 수익률 <= stop_loss_rate)
+
+    Args:
+        df: calculate_technical_indicators()를 거친 일봉 DataFrame
+        avg_buy_price: 평균 매수가
+        holding_qty: 현재 보유 수량 (기본: 9주)
+        buy_date: 매수일자 (YYYYMMDD 또는 YYYY-MM-DD, 선택)
+        current_exit_stage: 이미 완료한 청산 단계 (0=미진행, 1=1차완료, 2=2차완료, 3=청산완료)
+        stop_loss_rate: 비상 손절 기준 수익률 (기본: -0.05 = -5%)
+    """
+    if df is None or df.empty:
+        return {
+            "status_code": "NO_DATA",
+            "phase_badge": "⚪ 데이터 부족",
+            "recommended_stage": 0,
+            "recommended_qty": 0,
+            "recommended_ratio_str": "0%",
+            "is_action_needed": False,
+            "reasons": ["일봉 데이터가 부족하여 지표를 산출할 수 없습니다."]
+        }
+
+    # 필수 지표 컬럼이 없으면 계산 수행
+    if "macd_line" not in df.columns or "cloud_bottom" not in df.columns:
+        df = calculate_technical_indicators(df, is_intraday=False)
+        if df is None or df.empty:
+            return {
+                "status_code": "NO_DATA",
+                "phase_badge": "⚪ 데이터 부족",
+                "recommended_stage": 0,
+                "recommended_qty": 0,
+                "recommended_ratio_str": "0%",
+                "is_action_needed": False,
+                "reasons": ["일봉 데이터가 최소 기준(20봉) 미만입니다."]
+            }
+
+    last = df.iloc[-1]
+    prev = df.iloc[-2] if len(df) >= 2 else last
+
+    curr_price = float(last["close"])
+    avg_p = float(avg_buy_price) if avg_buy_price and avg_buy_price > 0 else curr_price
+    qty = max(0, int(holding_qty))
+    profit_rate = ((curr_price - avg_p) / avg_p) * 100.0 if avg_p > 0 else 0.0
+    profit_loss = (curr_price - avg_p) * qty
+
+    # 매수일 정규화 (YYYYMMDD) 및 매수일 이후 슬라이스 추출
+    norm_buy_date = ""
+    if buy_date:
+        norm_buy_date = str(buy_date).strip().replace("-", "").replace(".", "").replace("/", "")[:8]
+
+    if norm_buy_date and "date" in df.columns:
+        df_dates = df["date"].astype(str).str.replace("-", "").str.slice(0, 8)
+        post_buy_df = df[df_dates >= norm_buy_date]
+        if post_buy_df.empty:
+            post_buy_df = df.tail(5)
+    else:
+        post_buy_df = df.tail(10)
+
+    highest_since_buy = float(post_buy_df["high"].max()) if not post_buy_df.empty else max(curr_price, avg_p)
+    max_rsi_since_buy = float(post_buy_df["rsi14"].max()) if not post_buy_df.empty else float(last["rsi14"])
+    recent_5_max_rsi = float(df["rsi14"].tail(6).iloc[:-1].max()) if len(df) >= 2 else float(last["rsi14"])
+
+    # 현재 지표 값
+    curr_rsi = float(last.get("rsi14", 50.0))
+    prev_rsi = float(prev.get("rsi14", 50.0))
+    macd_line = float(last.get("macd_line", 0.0))
+    macd_sig = float(last.get("macd_signal", 0.0))
+    macd_hist = float(last.get("macd_hist", 0.0))
+    prev_macd_hist = float(prev.get("macd_hist", 0.0))
+
+    tenkan = float(last.get("tenkan_sen", curr_price))
+    kijun = float(last.get("kijun_sen", curr_price))
+    span_a = float(last.get("senkou_span_a", curr_price))
+    span_b = float(last.get("senkou_span_b", curr_price))
+    cloud_top = float(last.get("cloud_top", max(span_a, span_b)))
+    cloud_bottom = float(last.get("cloud_bottom", min(span_a, span_b)))
+
+    # 구름대 위치 판정
+    if curr_price > cloud_top:
+        cloud_pos = "ABOVE"
+        cloud_pos_label = "구름대 위 (강세 지지)"
+    elif curr_price >= cloud_bottom:
+        cloud_pos = "INSIDE"
+        cloud_pos_label = "구름대 내부 (혼조/지지시험)"
+    else:
+        cloud_pos = "BELOW"
+        cloud_pos_label = "구름대 아래 (추세 이탈)"
+
+    # -------------------------------------------------------------------------
+    # 단계별 청산 시그널 판정
+    # -------------------------------------------------------------------------
+    reasons: List[str] = []
+
+    # [1차 청산 시그널 (비중 1/9)]: RSI 70 과열 찍고 70 하향 이탈 (또는 수익구간 RSI 65+ 찍고 전환선 이탈)
+    rsi_overbought_cooldown = (max(max_rsi_since_buy, recent_5_max_rsi) >= 70.0) and (curr_rsi < 70.0)
+    rsi_early_turn = (profit_rate >= 3.0) and (max(max_rsi_since_buy, recent_5_max_rsi) >= 65.0) and (curr_rsi < prev_rsi) and (curr_price < tenkan)
+    stage1_triggered = bool(rsi_overbought_cooldown or rsi_early_turn)
+    stage1_reason = ""
+    if rsi_overbought_cooldown:
+        stage1_reason = f"[1차 시그널 (비중 1/9)] RSI 과열(최고 {max(max_rsi_since_buy, recent_5_max_rsi):.1f}) 도달 후 70 하향 이탈 (현재 RSI {curr_rsi:.1f})"
+    elif rsi_early_turn:
+        stage1_reason = f"[1차 시그널 (비중 1/9)] RSI 고점({max(max_rsi_since_buy, recent_5_max_rsi):.1f}→{curr_rsi:.1f}) 꺾임 및 일목 전환선({tenkan:,.0f}원) 하향 이탈"
+
+    # [2차 청산 시그널 (비중 2/9)]: MACD 데드크로스 (macd_line < macd_signal)
+    macd_dead_cross_today = (prev_macd_hist >= 0) and (macd_hist < 0)
+    had_positive_macd = bool((post_buy_df["macd_hist"] > 0).any()) if "macd_hist" in post_buy_df.columns else True
+    stage2_triggered = bool(macd_dead_cross_today or (macd_hist < 0 and had_positive_macd))
+    stage2_reason = ""
+    if macd_dead_cross_today:
+        stage2_reason = f"[2차 시그널 (비중 2/9)] 당일 MACD 데드크로스 발생 (MACD {macd_line:,.1f} < Signal {macd_sig:,.1f})"
+    elif stage2_triggered:
+        stage2_reason = f"[2차 시그널 (비중 2/9)] MACD 시그널 하향 이탈 유지 (Hist {macd_hist:,.1f} 음수 모멘텀 약화)"
+
+    # [3차 청산 시그널 (비중 6/9 전량)]: 일목 구름대 하단 이탈 또는 비상 손절선 침범
+    sl_pct = stop_loss_rate * 100.0 if stop_loss_rate < 0 else -abs(stop_loss_rate) * 100.0
+    is_cloud_breakdown = curr_price < cloud_bottom
+    is_stop_loss_hit = (avg_p > 0) and (profit_rate <= sl_pct)
+    stage3_triggered = bool(is_cloud_breakdown or is_stop_loss_hit)
+    stage3_reason = ""
+    if is_cloud_breakdown and is_stop_loss_hit:
+        stage3_reason = f"[3차 시그널 (전량 6/9)] 일목 구름대 하단({cloud_bottom:,.0f}원) 이탈 및 비상 손절선({sl_pct:.1f}%) 도달"
+    elif is_cloud_breakdown:
+        stage3_reason = f"[3차 시그널 (전량 6/9)] 현재가({curr_price:,.0f}원)가 일목 구름대 하단({cloud_bottom:,.0f}원) 하향 이탈 (추세 종료)"
+    elif is_stop_loss_hit:
+        stage3_reason = f"[3차 시그널 (전량 6/9)] 매수가 대비 수익률({profit_rate:+.2f}%)이 손절 기준({sl_pct:.1f}%) 침범 (리스크 컷)"
+
+    # -------------------------------------------------------------------------
+    # 현재 보유 종목의 기완료 단계(current_exit_stage)를 고려한 최종 추천 단계 및 수량 산출
+    # -------------------------------------------------------------------------
+    target_stage = 0
+    if stage3_triggered:
+        target_stage = 3
+        reasons.append(stage3_reason)
+    elif stage2_triggered:
+        target_stage = 2
+        reasons.append(stage2_reason)
+        if stage1_triggered:
+            reasons.append(stage1_reason)
+    elif stage1_triggered:
+        target_stage = 1
+        reasons.append(stage1_reason)
+
+    # 아직 실행하지 않은 상위 단계 시그널인지 판별
+    is_action_needed = (target_stage > current_exit_stage) and (qty > 0)
+    recommended_qty = 0
+    recommended_ratio_str = "0%"
+    action_label = "홀딩 유지"
+
+    if is_action_needed:
+        if target_stage == 3:
+            recommended_qty = qty
+            recommended_ratio_str = "잔여 전량 (6/9, 100%)"
+            action_label = "🚨 3차 전량 청산 (비중 6)"
+        elif target_stage == 2:
+            if current_exit_stage == 0:
+                recommended_qty = max(1, int(round(qty * (3.0 / 9.0))))
+                recommended_ratio_str = "3/9 (약 33.3%, 1+2차 합산)"
+                action_label = "🟠 1·2차 통합 분할청산 (비중 1+2)"
+            else:
+                recommended_qty = max(1, int(round(qty * (2.0 / 8.0))))
+                recommended_ratio_str = "2/9 (잔여의 25%)"
+                action_label = "🟠 2차 분할청산 (비중 2)"
+        elif target_stage == 1:
+            recommended_qty = max(1, int(round(qty * (1.0 / 9.0))))
+            recommended_ratio_str = "1/9 (약 11.1%)"
+            action_label = "🟡 1차 분할청산 (비중 1)"
+        recommended_qty = min(qty, recommended_qty)
+
+    # 구간(Phase) 상태 배지 결정
+    if target_stage == 3 and current_exit_stage < 3:
+        status_code = "EXIT_STAGE_3"
+        phase_badge = "🔴 3차 청산 구간 (구름대 이탈/손절)"
+    elif target_stage == 2 and current_exit_stage < 2:
+        status_code = "EXIT_STAGE_2"
+        phase_badge = "🟠 2차 청산 구간 (MACD 데드크로스)"
+    elif target_stage == 1 and current_exit_stage < 1:
+        status_code = "EXIT_STAGE_1"
+        phase_badge = "🟡 1차 청산 구간 (RSI 과열이탈)"
+    elif curr_rsi >= 70.0:
+        status_code = "OVERBOUGHT_WATCH"
+        phase_badge = "🔥 과열 경계 구간 (RSI 70+ 대기)"
+        reasons.append(f"현재 RSI({curr_rsi:.1f})가 70 이상 과열권입니다. 70 아래로 꺾일 때 1차(1/9) 분할익절을 준비하세요.")
+    else:
+        status_code = "HOLD_CRUISE"
+        if cloud_pos == "ABOVE" and macd_hist >= 0:
+            phase_badge = "🟢 순항 홀딩 (구름대 위 & MACD 강세)"
+            reasons.append(f"현재가({curr_price:,.0f}원)가 구름대 상단({cloud_top:,.0f}원) 위에서 순항 중이며 MACD 모멘텀이 양호합니다.")
+        else:
+            phase_badge = "🔵 일반 홀딩 (추세 관찰)"
+            reasons.append(f"구름대 하단({cloud_bottom:,.0f}원) 지지 여부를 관찰하며 보유를 유지합니다.")
+
+    buy_stage1_ok = curr_rsi >= 30.0
+    buy_stage2_ok = macd_hist > 0
+    buy_stage3_ok = curr_price > cloud_top
+
+    return {
+        "status_code": status_code,
+        "phase_badge": phase_badge,
+        "action_label": action_label,
+        "is_action_needed": bool(is_action_needed),
+        "target_stage": int(target_stage),
+        "current_exit_stage": int(current_exit_stage),
+        "recommended_qty": int(recommended_qty),
+        "recommended_amount": int(round(recommended_qty * curr_price)),
+        "recommended_ratio_str": recommended_ratio_str,
+        "current_price": curr_price,
+        "avg_buy_price": avg_p,
+        "holding_qty": qty,
+        "profit_rate": round(profit_rate, 2),
+        "profit_loss": int(round(profit_loss)),
+        "highest_since_buy": highest_since_buy,
+        "rsi14": round(curr_rsi, 1),
+        "max_rsi_since_buy": round(max(max_rsi_since_buy, recent_5_max_rsi), 1),
+        "macd_line": round(macd_line, 2),
+        "macd_signal": round(macd_sig, 2),
+        "macd_hist": round(macd_hist, 2),
+        "macd_status": "골든(양수)" if macd_hist >= 0 else "데드(음수)",
+        "tenkan_sen": round(tenkan, 0),
+        "kijun_sen": round(kijun, 0),
+        "cloud_top": round(cloud_top, 0),
+        "cloud_bottom": round(cloud_bottom, 0),
+        "cloud_pos": cloud_pos,
+        "cloud_pos_label": cloud_pos_label,
+        "stage1_triggered": stage1_triggered,
+        "stage2_triggered": stage2_triggered,
+        "stage3_triggered": stage3_triggered,
+        "buy_signals": {
+            "stage1_rsi30": buy_stage1_ok,
+            "stage2_macd_golden": buy_stage2_ok,
+            "stage3_cloud_breakout": buy_stage3_ok
+        },
+        "reasons": reasons
+    }
 
 
 def detect_cup_and_handle(

@@ -20,7 +20,8 @@ from ui import (
     render_stock_checker,
     render_backtest,
     render_settings,
-    render_infinite
+    render_infinite,
+    render_fujimoto_126
 )
 
 # 기본 페이지 레이아웃 설정
@@ -38,7 +39,7 @@ apply_custom_styles()
 render_flash()
 
 # 기본 네비게이션 상태 초기화
-if "nav_page" not in st.session_state or st.session_state["nav_page"] not in ["dashboard", "infinite", "screener", "stock_checker", "backtest", "settings"]:
+if "nav_page" not in st.session_state or st.session_state["nav_page"] not in ["dashboard", "fujimoto_126", "infinite", "screener", "stock_checker", "backtest", "settings"]:
     st.session_state["nav_page"] = "dashboard"
 
 # 백그라운드 스케줄러 초기화 (앱 실행 중 1회만 등록)
@@ -132,10 +133,11 @@ with st.sidebar:
         </div>
     """, unsafe_allow_html=True)
 
-    # 6대 핵심 통합 네비게이션 메뉴
+    # 7대 핵심 통합 네비게이션 메뉴
     st.markdown("<div class='nav-header'>🧭 NAVIGATION • 메인 메뉴</div>", unsafe_allow_html=True)
     main_menu = [
         ("dashboard", "📊 국내 포트폴리오"),
+        ("fujimoto_126", "📐 1:2:6 분할청산 관제"),
         ("screener", f"🎯 {premarket_time} 종가 스크리닝"),
         ("stock_checker", "🔍 개별 종목 매수 진단"),
         ("infinite", "🇺🇸 미국 라오어 무한매수법"),
@@ -220,9 +222,9 @@ def get_cached_proposals(screener_inst: StockScreener, ttl_seconds: float = 15.0
 # 메인 뷰 라우팅 결정
 current_page = st.session_state["nav_page"]
 
-# dashboard, screener, stock_checker 페이지에서만 국내 잔고 및 제안서 로드
+# dashboard, fujimoto_126, screener, stock_checker 페이지에서만 국내 잔고 및 제안서 로드
 force_refresh = st.session_state.pop("force_refresh_balance", False)
-if current_page in ["dashboard", "screener", "stock_checker"]:
+if current_page in ["dashboard", "fujimoto_126", "screener", "stock_checker"]:
     balance_data = get_cached_account_balance(api, ttl_seconds=30.0, force=force_refresh)
     summary = balance_data.get("summary", {})
     holdings = balance_data.get("holdings", [])
@@ -247,6 +249,8 @@ current_page = st.session_state["nav_page"]
 
 if current_page == "dashboard":
     render_dashboard(api, screener, summary, holdings, proposals, holding_codes, realtime_detection_fragment)
+elif current_page == "fujimoto_126":
+    render_fujimoto_126(api, screener, summary, holdings)
 elif current_page == "screener":
     render_screener(api, screener, proposals, holding_codes)
 elif current_page == "stock_checker":
@@ -257,4 +261,3 @@ elif current_page == "backtest":
     render_backtest()
 elif current_page == "settings":
     render_settings()
-

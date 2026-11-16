@@ -19,11 +19,18 @@ COOLDOWN_API_CACHE_TTL = 300.0
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 POSITIONS_STATE_FILE = os.path.join(BASE_DIR, "positions_state.json")
 COOLDOWN_FILE = os.path.join(BASE_DIR, "cooldown.json")
+FUJIMOTO_126_FILE = os.path.join(BASE_DIR, "fujimoto_126_positions.json")
 
 class PositionTracker:
-    def __init__(self, positions_file: str = POSITIONS_STATE_FILE, cooldown_file: str = COOLDOWN_FILE):
+    def __init__(
+        self,
+        positions_file: str = POSITIONS_STATE_FILE,
+        cooldown_file: str = COOLDOWN_FILE,
+        fujimoto_file: str = FUJIMOTO_126_FILE
+    ):
         self.positions_file = positions_file
         self.cooldown_file = cooldown_file
+        self.fujimoto_file = fujimoto_file
         self._cooldown_api_cache: Dict[str, Any] = {}
         # 일괄 처리 모드: 포지션 상태를 메모리에서만 갱신하고 종료 시 1회만 저장 (Google Sheet 호출 최소화)
         self._batch_state: Optional[Dict[str, Dict[str, Any]]] = None
@@ -66,24 +73,27 @@ class PositionTracker:
             return self._batch_state
         local_state = safe_load_json(self.positions_file, default={})
         local_state = self._normalize_state_keys(local_state)
-        try:
-            from google_sheet_manager import get_sheet_manager
-            sheet_mgr = get_sheet_manager()
-            if sheet_mgr.is_connected:
-                sheet_state = sheet_mgr.read_positions_state_from_sheet()
-                if sheet_state:
-                    sheet_state = self._normalize_state_keys(sheet_state)
-                    for c_key, s_val in sheet_state.items():
-                        if c_key in local_state:
-                            loc_val = local_state[c_key]
-                            s_val["highest_price"] = max(loc_val.get("highest_price", 0.0), s_val.get("highest_price", 0.0))
-                            s_val["is_partial_sold"] = loc_val.get("is_partial_sold", False) or s_val.get("is_partial_sold", False)
-                            if "strategy" not in s_val or not s_val["strategy"]:
-                                s_val["strategy"] = loc_val.get("strategy", "momentum")
-                                s_val["strategy_display_name"] = loc_val.get("strategy_display_name", loc_val.get("strategy", "momentum"))
-                        local_state[c_key] = s_val
-        except Exception as e:
-            logger.debug(f"Google Sheet 포지션 상태 읽기 생략: {e}")
+        if os.path.abspath(self.positions_file) == os.path.abspath(POSITIONS_STATE_FILE):
+            try:
+                from google_sheet_manager import get_sheet_manager
+                sheet_mgr = get_sheet_manager()
+                if sheet_mgr.is_connected:
+                    sheet_state = sheet_mgr.read_positions_state_from_sheet()
+                    if sheet_state:
+                        sheet_state = self._normalize_state_keys(sheet_state)
+                        for c_key, s_val in sheet_state.items():
+                            if c_key in local_state:
+                                loc_val = local_state[c_key]
+                                s_val["highest_price"] = max(loc_val.get("highest_price", 0.0), s_val.get("highest_price", 0.0))
+                                s_val["is_partial_sold"] = loc_val.get("is_partial_sold", False) or s_val.get("is_partial_sold", False)
+                                if not s_val.get("avg_buy_price") and loc_val.get("avg_buy_price"):
+                                    s_val["avg_buy_price"] = loc_val["avg_buy_price"]
+                                if "strategy" not in s_val or not s_val["strategy"]:
+                                    s_val["strategy"] = loc_val.get("strategy", "momentum")
+                                    s_val["strategy_display_name"] = loc_val.get("strategy_display_name", loc_val.get("strategy", "momentum"))
+                            local_state[c_key] = s_val
+            except Exception as e:
+                logger.debug(f"Google Sheet 포지션 상태 읽기 생략: {e}")
         return local_state
 
     def save_positions_state(self, state: Dict[str, Dict[str, Any]]) -> bool:
@@ -96,13 +106,14 @@ class PositionTracker:
             return True
         norm_state = self._normalize_state_keys(state)
         ok = atomic_save_json(self.positions_file, norm_state)
-        try:
-            from google_sheet_manager import get_sheet_manager
-            sheet_mgr = get_sheet_manager()
-            if sheet_mgr.is_connected:
-                sheet_mgr.sync_positions_state_to_sheet(norm_state)
-        except Exception as e:
-            logger.debug(f"Google Sheet 포지션 상태 동기화 생략: {e}")
+        if os.path.abspath(self.positions_file) == os.path.abspath(POSITIONS_STATE_FILE):
+            try:
+                from google_sheet_manager import get_sheet_manager
+                sheet_mgr = get_sheet_manager()
+                if sheet_mgr.is_connected:
+                    sheet_mgr.sync_positions_state_to_sheet(norm_state)
+            except Exception as e:
+                logger.debug(f"Google Sheet 포지션 상태 동기화 생략: {e}")
         return ok
 
     def record_buy(
@@ -192,18 +203,24 @@ class PositionTracker:
         highest_price = max(pos.get("highest_price", avg_buy_price or current_price), current_price)
         is_partial_sold = pos.get("is_partial_sold", False) or is_partial_take
         set_strategy = bool(strategy and not pos.get("strategy"))
+        prev_avg_buy = float(pos.get("avg_buy_price", 0.0) or 0.0)
+        new_avg_buy = float(avg_buy_price) if (avg_buy_price and avg_buy_price > 0) else prev_avg_buy
+        avg_buy_changed = new_avg_buy > 0 and new_avg_buy != prev_avg_buy
 
-        # 최고가/익절상태/전략 변화가 없으면 저장(Google Sheet 재작성) 생략
+        # 최고가/익절상태/전략/평단가 변화가 없으면 저장(Google Sheet 재작성) 생략
         changed = (
             is_new
             or highest_price != pos.get("highest_price")
             or is_partial_sold != pos.get("is_partial_sold", False)
             or set_strategy
+            or avg_buy_changed
         )
         if not changed:
             return pos
 
         pos["code"] = code_6
+        if new_avg_buy > 0:
+            pos["avg_buy_price"] = new_avg_buy
         pos["highest_price"] = highest_price
         pos["is_partial_sold"] = is_partial_sold
         if set_strategy:
@@ -378,3 +395,160 @@ class PositionTracker:
         cooldown_map[code] = stop_date or today().strftime("%Y%m%d")
         self.save_cooldown(cooldown_map)
         logger.info(f"[{code}] 손절 쿨다운 등록 완료 (재매수 금지 {cooldown_days}거래일)")
+
+    # =========================================================================
+    # 후지모토 시게루 1:2:6 수동 등록 종목 및 청산 단계 관리 (로컬 JSON + Google Sheet)
+    # =========================================================================
+    def load_fujimoto_126_positions(self, force_sheet_sync: bool = False) -> Dict[str, Dict[str, Any]]:
+        """1:2:6 수동 등록 종목 및 청산 단계 상태 로드 (로컬 JSON + Google Sheet 양방향 병합)"""
+        local_data = safe_load_json(self.fujimoto_file, default={})
+        if not isinstance(local_data, dict):
+            local_data = {}
+        local_data = self._normalize_state_keys(local_data)
+
+        if os.path.abspath(self.fujimoto_file) == os.path.abspath(FUJIMOTO_126_FILE):
+            try:
+                from google_sheet_manager import get_sheet_manager
+                sheet_mgr = get_sheet_manager()
+                if sheet_mgr.is_connected:
+                    if force_sheet_sync:
+                        sheet_mgr.invalidate_cache("fujimoto_126")
+                    sheet_data = sheet_mgr.read_fujimoto_126_from_sheet()
+                    if sheet_data:
+                        sheet_data = self._normalize_state_keys(sheet_data)
+                        merged = False
+                        for c_key, s_val in sheet_data.items():
+                            if c_key not in local_data:
+                                local_data[c_key] = s_val
+                                merged = True
+                            else:
+                                loc_val = local_data[c_key]
+                                # 시트에서 수동으로 수정된 값 또는 최신 상태 병합
+                                loc_upd = str(loc_val.get("last_updated", ""))
+                                sht_upd = str(s_val.get("last_updated", ""))
+                                if sht_upd > loc_upd:
+                                    local_data[c_key] = s_val
+                                    merged = True
+                                else:
+                                    loc_val["highest_price"] = max(
+                                        float(loc_val.get("highest_price", 0.0) or 0.0),
+                                        float(s_val.get("highest_price", 0.0) or 0.0)
+                                    )
+                        if merged:
+                            atomic_save_json(self.fujimoto_file, local_data)
+            except Exception as e:
+                logger.debug(f"Google Sheet Fujimoto126 읽기 생략: {e}")
+        return local_data
+
+    def save_fujimoto_126_positions(self, items: Dict[str, Dict[str, Any]]) -> bool:
+        """1:2:6 수동 등록 종목 및 청산 단계 상태 저장 (로컬 JSON + Google Sheet 실시간 반영)"""
+        norm_items = self._normalize_state_keys(items)
+        ok = atomic_save_json(self.fujimoto_file, norm_items)
+        if os.path.abspath(self.fujimoto_file) == os.path.abspath(FUJIMOTO_126_FILE):
+            try:
+                from google_sheet_manager import get_sheet_manager
+                sheet_mgr = get_sheet_manager()
+                if sheet_mgr.is_connected:
+                    sheet_mgr.sync_fujimoto_126_to_sheet(norm_items)
+            except Exception as e:
+                logger.debug(f"Google Sheet Fujimoto126 동기화 생략: {e}")
+        return ok
+
+    def upsert_fujimoto_126_position(
+        self,
+        code: str,
+        name: str,
+        avg_buy_price: float,
+        buy_date: str,
+        qty: int = 9,
+        market: str = "KOSPI",
+        is_manual: bool = True,
+        exit_126_stage: Optional[int] = None,
+        highest_price: Optional[float] = None
+    ) -> Dict[str, Any]:
+        """1:2:6 관제 종목(수동 또는 KIS 보유) 추가/수정 후 JSON 및 Google Sheet 저장"""
+        c_str = str(code).strip().lstrip("'")
+        code_6 = normalize_stock_code(c_str)
+        items = self.load_fujimoto_126_positions()
+        existing = items.get(code_6, {})
+
+        clean_date = str(buy_date or existing.get("buy_date") or today().strftime("%Y-%m-%d")).strip()
+        if len(clean_date) == 8 and clean_date.isdigit():
+            clean_date = f"{clean_date[:4]}-{clean_date[4:6]}-{clean_date[6:8]}"
+
+        stage = exit_126_stage if exit_126_stage is not None else int(existing.get("exit_126_stage", 0) or 0)
+        high_p = max(
+            float(highest_price or 0.0),
+            float(existing.get("highest_price", 0.0) or 0.0),
+            float(avg_buy_price or 0.0)
+        )
+
+        entry = {
+            "code": code_6,
+            "name": name or existing.get("name", code_6),
+            "is_manual": bool(is_manual),
+            "market": market or existing.get("market", "KOSPI"),
+            "buy_date": clean_date,
+            "avg_buy_price": float(avg_buy_price),
+            "qty": max(1, int(qty)),
+            "exit_126_stage": max(0, min(3, int(stage))),
+            "highest_price": high_p,
+            "last_updated": now_str()
+        }
+        items[code_6] = entry
+        self.save_fujimoto_126_positions(items)
+        logger.info(f"[{entry['name']}({code_6})] 1:2:6 관제 종목 저장 완료 (구분={'수동' if is_manual else 'KIS'}, 매수일={clean_date}, 매수가={avg_buy_price:,.0f}원, 단계={stage})")
+        return entry
+
+    def update_fujimoto_126_stage(
+        self,
+        code: str,
+        stage: int,
+        name: Optional[str] = None,
+        avg_buy_price: float = 0.0,
+        qty: int = 9,
+        buy_date: str = "",
+        is_manual: bool = False
+    ) -> Dict[str, Any]:
+        """종목의 1:2:6 청산 완료 단계(0~3)를 업데이트하고 JSON 및 Google Sheet에 동기화"""
+        c_str = str(code).strip().lstrip("'")
+        code_6 = normalize_stock_code(c_str)
+        items = self.load_fujimoto_126_positions()
+        entry = items.get(code_6, {})
+
+        entry["code"] = code_6
+        if name:
+            entry["name"] = name
+        elif "name" not in entry:
+            entry["name"] = code_6
+        if "is_manual" not in entry:
+            entry["is_manual"] = bool(is_manual)
+        if avg_buy_price > 0 and not entry.get("avg_buy_price"):
+            entry["avg_buy_price"] = float(avg_buy_price)
+        if qty > 0 and not entry.get("qty"):
+            entry["qty"] = int(qty)
+        if buy_date and not entry.get("buy_date"):
+            entry["buy_date"] = buy_date
+        elif not entry.get("buy_date"):
+            entry["buy_date"] = today().strftime("%Y-%m-%d")
+
+        entry["exit_126_stage"] = max(0, min(3, int(stage)))
+        entry["last_updated"] = now_str()
+        items[code_6] = entry
+        self.save_fujimoto_126_positions(items)
+        return entry
+
+    def delete_fujimoto_126_position(self, code: str) -> bool:
+        """수동 등록된 1:2:6 관제 종목 삭제 (JSON + Google Sheet 반영)"""
+        c_str = str(code).strip().lstrip("'")
+        code_6 = normalize_stock_code(c_str)
+        items = self.load_fujimoto_126_positions()
+        removed = False
+        for k in (code_6, c_str, c_str.lstrip("0")):
+            if k in items:
+                del items[k]
+                removed = True
+        if removed:
+            self.save_fujimoto_126_positions(items)
+            logger.info(f"[{code_6}] 1:2:6 관제 종목 삭제 완료")
+        return removed

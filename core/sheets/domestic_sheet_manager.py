@@ -56,6 +56,7 @@ class DomesticSheetManager(BaseSheetManager):
         self.positions_worksheet: Optional[Any] = None
         self.cooldown_worksheet: Optional[Any] = None
         self.trade_history_worksheet: Optional[Any] = None
+        self.fujimoto_126_worksheet: Optional[Any] = None
 
         # TTL 인메모리 캐시 (불필요한 반복 네트워크 요청 억제)
         self._cache_data: Dict[str, Any] = {}
@@ -141,6 +142,13 @@ class DomesticSheetManager(BaseSheetManager):
             rows="30", cols="5"
         )
 
+        # 7. 'Fujimoto126' 워크시트 (후지모토 시게루 1:2:6 수동 등록 종목 및 청산 단계 관리)
+        self.fujimoto_126_worksheet = self._get_or_create_worksheet(
+            "Fujimoto126",
+            headers=["종목코드", "종목명", "구분", "소속시장", "매수일", "매수가", "보유수량", "청산단계", "최고가", "갱신일시"],
+            rows="100", cols="12"
+        )
+
     # =========================================================================
     # 1. Settings (설정값 & 감시종목) 동기화
     # =========================================================================
@@ -161,7 +169,7 @@ class DomesticSheetManager(BaseSheetManager):
 
             # 헤더 제외 기존 데이터 삭제 후 일괄 작성
             try:
-                all_records = self.settings_worksheet.get_all_records()
+                all_records = self._get_all_records_with_retry(self.settings_worksheet)
                 if all_records:
                     self.settings_worksheet.delete_rows(2, len(all_records) + 1)
             except Exception as ex:
@@ -179,17 +187,17 @@ class DomesticSheetManager(BaseSheetManager):
             return False
 
     def read_settings_from_sheet(self) -> Dict[str, Any]:
-        """Google Sheet 'Settings'에서 설정값 읽기 (60초 TTL 캐싱 적용)"""
+        """Google Sheet 'Settings'에서 설정값 읽기 (60초 TTL 캐싱 및 일시 오류 시 캐시 폴백 적용)"""
         cached = self._get_cached_data("settings")
         if cached is not None:
             return cached
 
         if self.is_rate_limited() or not self.is_connected or not self.settings_worksheet:
-            return {}
+            return self._cache_data.get("settings", {})
 
         settings = {}
         try:
-            records = self.settings_worksheet.get_all_records()
+            records = self._get_all_records_with_retry(self.settings_worksheet)
             for rec in records:
                 key = str(rec.get("설정키", "")).strip()
                 val = str(rec.get("설정값", "")).strip()
@@ -222,7 +230,7 @@ class DomesticSheetManager(BaseSheetManager):
         except Exception as e:
             if not self.handle_quota_error(e):
                 logger.warning(f"Google Sheet Settings 읽기 실패: {e}")
-            return {}
+            return self._cache_data.get("settings", {})
 
     # =========================================================================
     # 2. Proposals (스크리닝 매수/매도 제안) 동기화
@@ -319,7 +327,7 @@ class DomesticSheetManager(BaseSheetManager):
 
             # 기존 행 삭제 후 다시 기록
             try:
-                all_records = self.proposals_state_worksheet.get_all_records()
+                all_records = self._get_all_records_with_retry(self.proposals_state_worksheet)
                 if all_records:
                     self.proposals_state_worksheet.delete_rows(2, len(all_records) + 1)
             except Exception as ex:
@@ -336,16 +344,16 @@ class DomesticSheetManager(BaseSheetManager):
             return False
 
     def read_proposals_state_from_sheet(self) -> Dict[str, Any]:
-        """Google Sheet 'ProposalsState'에서 마지막 스크리닝 상태 복원 (30초 TTL 캐싱 적용)"""
+        """Google Sheet 'ProposalsState'에서 마지막 스크리닝 상태 복원 (30초 TTL 캐싱 및 일시 오류 시 캐시 폴백 적용)"""
         cached = self._get_cached_data("proposals_state")
         if cached is not None:
             return cached
 
         if self.is_rate_limited() or not self.is_connected or not self.proposals_state_worksheet:
-            return {}
+            return self._cache_data.get("proposals_state", {})
 
         try:
-            records = self.proposals_state_worksheet.get_all_records()
+            records = self._get_all_records_with_retry(self.proposals_state_worksheet)
             data: Dict[str, Any] = {}
             for rec in records:
                 key = str(rec.get("키", "")).strip()
@@ -366,7 +374,7 @@ class DomesticSheetManager(BaseSheetManager):
         except Exception as e:
             if not self.handle_quota_error(e):
                 logger.warning(f"Google Sheet ProposalsState 읽기 실패: {e}")
-            return {}
+            return self._cache_data.get("proposals_state", {})
 
     # =========================================================================
     # 3. PositionsState (트레일링 스탑 포지션 추적) 동기화
@@ -424,7 +432,7 @@ class DomesticSheetManager(BaseSheetManager):
 
             # 기존 데이터 삭제 후 최신 상태 작성
             try:
-                all_records = self.positions_worksheet.get_all_records()
+                all_records = self._get_all_records_with_retry(self.positions_worksheet)
                 if all_records:
                     self.positions_worksheet.delete_rows(2, len(all_records) + 1)
             except Exception as ex:
@@ -441,17 +449,17 @@ class DomesticSheetManager(BaseSheetManager):
             return False
 
     def read_positions_state_from_sheet(self) -> Dict[str, Dict[str, Any]]:
-        """Google Sheet 'PositionsState'에서 포지션 상태 읽기 (30초 TTL 캐싱 적용)"""
+        """Google Sheet 'PositionsState'에서 포지션 상태 읽기 (30초 TTL 캐싱 및 일시 오류 시 캐시 폴백 적용)"""
         cached = self._get_cached_data("positions_state")
         if cached is not None:
             return cached
 
         if self.is_rate_limited() or not self.is_connected or not self.positions_worksheet:
-            return {}
+            return self._cache_data.get("positions_state", {})
 
         positions = {}
         try:
-            records = self.positions_worksheet.get_all_records()
+            records = self._get_all_records_with_retry(self.positions_worksheet)
             for rec in records:
                 raw_code = str(rec.get("종목코드", "")).strip().lstrip("'")
                 if not raw_code:
@@ -504,7 +512,7 @@ class DomesticSheetManager(BaseSheetManager):
         except Exception as e:
             if not self.handle_quota_error(e):
                 logger.warning(f"Google Sheet PositionsState 읽기 실패: {e}")
-            return {}
+            return self._cache_data.get("positions_state", {})
 
     # =========================================================================
     # 4. Cooldown (손절 종목 재매수 쿨다운) 동기화
@@ -522,7 +530,7 @@ class DomesticSheetManager(BaseSheetManager):
 
             # 기존 데이터 삭제 후 최신화
             try:
-                all_records = self.cooldown_worksheet.get_all_records()
+                all_records = self._get_all_records_with_retry(self.cooldown_worksheet)
                 if all_records:
                     self.cooldown_worksheet.delete_rows(2, len(all_records) + 1)
             except Exception as ex:
@@ -539,17 +547,17 @@ class DomesticSheetManager(BaseSheetManager):
             return False
 
     def read_cooldown_from_sheet(self) -> Dict[str, str]:
-        """Google Sheet 'Cooldown'에서 쿨다운 목록 읽기 (60초 TTL 캐싱 적용)"""
+        """Google Sheet 'Cooldown'에서 쿨다운 목록 읽기 (60초 TTL 캐싱 및 일시 오류 시 캐시 폴백 적용)"""
         cached = self._get_cached_data("cooldown")
         if cached is not None:
             return cached
 
         if self.is_rate_limited() or not self.is_connected or not self.cooldown_worksheet:
-            return {}
+            return self._cache_data.get("cooldown", {})
 
         cd_map = {}
         try:
-            records = self.cooldown_worksheet.get_all_records()
+            records = self._get_all_records_with_retry(self.cooldown_worksheet)
             for rec in records:
                 code = str(rec.get("종목코드", "")).strip()
                 end_date = str(rec.get("재매수가능일자", "")).strip()
@@ -560,7 +568,7 @@ class DomesticSheetManager(BaseSheetManager):
         except Exception as e:
             if not self.handle_quota_error(e):
                 logger.warning(f"Google Sheet Cooldown 읽기 실패: {e}")
-            return {}
+            return self._cache_data.get("cooldown", {})
 
     # =========================================================================
     # 5. TradeHistory (매매 체결 일지) 동기화
@@ -593,6 +601,127 @@ class DomesticSheetManager(BaseSheetManager):
             if not self.handle_quota_error(e):
                 logger.warning(f"Google Sheet TradeHistory 기록 실패: {e}")
             return False
+
+    # =========================================================================
+    # 6. Fujimoto126 (후지모토 시게루 1:2:6 수동 종목 및 청산 단계) 동기화
+    # =========================================================================
+    def sync_fujimoto_126_to_sheet(self, items: Dict[str, Dict[str, Any]]) -> bool:
+        """1:2:6 수동 등록 종목 및 청산 단계 상태를 'Fujimoto126' 워크시트에 최신화"""
+        if self.is_rate_limited() or not self.is_connected or not self.fujimoto_126_worksheet:
+            return False
+
+        try:
+            now_str = time_utils.now_str()
+            rows = []
+            for raw_code, data in items.items():
+                code_6 = normalize_stock_code(raw_code)
+                formatted_code = f"'{code_6}" if code_6.isdigit() else code_6
+                name = data.get("name", code_6)
+                source = "수동" if data.get("is_manual", False) else "KIS"
+                market = data.get("market", "KOSPI")
+                buy_date = str(data.get("buy_date", "") or "")
+                avg_price = float(data.get("avg_buy_price", 0.0) or 0.0)
+                qty = int(data.get("qty", data.get("holding_qty", 9)) or 9)
+                exit_stage = int(data.get("exit_126_stage", 0) or 0)
+                highest_p = float(data.get("highest_price", avg_price) or avg_price)
+                updated_at = str(data.get("last_updated", now_str))
+
+                rows.append([
+                    formatted_code,
+                    name,
+                    source,
+                    market,
+                    buy_date,
+                    avg_price,
+                    qty,
+                    exit_stage,
+                    highest_p,
+                    updated_at
+                ])
+
+            expected_headers = ["종목코드", "종목명", "구분", "소속시장", "매수일", "매수가", "보유수량", "청산단계", "최고가", "갱신일시"]
+            try:
+                cur_headers = self.fujimoto_126_worksheet.row_values(1)
+                if cur_headers != expected_headers:
+                    self.fujimoto_126_worksheet.update(range_name="A1:J1", values=[expected_headers])
+            except Exception as ex:
+                if self.handle_quota_error(ex):
+                    return False
+
+            try:
+                all_records = self._get_all_records_with_retry(self.fujimoto_126_worksheet)
+                if all_records:
+                    self.fujimoto_126_worksheet.delete_rows(2, len(all_records) + 1)
+            except Exception as ex:
+                if self.handle_quota_error(ex):
+                    return False
+
+            if rows:
+                self.fujimoto_126_worksheet.append_rows(rows)
+            self.invalidate_cache("fujimoto_126")
+            logger.info(f"📊 Google Sheet 'Fujimoto126'에 {len(rows)}건 동기화 완료")
+            return True
+        except Exception as e:
+            if not self.handle_quota_error(e):
+                logger.warning(f"Google Sheet Fujimoto126 동기화 실패: {e}")
+            return False
+
+    def read_fujimoto_126_from_sheet(self) -> Dict[str, Dict[str, Any]]:
+        """Google Sheet 'Fujimoto126'에서 수동 종목 및 청산 단계 읽기 (30초 TTL 캐시)"""
+        cached = self._get_cached_data("fujimoto_126")
+        if cached is not None:
+            return cached
+
+        if self.is_rate_limited() or not self.is_connected or not self.fujimoto_126_worksheet:
+            return self._cache_data.get("fujimoto_126", {})
+
+        items: Dict[str, Dict[str, Any]] = {}
+        try:
+            records = self._get_all_records_with_retry(self.fujimoto_126_worksheet)
+            for rec in records:
+                raw_code = str(rec.get("종목코드", "")).strip().lstrip("'")
+                if not raw_code:
+                    continue
+                code = normalize_stock_code(raw_code)
+                src_raw = str(rec.get("구분", "수동")).strip()
+                is_manual = src_raw in ("수동", "MANUAL", "manual", "매뉴얼", "Y", "True")
+                buy_date_raw = str(rec.get("매수일", "")).strip().lstrip("'")
+
+                try:
+                    avg_p = float(str(rec.get("매수가", 0.0) or 0.0).replace(",", ""))
+                except ValueError:
+                    avg_p = 0.0
+                try:
+                    qty = int(float(str(rec.get("보유수량", 9) or 9).replace(",", "")))
+                except ValueError:
+                    qty = 9
+                try:
+                    stage = int(float(str(rec.get("청산단계", 0) or 0)))
+                except ValueError:
+                    stage = 0
+                try:
+                    high_p = float(str(rec.get("최고가", avg_p) or avg_p).replace(",", ""))
+                except ValueError:
+                    high_p = avg_p
+
+                items[code] = {
+                    "code": code,
+                    "name": str(rec.get("종목명", code) or code).strip(),
+                    "is_manual": is_manual,
+                    "market": str(rec.get("소속시장", "KOSPI") or "KOSPI").strip(),
+                    "buy_date": buy_date_raw,
+                    "avg_buy_price": avg_p,
+                    "qty": max(1, qty),
+                    "exit_126_stage": max(0, min(3, stage)),
+                    "highest_price": high_p,
+                    "last_updated": str(rec.get("갱신일시", time_utils.now_str()))
+                }
+            self._set_cached_data("fujimoto_126", items, ttl=30.0)
+            return items
+        except Exception as e:
+            if not self.handle_quota_error(e):
+                logger.warning(f"Google Sheet Fujimoto126 읽기 실패: {e}")
+            return self._cache_data.get("fujimoto_126", {})
 
 
 # =============================================================================
