@@ -37,6 +37,9 @@ class KISApiClient:
     # 프로세스 내 모든 클라이언트(스케줄러 잡/Streamlit 세션)가 공유하는 호출 간격 제한
     _rate_lock = threading.Lock()
     _last_call_ts: float = 0.0
+    # 프로세스 내 토큰 발급 동시성 제어 및 공유 캐시 (다중 스레드/인스턴스 중복 발급으로 인한 1분 쿨타임 에러 방지)
+    _token_lock = threading.Lock()
+    _shared_tokens: Dict[Any, Dict[str, Any]] = {}
 
     def __init__(
         self,
@@ -47,10 +50,11 @@ class KISApiClient:
         mock: Optional[bool] = None
     ):
         self.logger = logging.getLogger("KISApiClient")
-        self.app_key = app_key or config.APP_KEY
-        self.app_secret = app_secret or config.APP_SECRET
-        self.cano = cano or config.CANO
-        self.acnt_prdt_cd = acnt_prdt_cd or config.ACNT_PRDT_CD
+        _secret_fn = getattr(config, "_get_env_or_secret", lambda k, d="": os.getenv(k, d))
+        self.app_key = (app_key or config.APP_KEY or _secret_fn("KIS_APP_KEY", "")).strip()
+        self.app_secret = (app_secret or config.APP_SECRET or _secret_fn("KIS_APP_SECRET", "")).strip()
+        self.cano = (cano or config.CANO or _secret_fn("KIS_CANO", "")).strip()
+        self.acnt_prdt_cd = (acnt_prdt_cd or config.ACNT_PRDT_CD or _secret_fn("KIS_ACNT_PRDT_CD", "01")).strip()
         self.mock = mock if mock is not None else resolve_mock_mode()
         self.url_base = config.URL_BASE_MOCK if self.mock else config.URL_BASE_REAL
         self.access_token: Optional[str] = None
@@ -111,13 +115,41 @@ class KISApiClient:
                 time.sleep(config.API_CALL_DELAY - elapsed)
             cls._last_call_ts = time.time()
 
+    def _resolve_token_file_path(self) -> str:
+        """토큰 파일 경로 반환 (상대 경로일 때 현재 디렉토리에 없으면 프로젝트 루트 경로도 탐색)"""
+        path = getattr(self, "_token_file_path", "token_kis_mock.json" if getattr(self, "mock", False) else "token_kis_real.json")
+        if os.path.isabs(path) or os.path.exists(path):
+            return path
+        root_candidate = os.path.join(os.path.dirname(os.path.abspath(__file__)), path)
+        if os.path.exists(root_candidate):
+            return root_candidate
+        return path
+
+    def _token_cache_key(self):
+        return (bool(getattr(self, "mock", False)), getattr(self, "app_key", ""), getattr(self, "_token_file_path", ""))
+
     def _load_token_file(self):
-        """로컬 파일에 저장된 유효한 Access Token이 있는지 로드"""
-        if not os.path.exists(self._token_file_path):
+        """프로세스 공유 캐시 또는 로컬 파일에 저장된 유효한 Access Token이 있는지 로드"""
+        # 1. 프로세스 내 공유 메모리 캐시 확인
+        cache_key = self._token_cache_key()
+        shared = KISApiClient._shared_tokens.get(cache_key)
+        if shared:
+            s_token = shared.get("access_token")
+            s_issued = shared.get("issued_at", 0)
+            s_expires = shared.get("expires_in", 86400)
+            if s_token and (time.time() - s_issued) < (s_expires - 60):
+                self.access_token = s_token
+                self.token_issued_at = s_issued
+                self.token_expires_in = s_expires
+                return
+
+        # 2. 로컬 토큰 파일 확인
+        file_path = self._resolve_token_file_path()
+        if not os.path.exists(file_path):
             return
 
         try:
-            with open(self._token_file_path, "r", encoding="utf-8") as f:
+            with open(file_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 token = data.get("access_token")
                 issued_at = data.get("issued_at", 0)
@@ -128,68 +160,132 @@ class KISApiClient:
                     self.access_token = token
                     self.token_issued_at = issued_at
                     self.token_expires_in = expires_in
+                    KISApiClient._shared_tokens[cache_key] = {
+                        "access_token": token,
+                        "issued_at": issued_at,
+                        "expires_in": expires_in,
+                    }
                     logger.info(f"기존 저장된 KIS Access Token 로드 성공 ({self._token_file_path})")
         except Exception as e:
             logger.warning(f"토큰 파일 로드 실패: {e}")
 
     def _save_token_file(self):
-        """발급받은 Access Token을 로컬 파일로 저장"""
+        """발급받은 Access Token을 로컬 파일 및 프로세스 공유 캐시에 저장"""
         try:
             data = {
                 "access_token": self.access_token,
                 "issued_at": self.token_issued_at,
                 "expires_in": self.token_expires_in
             }
+            KISApiClient._shared_tokens[self._token_cache_key()] = dict(data)
             if not atomic_save_json(self._token_file_path, data):
                 raise IOError("atomic_save_json 실패")
             logger.info(f"새 KIS Access Token 로컬 파일 저장 완료 ({self._token_file_path})")
         except Exception as e:
             logger.warning(f"토큰 파일 저장 실패: {e}")
 
-    def get_access_token(self) -> bool:
-        """OAuth 2.0 Access Token 발급 요청"""
-        if self.is_token_valid():
+    @staticmethod
+    def _is_token_error(data: Dict[str, Any]) -> bool:
+        """KIS API 응답이 토큰 만료/무효 오류(EGW00121, EGW00123 등)인지 판별"""
+        if not isinstance(data, dict):
+            return False
+        msg_cd = str(data.get("msg_cd", "") or "").strip().upper()
+        msg1 = str(data.get("msg1", "") or "")
+        if msg_cd in ("EGW00120", "EGW00121", "EGW00122", "EGW00123"):
+            return True
+        if "만료된" in msg1 and ("token" in msg1.lower() or "토큰" in msg1):
+            return True
+        if "유효하지 않은" in msg1 and ("token" in msg1.lower() or "토큰" in msg1):
+            return True
+        return False
+
+    def _invalidate_token(self) -> None:
+        """만료되거나 무효화된 토큰을 메모리 및 로컬 캐시 파일에서 제거"""
+        self.access_token = None
+        self.token_issued_at = 0
+        KISApiClient._shared_tokens.pop(self._token_cache_key(), None)
+        file_path = self._resolve_token_file_path()
+        if os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except OSError:
+                pass
+
+    def get_access_token(self, force: bool = False) -> bool:
+        """OAuth 2.0 Access Token 발급 요청 (프로세스 내 락 및 파일 재확인으로 중복 발급 방지)"""
+        if not force and self.is_token_valid():
             return True
 
-        if not self.app_key or not self.app_secret:
-            logger.warning("AppKey 또는 AppSecret이 설정되지 않았습니다. 시뮬레이션 모드로 작동합니다.")
-            return False
-
-        # 1분(60초) 재발급 쿨다운 제한 체크 (한국투자증권 API 1분당 1회 제한 보호)
-        now = time.time()
-        elapsed_since_attempt = now - self.last_token_attempt_time
-        if elapsed_since_attempt < 60:
-            logger.warning(f"Access Token 재발급 요청 쿨타임 적용 중 (남은시간: {60 - elapsed_since_attempt:.0f}초)")
-            return False
-
-        self.last_token_attempt_time = now
-        url = f"{self.url_base}/oauth2/tokenP"
-        headers = {"content-type": "application/json"}
-        body = {
-            "grant_type": "client_credentials",
-            "appkey": self.app_key,
-            "appsecret": self.app_secret
-        }
-
-        try:
-            self._rate_limit()
-            res = requests.post(url, headers=headers, json=body, timeout=10)
-            data = self._safe_json_response(res, context="AccessToken발급")
-
-            if res.status_code == 200 and "access_token" in data:
-                self.access_token = data["access_token"]
-                self.token_issued_at = time.time()
-                self.token_expires_in = data.get("expires_in", 86400)
-                self._save_token_file()
-                logger.info("KIS Open API Access Token 발급 성공")
-                return True
+        with KISApiClient._token_lock:
+            if force:
+                self._invalidate_token()
             else:
-                msg = data.get("error_description", data.get("msg1", "Unknown Error"))
-                logger.error(f"Access Token 발급 실패: {msg}")
+                if self.is_token_valid():
+                    return True
+                # 다른 스레드(스케줄러 등)나 프로세스가 방금 갱신한 토큰 파일이 있는지 재확인
+                self._load_token_file()
+                if self.is_token_valid():
+                    return True
+
+            if not self.app_key or not self.app_secret:
+                logger.warning("AppKey 또는 AppSecret이 설정되지 않았습니다. 시뮬레이션 모드로 작동합니다.")
                 return False
-        except Exception as e:
-            logger.error(f"Access Token 발급 중 예외 발생: {e}")
-            return False
+
+            # 1분(60초) 재발급 쿨다운 제한 체크 (한국투자증권 API 1분당 1회 제한 보호)
+            now_ts = time.time()
+            elapsed_since_attempt = now_ts - self.last_token_attempt_time
+            if elapsed_since_attempt < 60:
+                logger.warning(f"Access Token 재발급 요청 쿨타임 적용 중 (남은시간: {60 - elapsed_since_attempt:.0f}초)")
+                return False
+
+            url = f"{self.url_base}/oauth2/tokenP"
+            headers = {"content-type": "application/json"}
+            body = {
+                "grant_type": "client_credentials",
+                "appkey": self.app_key,
+                "appsecret": self.app_secret
+            }
+
+            try:
+                session = self.get_session() if hasattr(self, "get_session") else requests
+                res = None
+                last_err = None
+                for attempt in range(1, 4):
+                    try:
+                        self._rate_limit()
+                        res = session.post(url, headers=headers, json=body, timeout=(8, 12))
+                        # 서버에 실제 요청이 도달하여 응답을 받은 경우에만 1분 쿨타임 기록
+                        self.last_token_attempt_time = time.time()
+                        break
+                    except (requests.exceptions.ConnectTimeout, requests.exceptions.ConnectionError, requests.exceptions.ReadTimeout) as net_err:
+                        last_err = net_err
+                        if attempt < 3:
+                            wait_sec = attempt * 1.0
+                            logger.warning(f"Access Token 발급 연결 지연 ({net_err.__class__.__name__}) - {wait_sec:.1f}초 후 재시도 ({attempt}/3)")
+                            time.sleep(wait_sec)
+                        else:
+                            raise net_err
+
+                data = self._safe_json_response(res, context="AccessToken발급")
+
+                if res.status_code == 200 and "access_token" in data:
+                    self.access_token = data["access_token"]
+                    self.token_issued_at = time.time()
+                    self.token_expires_in = data.get("expires_in", 86400)
+                    self._save_token_file()
+                    logger.info("KIS Open API Access Token 발급 성공")
+                    return True
+                else:
+                    msg = data.get("error_description", data.get("msg1", "Unknown Error"))
+                    msg_cd = data.get("error_code", data.get("msg_cd", ""))
+                    logger.error(f"Access Token 발급 실패: [{msg_cd}] {msg}")
+                    # 혹시 직전에 다른 프로세스가 발급해둔 토큰 파일이 있으면 폴백 로드
+                    self._load_token_file()
+                    return self.is_token_valid()
+            except Exception as e:
+                # ConnectTimeout 등 서버 도달 전 네트워크 예외 시에는 60초 쿨타임을 걸지 않음
+                logger.error(f"Access Token 발급 중 예외 발생: {e}")
+                return False
 
     def is_token_valid(self) -> bool:
         """접속 토큰 유효성 확인"""
@@ -577,13 +673,13 @@ class KISApiClient:
 
                 if rt_cd != "0":
                     msg = data.get("msg1", "")
+                    msg_cd = str(data.get("msg_cd", "") or "")
                     if attempt == 1:
-                        if "초과" in msg or "EGW00215" in str(data.get("msg_cd", "")):
+                        if "초과" in msg or msg_cd in ("EGW00201", "EGW00215"):
                             time.sleep(1.0)
                             continue
-                        elif "만료된" in msg or "EGW" in str(data.get("msg_cd", "")):
-                            self.access_token = None
-                            self.get_access_token()
+                        elif self._is_token_error(data):
+                            self.get_access_token(force=True)
                             time.sleep(0.5)
                             continue
                     return {
@@ -2389,6 +2485,7 @@ class KISApiClient:
         buy_sell_dvsn: str = "00"
     ) -> List[Dict[str, Any]]:
         """주문 및 체결 내역 조회 (TTTC8001R / VTTC8001R)"""
+        self._ensure_token()
         url = f"{self.url_base}/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
         tr_id = "VTTC8001R" if self.is_mock else "TTTC8001R"
         headers = self._get_headers(tr_id)
@@ -2417,8 +2514,13 @@ class KISApiClient:
                 res = self._request_with_retry("GET", url, headers=headers, params=params, timeout=7)
                 data = res.json()
                 if data.get("rt_cd") not in (None, "0"):
-                    self.logger.error(f"주문내역 조회 실패: [{data.get('msg_cd')}] {data.get('msg1')}")
-                    break
+                    if page == 0 and self._is_token_error(data) and self.get_access_token(force=True):
+                        headers = self._get_headers(tr_id)
+                        res = self._request_with_retry("GET", url, headers=headers, params=params, timeout=7)
+                        data = res.json()
+                    if data.get("rt_cd") not in (None, "0"):
+                        self.logger.error(f"주문내역 조회 실패: [{data.get('msg_cd')}] {data.get('msg1')}")
+                        break
                 self._append_order_items(orders, data.get("output1", []))
                 if res.headers.get("tr_cont") not in ("F", "M"):
                     break

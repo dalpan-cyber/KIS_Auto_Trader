@@ -90,12 +90,13 @@ if os.path.exists(ENV_PATH):
 def _get_env_or_secret(key: str, default: str = "") -> str:
     val = os.getenv(key, "")
     if val:
-        return val
+        return str(val).strip().strip('"').strip("'")
     try:
         import streamlit as st
         try:
             if hasattr(st, "secrets") and key in st.secrets:
-                secret_val = str(st.secrets.get(key, default) if hasattr(st.secrets, "get") else st.secrets[key])
+                raw = st.secrets.get(key, default) if hasattr(st.secrets, "get") else st.secrets[key]
+                secret_val = str(raw).strip().strip('"').strip("'")
                 os.environ[key] = secret_val
                 return secret_val
         except (KeyError, Exception):
