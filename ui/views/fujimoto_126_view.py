@@ -4,7 +4,9 @@ KIS Auto Trading - Fujimoto Shigeru 1:2:6 Split Exit & Zone Notification View
 현재 KIS 계좌 보유 주식 및 수동(매뉴얼) 등록 종목의 3대 지표(RSI, MACD, 일목균형표 구름대) 구간을 진단하고
 1:2:6 비율(1/9, 2/9, 6/9) 분할청산 추천 및 텔레그램 알림(Noti)을 제공하는 전용 관제 페이지
 """
+import time
 import datetime
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Any, List, Optional
 import pandas as pd
 import streamlit as st
@@ -28,29 +30,65 @@ STAGE_LABELS = {
 }
 
 
-def _fetch_stock_df_and_price(api, code: str, fallback_price: float = 0.0):
-    """종목의 일봉(최소 85봉) 및 실시간 현재가를 조회하여 기술적 지표 DataFrame 반환"""
+def _fetch_stock_df_and_price(api, code: str, fallback_price: float = 0.0, known_name: str = ""):
+    """
+    종목의 일봉(최소 85봉) 및 현재가를 조회하여 기술적 지표 DataFrame 반환
+    - 과거 일봉은 당일 캐시 및 FinanceDataReader를 우선 사용하여 KIS API 호출을 최소화
+    - KIS 잔고에서 이미 실시간 현재가(fallback_price)와 종목명이 확보된 경우 불필요한 단건 시세 API 호출 생략
+    """
     candles = api.get_daily_chart(code, count=90) or []
-    rt = api.get_stock_price(code) or {}
-    curr_price = float(rt.get("price", 0.0) or fallback_price or 0.0)
-    stock_name = rt.get("name") or rt.get("hts_kor_isnm") or ""
+    has_valid_name = bool(known_name and known_name != code and not str(known_name).startswith("종목_"))
 
-    if rt.get("rt_cd") == "0" and curr_price > 0:
+    curr_price = float(fallback_price or 0.0)
+    stock_name = known_name if has_valid_name else ""
+    rt = {}
+
+    # 캔들이 없거나, 종목명을 모르거나, 현재가가 전혀 없는 경우에만 KIS 단건 시세 API 보완 호출
+    need_rt_call = (not candles) or (not has_valid_name) or (curr_price <= 0 and not candles)
+    if need_rt_call:
+        rt = api.get_stock_price(code) or {}
+        rt_price = float(rt.get("price", 0.0) or 0.0)
+        if rt_price > 0:
+            curr_price = rt_price
+        api_nm = rt.get("name") or rt.get("hts_kor_isnm") or ""
+        if api_nm and not api_nm.startswith("종목_"):
+            stock_name = api_nm
+
+    if curr_price <= 0 and candles:
+        curr_price = float(candles[-1].get("close", 0.0) or 0.0)
+
+    if curr_price > 0:
         today_str = today().strftime("%Y%m%d")
         is_weekend = (today().weekday() >= 5)
-        entry = {
-            "date": today_str,
-            "close": curr_price,
-            "open": float(rt.get("stck_oprc", curr_price) or curr_price),
-            "high": float(rt.get("stck_hgpr", curr_price) or curr_price),
-            "low": float(rt.get("stck_lwpr", curr_price) or curr_price),
-            "volume": int(rt.get("acml_vol", 0) or 0)
-        }
         if not is_weekend:
-            if not candles or str(candles[-1].get("date", "")) != today_str:
-                candles.append(entry)
-            else:
-                candles[-1].update(entry)
+            if rt.get("rt_cd") == "0":
+                entry = {
+                    "date": today_str,
+                    "close": curr_price,
+                    "open": float(rt.get("stck_oprc", curr_price) or curr_price),
+                    "high": float(rt.get("stck_hgpr", curr_price) or curr_price),
+                    "low": float(rt.get("stck_lwpr", curr_price) or curr_price),
+                    "volume": int(rt.get("acml_vol", 0) or 0)
+                }
+                if not candles or str(candles[-1].get("date", "")) != today_str:
+                    candles.append(entry)
+                else:
+                    candles[-1].update(entry)
+            elif candles:
+                last_c = candles[-1]
+                if str(last_c.get("date", "")) == today_str:
+                    last_c["close"] = curr_price
+                    last_c["high"] = max(float(last_c.get("high", curr_price) or curr_price), curr_price)
+                    last_c["low"] = min(float(last_c.get("low", curr_price) or curr_price), curr_price)
+                else:
+                    candles.append({
+                        "date": today_str,
+                        "close": curr_price,
+                        "open": curr_price,
+                        "high": curr_price,
+                        "low": curr_price,
+                        "volume": int(last_c.get("volume", 0) or 0)
+                    })
 
     df = calculate_technical_indicators(candles, is_intraday=True, min_bars=2)
     if curr_price <= 0 and df is not None and not df.empty:
@@ -395,33 +433,68 @@ def render_fujimoto_126(api, screener, summary: Dict[str, Any], holdings: List[D
         _render_risk_2pct_calculator(summary)
         return
 
-    # 5. 각 관제 종목별 일봉 지표 및 1:2:6 분할청산 시그널 평가
+    # 5. 각 관제 종목별 일봉 지표 및 1:2:6 분할청산 시그널 평가 (병렬 처리 + 45초 세션 캐시로 차트 전환 속도 극대화)
     sl_rate_setting = float(config.CURRENT_SETTINGS.get("stop_loss_rate", -0.05) or -0.05)
-    evaluated_list: List[Dict[str, Any]] = []
-    dfs_by_code: Dict[str, pd.DataFrame] = {}
+    positions_sig = tuple(
+        (p["code"], p["name"], round(p["avg_buy_price"], 1), round(p["current_price"], 1), p["qty"], p["buy_date"], p["exit_126_stage"])
+        for p in combined_positions
+    )
+    f126_cache = st.session_state.get("_f126_eval_cache")
+    now_ts = time.time()
 
-    with st.spinner("📐 보유 및 수동 등록 종목의 3대 지표(RSI·MACD·일목구름대) 및 1:2:6 구간을 분석 중입니다..."):
-        for item in combined_positions:
-            c_code = item["code"]
-            df, live_price, api_stock_name = _fetch_stock_df_and_price(api, c_code, fallback_price=item["current_price"])
-            if df is not None:
-                dfs_by_code[c_code] = df
+    if (
+        isinstance(f126_cache, dict)
+        and not force_sheet
+        and f126_cache.get("sig") == positions_sig
+        and (now_ts - f126_cache.get("ts", 0.0) < 45.0)
+    ):
+        evaluated_list = f126_cache["evaluated_list"]
+        dfs_by_code = f126_cache["dfs_by_code"]
+    else:
+        evaluated_list = []
+        dfs_by_code = {}
+
+        def _eval_single_position(pos_item: Dict[str, Any]):
+            c_code = pos_item["code"]
+            df_res, live_price, api_stock_name = _fetch_stock_df_and_price(
+                api,
+                c_code,
+                fallback_price=pos_item["current_price"],
+                known_name=pos_item["name"]
+            )
+            item_copy = dict(pos_item)
             if live_price > 0:
-                item["current_price"] = live_price
-            if api_stock_name and (item["name"] == c_code or item["name"].startswith("종목_")):
-                item["name"] = api_stock_name
+                item_copy["current_price"] = live_price
+            if api_stock_name and (item_copy["name"] == c_code or str(item_copy["name"]).startswith("종목_")):
+                item_copy["name"] = api_stock_name
 
             eval_res = evaluate_fujimoto_126_exit(
-                df=df,
-                avg_buy_price=item["avg_buy_price"],
-                holding_qty=item["qty"],
-                buy_date=item["buy_date"],
-                current_exit_stage=item["exit_126_stage"],
+                df=df_res,
+                avg_buy_price=item_copy["avg_buy_price"],
+                holding_qty=item_copy["qty"],
+                buy_date=item_copy["buy_date"],
+                current_exit_stage=item_copy["exit_126_stage"],
                 stop_loss_rate=sl_rate_setting,
-                current_price=item["current_price"]
+                current_price=item_copy["current_price"]
             )
-            merged_item = {**item, **eval_res}
-            evaluated_list.append(merged_item)
+            return c_code, df_res, {**item_copy, **eval_res}
+
+        with st.spinner("📐 보유 및 수동 등록 종목의 3대 지표(RSI·MACD·일목구름대) 및 1:2:6 구간을 분석 중입니다..."):
+            max_workers = min(6, max(1, len(combined_positions)))
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                results_iter = list(executor.map(_eval_single_position, combined_positions))
+
+            for c_code, df_res, merged_item in results_iter:
+                if df_res is not None:
+                    dfs_by_code[c_code] = df_res
+                evaluated_list.append(merged_item)
+
+        st.session_state["_f126_eval_cache"] = {
+            "sig": positions_sig,
+            "ts": now_ts,
+            "evaluated_list": evaluated_list,
+            "dfs_by_code": dfs_by_code
+        }
 
     # 6. 요약 메트릭 & 자동/수동 텔레그램 Noti 컨트롤 바
     action_items = [x for x in evaluated_list if x.get("is_action_needed")]

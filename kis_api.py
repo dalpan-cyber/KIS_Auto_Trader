@@ -40,6 +40,10 @@ class KISApiClient:
     # 프로세스 내 토큰 발급 동시성 제어 및 공유 캐시 (다중 스레드/인스턴스 중복 발급으로 인한 1분 쿨타임 에러 방지)
     _token_lock = threading.Lock()
     _shared_tokens: Dict[Any, Dict[str, Any]] = {}
+    # 일봉 차트 데이터 당일 메모리/디스크 공유 캐시 (과거 일봉 중복 API 호출 제거)
+    _daily_chart_lock = threading.Lock()
+    _daily_chart_cache: Dict[str, Dict[str, Any]] = {}
+    _daily_chart_cache_date: str = ""
 
     def __init__(
         self,
@@ -490,12 +494,146 @@ class KISApiClient:
             logger.error(f"[{stock_code}] 시세 조회 예외 발생: {e}")
             return {"success": False, "msg": str(e)}
 
-    def get_daily_chart(self, stock_code: str, period: str = "D", count: int = 30, exchange: str = "NAS") -> List[Dict[str, Any]]:
+    @classmethod
+    def _get_daily_cache_file_path(cls, today_str: str) -> str:
+        cache_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache")
+        os.makedirs(cache_dir, exist_ok=True)
+        return os.path.join(cache_dir, f"daily_candles_{today_str}.json")
+
+    @classmethod
+    def _ensure_daily_cache_loaded(cls, today_str: str) -> None:
+        with cls._daily_chart_lock:
+            if cls._daily_chart_cache_date == today_str:
+                return
+            cls._daily_chart_cache = {}
+            cls._daily_chart_cache_date = today_str
+            cache_file = cls._get_daily_cache_file_path(today_str)
+            if os.path.exists(cache_file):
+                try:
+                    with open(cache_file, "r", encoding="utf-8") as f:
+                        loaded = json.load(f)
+                    if isinstance(loaded, dict):
+                        cls._daily_chart_cache = loaded
+                except Exception as e:
+                    logger.debug(f"일봉 디스크 캐시 로드 무시: {e}")
+            # 이전 날짜의 오래된 daily_candles_*.json 파일 정리
+            try:
+                cache_dir = os.path.dirname(cache_file)
+                for fname in os.listdir(cache_dir):
+                    if fname.startswith("daily_candles_") and fname.endswith(".json") and fname != f"daily_candles_{today_str}.json":
+                        try:
+                            os.remove(os.path.join(cache_dir, fname))
+                        except OSError:
+                            pass
+            except Exception:
+                pass
+
+    @classmethod
+    def _get_cached_daily_chart(cls, stock_code: str, count: int, today_str: str) -> Optional[List[Dict[str, Any]]]:
+        cls._ensure_daily_cache_loaded(today_str)
+        with cls._daily_chart_lock:
+            entry = cls._daily_chart_cache.get(stock_code)
+            if not isinstance(entry, dict):
+                return None
+            candles = entry.get("candles")
+            req_count = int(entry.get("req_count", 0) or 0)
+            if isinstance(candles, list) and candles and (len(candles) >= count or req_count >= count):
+                return [dict(c) for c in candles[-count:]]
+        return None
+
+    @classmethod
+    def _set_cached_daily_chart(cls, stock_code: str, candles: List[Dict[str, Any]], req_count: int, today_str: str) -> None:
+        if not candles:
+            return
+        cls._ensure_daily_cache_loaded(today_str)
+        with cls._daily_chart_lock:
+            cls._daily_chart_cache[stock_code] = {
+                "req_count": max(req_count, len(candles)),
+                "updated_at": time.time(),
+                "candles": [dict(c) for c in candles]
+            }
+            cache_file = cls._get_daily_cache_file_path(today_str)
+            try:
+                atomic_save_json(cache_file, cls._daily_chart_cache)
+            except Exception as e:
+                logger.debug(f"일봉 디스크 캐시 저장 무시: {e}")
+
+    def _fetch_fdr_daily_chart(self, stock_code: str, count: int = 100) -> List[Dict[str, Any]]:
         """
-        주식 일별 차트 시세 조회 (국내: FHKST03010100 기간별 시세 / 해외: HHDFS76240000)
+        FinanceDataReader(네이버 금융/KRX)를 통해 과거 일봉 데이터를 초고속 조회
+        - KIS API 호출 제한(Rate Limit)을 전혀 소모하지 않으며 병렬 조회 가능
+        """
+        try:
+            import FinanceDataReader as fdr
+            import pandas as pd
+            calendar_days = max(int(count * 1.8) + 20, 90)
+            start_str = (today() - datetime.timedelta(days=calendar_days)).strftime("%Y-%m-%d")
+            end_str = today().strftime("%Y-%m-%d")
+            df = fdr.DataReader(stock_code, start_str, end_str)
+            if df is None or df.empty:
+                return []
+
+            df = df.reset_index()
+            results: List[Dict[str, Any]] = []
+            for _, row in df.iterrows():
+                raw_date = row.get("Date", row.get("date", row.get("날짜", "")))
+                if pd.isna(raw_date):
+                    continue
+                try:
+                    bsop_date = pd.to_datetime(str(raw_date)).strftime("%Y%m%d")
+                except Exception:
+                    continue
+                try:
+                    close_p = int(float(row.get("Close", row.get("close", 0)) or 0))
+                    if close_p <= 0:
+                        continue
+                    open_p = int(float(row.get("Open", row.get("open", 0)) or close_p))
+                    high_p = int(float(row.get("High", row.get("high", 0)) or close_p))
+                    low_p = int(float(row.get("Low", row.get("low", 0)) or close_p))
+                    vol = int(float(row.get("Volume", row.get("volume", 0)) or 0))
+                    raw_chg = row.get("Change", row.get("change", 0.0))
+                    chg_val = 0.0 if pd.isna(raw_chg) else round(float(raw_chg) * 100.0, 2)
+                    results.append({
+                        "date": bsop_date,
+                        "close": close_p,
+                        "open": open_p if open_p > 0 else close_p,
+                        "high": high_p if high_p > 0 else close_p,
+                        "low": low_p if low_p > 0 else close_p,
+                        "volume": max(0, vol),
+                        "change_rate": chg_val
+                    })
+                except (ValueError, TypeError):
+                    continue
+
+            if results:
+                results.sort(key=lambda x: x["date"])
+                return results[-count:]
+        except Exception as e:
+            logger.debug(f"[{stock_code}] FDR 일봉 조회 실패 (KIS API로 폴백): {e}")
+        return []
+
+    def get_daily_chart(self, stock_code: str, period: str = "D", count: int = 30, exchange: str = "NAS", use_cache: bool = True) -> List[Dict[str, Any]]:
+        """
+        주식 일별 차트 시세 조회
+        - 국내 일봉(period='D'): 당일 메모리/디스크 캐시 -> FinanceDataReader(초고속·무제한) -> KIS API(FHKST03010100/FHKST01010400) 순으로 하이브리드 조회
+        - 해외 종목: HHDFS76240000
         """
         if self.is_overseas_symbol(stock_code):
             return self.get_overseas_daily_chart(stock_code, exchange=exchange, count=count)
+
+        today_str = today().strftime("%Y%m%d")
+
+        # 0. 국내 일봉(D)인 경우 당일 캐시 및 FinanceDataReader 우선 활용 (API Rate Limit 절약 & 속도 극대화)
+        if period == "D" and use_cache:
+            cached_candles = self._get_cached_daily_chart(stock_code, count, today_str)
+            if cached_candles:
+                return cached_candles
+
+            fetch_target = max(count, 100)
+            fdr_candles = self._fetch_fdr_daily_chart(stock_code, count=fetch_target)
+            if fdr_candles:
+                self._set_cached_daily_chart(stock_code, fdr_candles, req_count=fetch_target, today_str=today_str)
+                return [dict(c) for c in fdr_candles[-count:]]
 
         self._ensure_token()
         if not self.access_token:
@@ -514,7 +652,7 @@ class KISApiClient:
             return chart_data
 
         # 1. 국내주식 기간별시세 API (FHKST03010100) - 30일 제한 없이 count개 이상 조회 가능
-        end_date = today().strftime("%Y%m%d")
+        end_date = today_str
         calendar_days = max(int(count * 1.8) + 15, 60)
         start_date = (today() - datetime.timedelta(days=calendar_days)).strftime("%Y%m%d")
 
@@ -562,7 +700,9 @@ class KISApiClient:
                         continue
                 if results:
                     results.reverse()  # KIS API의 내림차순(최신순) 데이터를 과거->최신 오름차순으로 변환
-                    return results
+                    if period == "D" and use_cache:
+                        self._set_cached_daily_chart(stock_code, results, req_count=count, today_str=today_str)
+                    return [dict(c) for c in results]
         except Exception as e:
             logger.warning(f"[{stock_code}] 기간별 일봉 API(FHKST03010100) 조회 실패: {e}. 기본 일별 시세로 대체 시도...")
 
@@ -606,7 +746,9 @@ class KISApiClient:
                     except (ValueError, TypeError):
                         continue
                 results.reverse()
-                return results
+                if results and period == "D" and use_cache:
+                    self._set_cached_daily_chart(stock_code, results, req_count=count, today_str=today_str)
+                return [dict(c) for c in results]
             else:
                 logger.error(f"[{stock_code}] 일봉 폴백 조회 실패: {data.get('msg1')}")
                 return []
