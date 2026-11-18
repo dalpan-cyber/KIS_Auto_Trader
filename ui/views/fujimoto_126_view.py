@@ -52,7 +52,7 @@ def _fetch_stock_df_and_price(api, code: str, fallback_price: float = 0.0):
             else:
                 candles[-1].update(entry)
 
-    df = calculate_technical_indicators(candles, is_intraday=True)
+    df = calculate_technical_indicators(candles, is_intraday=True, min_bars=2)
     if curr_price <= 0 and df is not None and not df.empty:
         curr_price = float(df.iloc[-1]["close"])
     return df, curr_price, stock_name
@@ -265,7 +265,7 @@ def render_fujimoto_126(api, screener, summary: Dict[str, Any], holdings: List[D
                 <div style="background: rgba(15, 23, 42, 0.75); padding: 10px 12px; border-radius: 8px; border-left: 3px solid #ef4444;">
                     <b style="color: #f87171;">③ 3차 구간 (비중 6/9 · 66.7%)</b><br>
                     • <b>매수:</b> 일목균형표 구름대 상향 돌파 시 승부처 <code>6</code> 투입<br>
-                    • <b>청산:</b> <b>일목 구름대 하단 이탈</b> 또는 <b>손절선 침범</b> 시 <code>6/9(전량)</code> 청산
+                    • <b>청산:</b> <b>일목 구름대 하단 아래로 하향 이탈</b> 시 <code>6/9(전량)</code> 청산
                 </div>
             </div>
         </div>
@@ -357,6 +357,7 @@ def render_fujimoto_126(api, screener, summary: Dict[str, Any], holdings: List[D
         if len(str(buy_date_val)) == 8 and str(buy_date_val).isdigit():
             buy_date_val = f"{buy_date_val[:4]}-{buy_date_val[4:6]}-{buy_date_val[6:8]}"
 
+        qty_val = int(h.get("quantity", h.get("qty", 0)) or 0)
         combined_positions.append({
             "code": code_6,
             "name": h.get("name", f126_st.get("name", code_6)),
@@ -365,7 +366,8 @@ def render_fujimoto_126(api, screener, summary: Dict[str, Any], holdings: List[D
             "buy_date": buy_date_val,
             "avg_buy_price": float(h.get("avg_buy_price", h.get("avg_price", 0.0)) or 0.0),
             "current_price": float(h.get("current_price", 0.0) or 0.0),
-            "qty": int(h.get("quantity", h.get("qty", 0)) or 0),
+            "qty": qty_val,
+            "holding_qty": qty_val,
             "exit_126_stage": int(f126_st.get("exit_126_stage", 0) or 0)
         })
 
@@ -374,6 +376,7 @@ def render_fujimoto_126(api, screener, summary: Dict[str, Any], holdings: List[D
             continue
         if not m_item.get("is_manual", True):
             continue
+        m_qty_val = int(m_item.get("qty", 9) or 9)
         combined_positions.append({
             "code": code_6,
             "name": m_item.get("name", code_6),
@@ -382,7 +385,8 @@ def render_fujimoto_126(api, screener, summary: Dict[str, Any], holdings: List[D
             "buy_date": str(m_item.get("buy_date", "") or ""),
             "avg_buy_price": float(m_item.get("avg_buy_price", 0.0) or 0.0),
             "current_price": 0.0,
-            "qty": int(m_item.get("qty", 9) or 9),
+            "qty": m_qty_val,
+            "holding_qty": m_qty_val,
             "exit_126_stage": int(m_item.get("exit_126_stage", 0) or 0)
         })
 
@@ -402,6 +406,8 @@ def render_fujimoto_126(api, screener, summary: Dict[str, Any], holdings: List[D
             df, live_price, api_stock_name = _fetch_stock_df_and_price(api, c_code, fallback_price=item["current_price"])
             if df is not None:
                 dfs_by_code[c_code] = df
+            if live_price > 0:
+                item["current_price"] = live_price
             if api_stock_name and (item["name"] == c_code or item["name"].startswith("종목_")):
                 item["name"] = api_stock_name
 
@@ -411,7 +417,8 @@ def render_fujimoto_126(api, screener, summary: Dict[str, Any], holdings: List[D
                 holding_qty=item["qty"],
                 buy_date=item["buy_date"],
                 current_exit_stage=item["exit_126_stage"],
-                stop_loss_rate=sl_rate_setting
+                stop_loss_rate=sl_rate_setting,
+                current_price=item["current_price"]
             )
             merged_item = {**item, **eval_res}
             evaluated_list.append(merged_item)
@@ -428,7 +435,7 @@ def render_fujimoto_126(api, screener, summary: Dict[str, Any], holdings: List[D
     m2.metric("🟢 홀딩/과열대기", f"{cruise_cnt}종목")
     m3.metric("🟡 1차 청산 권고 (1/9)", f"{stage1_cnt}종목", delta="RSI 70 이탈" if stage1_cnt else None, delta_color="off")
     m4.metric("🟠 2차 청산 권고 (2/9)", f"{stage2_cnt}종목", delta="MACD 데드" if stage2_cnt else None, delta_color="off")
-    m5.metric("🔴 3차 전량 권고 (6/9)", f"{stage3_cnt}종목", delta="구름대 이탈/손절" if stage3_cnt else None, delta_color="inverse" if stage3_cnt else "off")
+    m5.metric("🔴 3차 전량 권고 (6/9)", f"{stage3_cnt}종목", delta="구름대 하단이탈" if stage3_cnt else None, delta_color="inverse" if stage3_cnt else "off")
 
     # 자동 알림 토글 & 일괄 알림 발송 버튼
     c_noti1, c_noti2 = st.columns([3, 1.5])
@@ -551,14 +558,17 @@ def render_fujimoto_126(api, screener, summary: Dict[str, Any], holdings: List[D
                     f"<span style='font-size:0.88rem;font-weight:700;'>{item.get('phase_badge', '')}</span>",
                     unsafe_allow_html=True
                 )
+                item_qty = int(item.get("holding_qty", item.get("qty", 0)) or 0)
+                item_avg_p = float(item.get("avg_buy_price", 0.0) or 0.0)
+                item_cur_p = float(item.get("current_price", item_avg_p) or 0.0)
                 st.caption(
                     f"📅 매수일: **{item.get('buy_date') or '미지정'}** | "
-                    f"매수가: **{item['avg_buy_price']:,.0f}원** | "
-                    f"현재가: **{item['current_price']:,.0f}원** | "
-                    f"수량: **{item['holding_qty']:,}주**"
+                    f"매수가: **{item_avg_p:,.0f}원** | "
+                    f"현재가: **{item_cur_p:,.0f}원** | "
+                    f"수량: **{item_qty:,}주**"
                 )
             with top_c2:
-                rec_detail_str = f"({item['recommended_qty']:,}주 / {item['recommended_ratio_str']})" if item.get("is_action_needed") else ""
+                rec_detail_str = f"({item.get('recommended_qty', 0):,}주 / {item.get('recommended_ratio_str', '-')})" if item.get("is_action_needed") else ""
                 st.markdown(
                     f"<div style='font-size:0.84rem;line-height:1.45;'>"
                     f"💰 수익률: <b style='color:{pr_color};font-size:0.98rem;'>{pr:+.2f}% ({item.get('profit_loss', 0):+,.0f}원)</b><br>"
@@ -588,7 +598,7 @@ def render_fujimoto_126(api, screener, summary: Dict[str, Any], holdings: List[D
             # 하단 컨트롤 바: 청산 단계 변경, 텔레그램 개별 발송, 수동 종목 삭제
             ctrl_c1, ctrl_c2, ctrl_c3, ctrl_c4 = st.columns([3.0, 1.5, 1.5, 1.2])
             with ctrl_c1:
-                cur_st = int(item.get("current_exit_stage", 0) or 0)
+                cur_st = int(item.get("current_exit_stage", item.get("exit_126_stage", 0)) or 0)
                 new_st = st.selectbox(
                     "현재 분할청산 완료 단계 (변경 시 JSON & 구글 시트 자동 저장)",
                     options=[0, 1, 2, 3],
@@ -603,8 +613,8 @@ def render_fujimoto_126(api, screener, summary: Dict[str, Any], holdings: List[D
                         code=code,
                         stage=new_st,
                         name=name,
-                        avg_buy_price=item["avg_buy_price"],
-                        qty=item["holding_qty"],
+                        avg_buy_price=item_avg_p,
+                        qty=item_qty,
                         buy_date=item.get("buy_date", ""),
                         is_manual=is_manual
                     )
@@ -617,10 +627,10 @@ def render_fujimoto_126(api, screener, summary: Dict[str, Any], holdings: List[D
                         code=code,
                         is_manual=is_manual,
                         buy_date=item.get("buy_date", "-"),
-                        avg_buy_price=item["avg_buy_price"],
-                        current_price=item["current_price"],
-                        profit_rate=item["profit_rate"],
-                        holding_qty=item["holding_qty"],
+                        avg_buy_price=item_avg_p,
+                        current_price=item_cur_p,
+                        profit_rate=float(item.get("profit_rate", 0.0) or 0.0),
+                        holding_qty=item_qty,
                         target_stage=max(1, item.get("target_stage", 1)),
                         action_label=item.get("action_label", "현재 구간 리포트"),
                         recommended_qty=item.get("recommended_qty", 0),

@@ -72,11 +72,12 @@ def calculate_technical_indicators(
     candles_or_df: Union[List[Dict[str, Any]], pd.DataFrame],
     is_intraday: bool = True,
     atr_period: int = 14,
-    eval_time: Optional[Union[datetime.time, datetime.datetime, str]] = None
+    eval_time: Optional[Union[datetime.time, datetime.datetime, str]] = None,
+    min_bars: int = 20
 ) -> Optional[pd.DataFrame]:
     """
     일봉 캔들 데이터를 바탕으로 기술적 보조지표 계산
-    - 20영업일 이상 일봉 데이터 기준
+    - 기본 20영업일 이상 일봉 데이터 기준 (차트 렌더링 등 필요 시 min_bars 조정 가능)
     - 이동평균선: MA5, MA20, MA60
     - 거래량 이동평균: 전일까지 20일 거래량 단순 이동평균 (vol_ma20)
     - 장중 거래량 보정치: 검색/평가 시점 기준 15:30 종가 예상 거래량 환산
@@ -88,6 +89,7 @@ def calculate_technical_indicators(
         is_intraday: 장중 평가 여부 (True 시 검색 시점 비례 종가 예상 거래량 스케일링)
         atr_period: ATR 계산 기간 (기본: 14)
         eval_time: 평가 기준 시각 (None이면 현재 KST 시각 기준 자동 계산)
+        min_bars: 최소 필요 일봉 개수 (기본: 20)
 
     Returns:
         보조지표가 추가된 pd.DataFrame 또는 데이터 부족 시 None
@@ -95,12 +97,13 @@ def calculate_technical_indicators(
     if candles_or_df is None:
         return None
 
+    req_bars = max(1, int(min_bars))
     if isinstance(candles_or_df, pd.DataFrame):
-        if candles_or_df.empty or len(candles_or_df) < 20:
+        if candles_or_df.empty or len(candles_or_df) < req_bars:
             return None
         df = candles_or_df.copy()
     else:
-        if not isinstance(candles_or_df, list) or len(candles_or_df) < 20:
+        if not isinstance(candles_or_df, list) or len(candles_or_df) < req_bars:
             return None
         df = pd.DataFrame(candles_or_df).copy()
 
@@ -109,9 +112,10 @@ def calculate_technical_indicators(
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    # 결측치 보정
-    df = df.dropna(subset=["close"]).reset_index(drop=True)
-    if len(df) < 20:
+    # 결측치 및 0 이하 유효하지 않은 종가 보정
+    df = df.dropna(subset=["close"])
+    df = df[df["close"] > 0].reset_index(drop=True)
+    if len(df) < req_bars:
         return None
 
     # 날짜 기준 과거 -> 최신(오름차순) 정렬 보장
@@ -200,12 +204,13 @@ def calculate_technical_indicators(
 
 
 def evaluate_fujimoto_126_exit(
-    df: pd.DataFrame,
+    df: Optional[pd.DataFrame],
     avg_buy_price: float,
     holding_qty: int = 9,
     buy_date: Optional[str] = None,
     current_exit_stage: int = 0,
-    stop_loss_rate: float = -0.05
+    stop_loss_rate: float = -0.05,
+    current_price: float = 0.0
 ) -> Dict[str, Any]:
     """
     후지모토 시게루 1:2:6 매매법 기반 보유 종목 구간 진단 및 분할청산 추천 계산
@@ -227,31 +232,63 @@ def evaluate_fujimoto_126_exit(
         buy_date: 매수일자 (YYYYMMDD 또는 YYYY-MM-DD, 선택)
         current_exit_stage: 이미 완료한 청산 단계 (0=미진행, 1=1차완료, 2=2차완료, 3=청산완료)
         stop_loss_rate: 비상 손절 기준 수익률 (기본: -0.05 = -5%)
+        current_price: 일봉 미수신 시 사용할 폴백 현재가 (선택)
     """
-    if df is None or df.empty:
+    avg_p_init = float(avg_buy_price) if avg_buy_price and avg_buy_price > 0 else 0.0
+    fallback_curr_p = float(current_price) if current_price and current_price > 0 else avg_p_init
+    qty_init = max(0, int(holding_qty or 0))
+    pr_init = ((fallback_curr_p - avg_p_init) / avg_p_init) * 100.0 if (avg_p_init > 0 and fallback_curr_p > 0) else 0.0
+    pl_init = (fallback_curr_p - avg_p_init) * qty_init if (avg_p_init > 0 and fallback_curr_p > 0) else 0.0
+
+    def _build_no_data_result(reason_msg: str) -> Dict[str, Any]:
         return {
             "status_code": "NO_DATA",
             "phase_badge": "⚪ 데이터 부족",
-            "recommended_stage": 0,
-            "recommended_qty": 0,
-            "recommended_ratio_str": "0%",
+            "action_label": "데이터 확인 필요",
             "is_action_needed": False,
-            "reasons": ["일봉 데이터가 부족하여 지표를 산출할 수 없습니다."]
+            "target_stage": 0,
+            "recommended_stage": 0,
+            "current_exit_stage": int(current_exit_stage or 0),
+            "recommended_qty": 0,
+            "recommended_amount": 0,
+            "recommended_ratio_str": "0%",
+            "current_price": fallback_curr_p,
+            "avg_buy_price": avg_p_init,
+            "holding_qty": qty_init,
+            "profit_rate": round(pr_init, 2),
+            "profit_loss": int(round(pl_init)),
+            "highest_since_buy": max(fallback_curr_p, avg_p_init),
+            "rsi14": 50.0,
+            "max_rsi_since_buy": 50.0,
+            "macd_line": 0.0,
+            "macd_signal": 0.0,
+            "macd_hist": 0.0,
+            "macd_status": "-",
+            "tenkan_sen": round(fallback_curr_p, 0),
+            "kijun_sen": round(fallback_curr_p, 0),
+            "cloud_top": round(fallback_curr_p, 0),
+            "cloud_bottom": round(fallback_curr_p, 0),
+            "cloud_pos": "ABOVE",
+            "cloud_pos_label": "데이터 부족",
+            "stage1_triggered": False,
+            "stage2_triggered": False,
+            "stage3_triggered": False,
+            "buy_signals": {
+                "stage1_rsi30": False,
+                "stage2_macd_golden": False,
+                "stage3_cloud_breakout": False
+            },
+            "reasons": [reason_msg]
         }
+
+    if df is None or df.empty:
+        return _build_no_data_result("일봉 데이터가 부족하여 지표를 산출할 수 없습니다.")
 
     # 필수 지표 컬럼이 없으면 계산 수행
     if "macd_line" not in df.columns or "cloud_bottom" not in df.columns:
-        df = calculate_technical_indicators(df, is_intraday=False)
+        df = calculate_technical_indicators(df, is_intraday=False, min_bars=2)
         if df is None or df.empty:
-            return {
-                "status_code": "NO_DATA",
-                "phase_badge": "⚪ 데이터 부족",
-                "recommended_stage": 0,
-                "recommended_qty": 0,
-                "recommended_ratio_str": "0%",
-                "is_action_needed": False,
-                "reasons": ["일봉 데이터가 최소 기준(20봉) 미만입니다."]
-            }
+            return _build_no_data_result("일봉 데이터가 최소 기준 미만입니다.")
 
     last = df.iloc[-1]
     prev = df.iloc[-2] if len(df) >= 2 else last
@@ -330,18 +367,12 @@ def evaluate_fujimoto_126_exit(
     elif stage2_triggered:
         stage2_reason = f"[2차 시그널 (비중 2/9)] MACD 시그널 하향 이탈 유지 (Hist {macd_hist:,.1f} 음수 모멘텀 약화)"
 
-    # [3차 청산 시그널 (비중 6/9 전량)]: 일목 구름대 하단 이탈 또는 비상 손절선 침범
-    sl_pct = stop_loss_rate * 100.0 if stop_loss_rate < 0 else -abs(stop_loss_rate) * 100.0
+    # [3차 청산 시그널 (비중 6/9 전량)]: 일목 구름대 하단 하향 이탈 (현재가 < 구름대 하단)
     is_cloud_breakdown = curr_price < cloud_bottom
-    is_stop_loss_hit = (avg_p > 0) and (profit_rate <= sl_pct)
-    stage3_triggered = bool(is_cloud_breakdown or is_stop_loss_hit)
+    stage3_triggered = bool(is_cloud_breakdown)
     stage3_reason = ""
-    if is_cloud_breakdown and is_stop_loss_hit:
-        stage3_reason = f"[3차 시그널 (전량 6/9)] 일목 구름대 하단({cloud_bottom:,.0f}원) 이탈 및 비상 손절선({sl_pct:.1f}%) 도달"
-    elif is_cloud_breakdown:
-        stage3_reason = f"[3차 시그널 (전량 6/9)] 현재가({curr_price:,.0f}원)가 일목 구름대 하단({cloud_bottom:,.0f}원) 하향 이탈 (추세 종료)"
-    elif is_stop_loss_hit:
-        stage3_reason = f"[3차 시그널 (전량 6/9)] 매수가 대비 수익률({profit_rate:+.2f}%)이 손절 기준({sl_pct:.1f}%) 침범 (리스크 컷)"
+    if is_cloud_breakdown:
+        stage3_reason = f"[3차 시그널 (전량 6/9)] 현재가({curr_price:,.0f}원)가 일목 구름대 하단({cloud_bottom:,.0f}원) 아래로 하향 이탈 (추세 종료)"
 
     # -------------------------------------------------------------------------
     # 현재 보유 종목의 기완료 단계(current_exit_stage)를 고려한 최종 추천 단계 및 수량 산출
@@ -388,7 +419,7 @@ def evaluate_fujimoto_126_exit(
     # 구간(Phase) 상태 배지 결정
     if target_stage == 3 and current_exit_stage < 3:
         status_code = "EXIT_STAGE_3"
-        phase_badge = "🔴 3차 청산 구간 (구름대 이탈/손절)"
+        phase_badge = "🔴 3차 청산 구간 (구름대 하단이탈)"
     elif target_stage == 2 and current_exit_stage < 2:
         status_code = "EXIT_STAGE_2"
         phase_badge = "🟠 2차 청산 구간 (MACD 데드크로스)"

@@ -537,17 +537,27 @@ class KISApiClient:
             if res.status_code == 200 and data.get("rt_cd") == "0":
                 output2 = data.get("output2", [])
                 results = []
-                for item in output2[:count]:
+                for item in output2:
+                    if not isinstance(item, dict):
+                        continue
+                    bsop_date = str(item.get("stck_bsop_date", "") or "").strip()
+                    if not bsop_date:
+                        continue
                     try:
+                        close_p = int(float(item.get("stck_clpr", 0) or 0))
+                        if close_p <= 0:
+                            continue
                         results.append({
-                            "date": str(item.get("stck_bsop_date", "")),
-                            "close": int(float(item.get("stck_clpr", 0) or 0)),
-                            "open": int(float(item.get("stck_oprc", 0) or 0)),
-                            "high": int(float(item.get("stck_hgpr", 0) or 0)),
-                            "low": int(float(item.get("stck_lwpr", 0) or 0)),
+                            "date": bsop_date,
+                            "close": close_p,
+                            "open": int(float(item.get("stck_oprc", 0) or close_p)),
+                            "high": int(float(item.get("stck_hgpr", 0) or close_p)),
+                            "low": int(float(item.get("stck_lwpr", 0) or close_p)),
                             "volume": int(float(item.get("acml_vol", 0) or 0)),
                             "change_rate": float(item.get("prdy_ctrt", 0.0) or 0.0)
                         })
+                        if len(results) >= count:
+                            break
                     except (ValueError, TypeError):
                         continue
                 if results:
@@ -573,15 +583,28 @@ class KISApiClient:
 
             if res.status_code == 200 and data.get("rt_cd") == "0":
                 results = []
-                for item in data.get("output", [])[:count]:
-                    results.append({
-                        "date": item.get("stck_bsop_date", ""),
-                        "close": int(float(item.get("stck_clpr", 0) or 0)),
-                        "open": int(float(item.get("stck_oprc", 0) or 0)),
-                        "high": int(float(item.get("stck_hgpr", 0) or 0)),
-                        "low": int(float(item.get("stck_lwpr", 0) or 0)),
-                        "volume": int(float(item.get("acml_vol", 0) or 0))
-                    })
+                for item in data.get("output", []):
+                    if not isinstance(item, dict):
+                        continue
+                    bsop_date = str(item.get("stck_bsop_date", "") or "").strip()
+                    if not bsop_date:
+                        continue
+                    try:
+                        close_p = int(float(item.get("stck_clpr", 0) or 0))
+                        if close_p <= 0:
+                            continue
+                        results.append({
+                            "date": bsop_date,
+                            "close": close_p,
+                            "open": int(float(item.get("stck_oprc", 0) or close_p)),
+                            "high": int(float(item.get("stck_hgpr", 0) or close_p)),
+                            "low": int(float(item.get("stck_lwpr", 0) or close_p)),
+                            "volume": int(float(item.get("acml_vol", 0) or 0))
+                        })
+                        if len(results) >= count:
+                            break
+                    except (ValueError, TypeError):
+                        continue
                 results.reverse()
                 return results
             else:

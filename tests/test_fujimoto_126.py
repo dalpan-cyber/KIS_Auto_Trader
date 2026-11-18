@@ -87,6 +87,16 @@ def test_fujimoto_126_exit_stages():
     assert res_s3["target_stage"] == 3
     assert res_s3["recommended_qty"] == 60  # 잔여 전량
 
+    # 5. 일봉 데이터 부족(None 또는 Empty DataFrame) 시 필수 키(holding_qty, profit_rate 등) 포함 검증
+    res_no_data = evaluate_fujimoto_126_exit(None, avg_buy_price=50000, holding_qty=18, current_exit_stage=1, current_price=55000)
+    assert res_no_data["status_code"] == "NO_DATA"
+    assert res_no_data["holding_qty"] == 18
+    assert res_no_data["avg_buy_price"] == 50000.0
+    assert res_no_data["current_price"] == 55000.0
+    assert res_no_data["profit_rate"] == 10.0
+    assert res_no_data["current_exit_stage"] == 1
+    assert res_no_data["is_action_needed"] is False
+
 
 def test_manual_fujimoto_126_json_and_sheet_sync():
     with tempfile.TemporaryDirectory() as tmpdir:
