@@ -2670,7 +2670,8 @@ class KISApiClient:
             "INQR_DVSN_3": "00",
             "INQR_DVSN_1": "",
             "CTX_AREA_FK100": "",
-            "CTX_AREA_NK100": ""
+            "CTX_AREA_NK100": "",
+            "EXCG_ID_DVSN_CD": "ALL"
         }
         orders = []
         try:
@@ -2742,17 +2743,20 @@ class KISApiClient:
         stock_orders = {}
 
         for o in orders:
+            ccld_qty = int(o.get("ccld_qty", 0) or 0)
+            ccld_price = float(o.get("ccld_price", 0.0) or 0.0)
+            if ccld_qty <= 0 or ccld_price <= 0:
+                continue
+
             code = o["code"]
             if code not in stock_orders:
                 stock_orders[code] = []
             stock_orders[code].append({
                 "buy_sell": o["buy_sell"],
-                "qty": o.get("ccld_qty", 0),
-                "price": o.get("ccld_price", 0)
+                "qty": ccld_qty,
+                "price": ccld_price
             })
 
-            ccld_qty = o.get("ccld_qty", 0)
-            ccld_price = o.get("ccld_price", 0)
             amount = ccld_qty * ccld_price
 
             if o["buy_sell"] == "매수":
@@ -2843,17 +2847,19 @@ class KISApiClient:
                 except Exception as e_backfill:
                     self.logger.warning(f"[{code}] 과거 매수 내역 역추적 실패: {e_backfill}")
 
-            # Step 3: 그래도 매수 수량이 부족한 경우, 포지션 트래커(positions_state.json)의 평단가로 폴백
+            # Step 3: 그래도 매수 수량이 부족한 경우, 포지션 트래커(positions_state.json / Google Sheet / 1:2:6 관제)의 평단가로 폴백
             if unmatched_sell_qty > 0:
                 try:
-                    from core.storage import safe_load_json
-                    pos_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "positions_state.json")
-                    if not os.path.exists(pos_file):
-                        pos_file = "positions_state.json"
-                    pos_state = safe_load_json(pos_file, default={})
+                    from core.position_tracker import PositionTracker
+                    pt = PositionTracker()
+                    pos_state = pt.load_positions_state()
                     code_6 = str(code).strip().zfill(6)
                     stock_pos = pos_state.get(code_6, {}) or pos_state.get(str(code).strip(), {})
-                    avg_buy_price = float(stock_pos.get("avg_buy_price", 0.0))
+                    avg_buy_price = float(stock_pos.get("avg_buy_price", 0.0) or 0.0)
+                    if avg_buy_price <= 0:
+                        f126_state = pt.load_fujimoto_126_positions(force_sheet_sync=False)
+                        f126_pos = f126_state.get(code_6, {}) or f126_state.get(str(code).strip(), {})
+                        avg_buy_price = float(f126_pos.get("avg_buy_price", 0.0) or 0.0)
 
                     if avg_buy_price > 0:
                         buy_amount_matched += unmatched_sell_qty * avg_buy_price
@@ -2863,11 +2869,22 @@ class KISApiClient:
                 except Exception as e_pos:
                     self.logger.warning(f"[{code}] 포지션 평단가 폴백 실패: {e_pos}")
 
+            # Step 4: 일부만 매칭된 경우 매칭된 평균 매입가로 보정하고, 전량 미매칭인 경우 매도원금이 수익으로 왜곡되지 않도록 손익 제외
             if unmatched_sell_qty > 0:
-                match_status = f"일부 미매칭({unmatched_sell_qty}주 누락)"
+                if buy_qty_matched > 0:
+                    inferred_avg_buy = buy_amount_matched / buy_qty_matched
+                    buy_amount_matched += unmatched_sell_qty * inferred_avg_buy
+                    buy_qty_matched += unmatched_sell_qty
+                    match_status = f"{match_status}+평균가보정"
+                    unmatched_sell_qty = 0
+                else:
+                    match_status = f"매수가 미확인({unmatched_sell_qty}주 손익제외)"
 
             if sell_qty > 0:
-                profit = sell_amount - buy_amount_matched
+                if unmatched_sell_qty > 0 and buy_qty_matched == 0:
+                    profit = 0.0
+                else:
+                    profit = sell_amount - buy_amount_matched
                 profit_by_stock[code] = {
                     "name": stock_name,
                     "buy_amount": buy_amount_matched,
@@ -2896,8 +2913,10 @@ class KISApiClient:
         return {
             "orders": orders,
             "realized_profit": realized_profit,
-            "buy_total": realized_buy_total,
-            "sell_total": realized_sell_total,
+            "buy_total": buy_total if buy_total > 0 else realized_buy_total,
+            "sell_total": sell_total if sell_total > 0 else realized_sell_total,
+            "realized_buy_total": realized_buy_total,
+            "realized_sell_total": realized_sell_total,
             "buy_count": buy_count,
             "sell_count": sell_count,
             "profit_by_stock": profit_by_stock

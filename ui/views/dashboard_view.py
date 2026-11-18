@@ -754,7 +754,7 @@ def render_execution_tab(api):
         st.dataframe(o_df, width="stretch")
 
 def render_performance_tab(api):
-    """실현/미실현 손익 분석 탭 (Performance - 온디맨드 지연 로딩)"""
+    """실현/미실현 손익 분석 탭 (Performance - 세션 캐시 및 자동 초기 로드 지원)"""
     col_date1, col_date2, col_date3 = st.columns([1.5, 1.5, 1])
     with col_date1:
         start_date = st.date_input(
@@ -783,47 +783,39 @@ def render_performance_tab(api):
     end_str = end_date.strftime("%Y%m%d")
     cache_key = f"perf_res_{start_str}_{end_str}"
 
-    if btn_search:
+    # 캐시된 결과 확인 (최초 진입 또는 기간 변경 시 자동 조회 1회 수행)
+    perf_data = st.session_state.get(cache_key)
+    if btn_search or perf_data is None:
         with st.spinner("선택 기간 매매 이력 및 손익 정밀 분석 중 (KIS API 연동)..."):
             result = api.get_trade_history_with_profit(start_str, end_str)
-            # 불필요한 계좌 잔고 중복 호출 대신 캐시된 잔고 활용
-            balance_data = st.session_state.get("cached_balance_data") or api.get_account_balance()
-            holdings_data = balance_data.get("holdings", [])
-            unrealized_profit = 0.0
-            unrealized_by_stock = {}
-            for h in holdings_data:
-                code = h["code"]
-                profit = h.get("profit_loss", 0.0)
-                unrealized_profit += profit
-                unrealized_by_stock[code] = {
-                    "name": h.get("name", ""),
-                    "code": code,
-                    "quantity": h.get("quantity", 0),
-                    "avg_buy_price": h.get("avg_buy_price", 0),
-                    "current_price": h.get("current_price", 0),
-                    "profit_loss": profit,
-                    "profit_rate": h.get("profit_rate", 0)
-                }
             st.session_state[cache_key] = {
-                "result": result,
-                "unrealized_profit": unrealized_profit,
-                "unrealized_by_stock": unrealized_by_stock
+                "result": result
             }
             st.session_state["last_perf_cache_key"] = cache_key
+            perf_data = st.session_state[cache_key]
 
-    # 캐시된 결과 확인
-    perf_data = st.session_state.get(cache_key)
-    if not perf_data and not btn_search:
-        last_key = st.session_state.get("last_perf_cache_key")
-        if last_key and isinstance(last_key, str) and last_key.strip():
-            perf_data = st.session_state.get(last_key)
-
-    if not perf_data:
-        st.info("💡 상단의 조회 기간을 설정하신 후 **[🔍 손익 분석 조회]** 버튼을 누르시면 기간별 매매 내역과 실현/미실현 손익을 정밀 계산하여 표시합니다.")
-        return
+    # 실시간/캐시된 계좌 잔고로부터 현재 미실현 손익(평가손익) 계산
+    balance_data = st.session_state.get("cached_balance_data") or api.get_account_balance()
+    holdings_data = balance_data.get("holdings", [])
+    unrealized_profit = 0.0
+    unrealized_by_stock = {}
+    for h in holdings_data:
+        code = h.get("code", "")
+        if not code:
+            continue
+        profit = float(h.get("profit_loss", h.get("pnl", 0.0)) or 0.0)
+        unrealized_profit += profit
+        unrealized_by_stock[code] = {
+            "name": h.get("name", ""),
+            "code": code,
+            "quantity": int(h.get("quantity", h.get("qty", 0)) or 0),
+            "avg_buy_price": float(h.get("avg_buy_price", h.get("avg_price", 0.0)) or 0.0),
+            "current_price": float(h.get("current_price", 0.0) or 0.0),
+            "profit_loss": profit,
+            "profit_rate": float(h.get("profit_rate", h.get("pnl_rate", 0.0)) or 0.0)
+        }
 
     result = perf_data["result"]
-    unrealized_profit = perf_data["unrealized_profit"]
 
     orders = result["orders"]
     realized_profit = result["realized_profit"]
@@ -887,9 +879,9 @@ def render_performance_tab(api):
                 m_val = str(row.get("매칭구분", ""))
                 if "과거매수" in m_val:
                     styles[row.index.get_loc("매칭구분")] = "color: #10b981; font-weight: 600;"
-                elif "평단가" in m_val:
+                elif "평단가" in m_val or "평균가" in m_val:
                     styles[row.index.get_loc("매칭구분")] = "color: #f59e0b; font-weight: 600;"
-                elif "미매칭" in m_val:
+                elif "미매칭" in m_val or "미확인" in m_val:
                     styles[row.index.get_loc("매칭구분")] = "color: #ef4444; font-weight: 700;"
                 else:
                     styles[row.index.get_loc("매칭구분")] = "color: #94a3b8;"
@@ -916,6 +908,22 @@ def render_performance_tab(api):
         st.plotly_chart(fig_profit, width="stretch", key="dash_profit_summary_chart")
     else:
         st.info("선택 기간 내 매도 완료된 종목이 없습니다.")
+
+    if unrealized_by_stock:
+        with st.expander("💼 현재 보유 종목 미실현 손익 (평가 상세)", expanded=not bool(sold_stocks)):
+            u_df = pd.DataFrame([
+                {
+                    "종목명": v["name"],
+                    "코드": v["code"],
+                    "보유수량": f"{v['quantity']:,}",
+                    "매입평균가(원)": f"{v['avg_buy_price']:,.0f}",
+                    "현재가(원)": f"{v['current_price']:,.0f}",
+                    "평가손익(원)": f"{v['profit_loss']:+,.0f}",
+                    "수익률(%)": f"{v['profit_rate']:+.2f}%"
+                }
+                for v in unrealized_by_stock.values()
+            ])
+            st.dataframe(u_df, width="stretch", hide_index=True)
 
 
 def render_principles_tab(api, screener):
